@@ -1,5 +1,12 @@
+mod ast;
+
 use inkwell::context::Context;
 use inkwell::OptimizationLevel;
+use pest_derive::Parser;
+
+#[derive(Parser)]
+#[grammar = "syntax/main.pest"]
+pub struct KomeParser;
 
 fn main() {
     let context = Context::create();
