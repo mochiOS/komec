@@ -1,0 +1,51 @@
+use viewKit
+use viewKit.icons
+use std.fs
+use std.process
+use toml
+
+@viewKit Components {
+    Dock: "components/dock.html",
+    AppIcon: "components/appIcon.html",
+}
+
+struct AppState {
+    selected_index: usize,
+    apps: Vec<AppInfo>,
+}
+
+bundle App {
+    state let mut index = 0
+
+    let app_list = fs.list("/applications").filter { it.hasSuffix(".app").isDir() }
+    let mut app = viewKit.createWindow().children { dock: dock() }
+
+    let apps = app_list.map { as app_dir:
+        let manifest_path = "about.toml" in apps_dir
+        let manifest = toml.parse(fs.read(manifest_path)).err(viewKit.window.errWindow("Read application manifest failed"))
+
+        return (
+            name: app_dir.trimSuffix(".app"),
+            path: app_dir,
+            entry: manifest.entry
+            icon: manifest.icon ?? None()
+        )
+    }
+
+    recipe dock = dock().children(
+        apps.map { as info, i:
+            appIcon(name: info.name)
+                .image(icon ?? icons.noImage)
+                .selected(i == index)
+                .onTap {
+                    process.exec(entry in apps_dir)
+                }
+        }
+    )
+}
+
+fn main() {
+    let mut window = viewKit.window.create() with children(
+        dock: App.dock,
+    )
+}
