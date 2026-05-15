@@ -13,7 +13,8 @@ use toml
 bundle App {
     // stateはリアクティブな変数を定義でき、この値が変更されると依存してるrecipe（ここだとdock）が更新される
     // X within Y ~ ZでYからZの範囲の変数を定義できる。あとXは初期値
-    state let mut index = 0 within 0 ~ apps.len
+    // clampだったら端で止まるけどcycleは反対側に回る
+    state let mut index = 0 within 0 ~ apps.len cycle
 
     // アプリリストを取得（/applicationsディレクトリから.appで終わるディレクトリを取得）
     let app_list = fs.list("/applications").filter { it.hasSuffix(".app").isDir() }
