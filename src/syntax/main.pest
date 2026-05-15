@@ -1,0 +1,69 @@
+program = { SOI ~ (stmt)* ~ EOI }
+
+stmt = {
+    import_stmt
+    | decorator
+    | bundle_stmt
+    | fn_decl
+    | declaration
+    | expr_stmt
+}
+
+// インポート
+import_stmt = { "use" ~ path }
+path = { ident ~ ("." ~ ident)* }
+
+// @name { ... } 形式のデコレータ
+decorator = { "@" ~ ident ~ ident ~ "{" ~ (kv_pair ~ ("," ~ kv_pair)* ~ ","?)? ~ "}" }
+kv_pair = { ident ~ ":" ~ expr }
+
+// bundle App { ... }
+bundle_stmt = { "bundle" ~ ident ~ "{" ~ stmt* ~ "}" }
+
+// 関数定義 fn main() { ... }
+fn_decl = { "fn" ~ ident ~ "(" ~ ")" ~ "{" ~ stmt* ~ "}" }
+
+// 変数宣言
+declaration = {
+    state_kw? ~ "let" ~ "mut"? ~ ident ~ "=" ~ expr ~ range_limit?
+}
+state_kw = { "state" }
+range_limit = { "within" ~ expr ~ "~" ~ expr ~ cycle_kw? }
+cycle_kw = { "cycle" }
+
+// 式（Expression）: メソッドチェーンや演算を扱えるようにする
+expr = { term ~ (infix_op ~ term)* }
+term = {
+    call_chain
+    | constant
+    | "(" ~ expr ~ ")"
+}
+
+// メソッドチェーン viewKit.window.create().with(...)
+call_chain = { (ident | path) ~ (child_access | method_call | property_access)* }
+method_call = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+property_access = { "." ~ ident }
+child_access = { "with" ~ ident ~ "(" ~ (kv_pair ~ ("," ~ kv_pair)*)? ~ ")" }
+
+// 演算子
+infix_op = _{ add | sub | mul | div | pipe | question | in_op }
+add = { "+" }
+sub = { "-" }
+mul = { "*" }
+div = { "/" }
+pipe = { "|" }
+question = { "??" }
+in_op = { "in" } // path生成用の 'in' 演算子（example: "about.toml" in app_dirで{app_dir}/about.toml）
+
+constant = { string | integer | boolean | none }
+boolean = { "true" | "false" }
+none = { "None()" }
+integer = @{ ASCII_DIGIT+ }
+string = ${ "\"" ~ inner_str ~ "\"" }
+inner_str = @{ (!"\"" ~ ANY)* }
+
+ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+expr_stmt = { expr ~ ("," ~ expr)* }
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "///" ~ (!"\n" ~ ANY)* | "//" ~ (!"\n" ~ ANY)* }
