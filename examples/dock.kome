@@ -4,41 +4,49 @@ use std.fs
 use std.process
 use toml
 
+/// 独自作成したコンポーネントを定義できる
 @viewKit Components {
-    Dock: "components/dock.html",
-    AppIcon: "components/appIcon.html",
-}
-
-struct AppState {
-    selected_index: usize,
-    apps: Vec<AppInfo>,
+    dock: "components/dock.html",
+    appIcon: "components/appIcon.html",
 }
 
 bundle App {
-    state let mut index = 0
+    // stateはリアクティブな変数を定義でき、この値が変更されると依存してるrecipe（ここだとdock）が更新される
+    // X within Y ~ ZでYからZの範囲の変数を定義できる。あとXは初期値
+    state let mut index = 0 within 0 ~ apps.len
 
+    // アプリリストを取得（/applicationsディレクトリから.appで終わるディレクトリを取得）
     let app_list = fs.list("/applications").filter { it.hasSuffix(".app").isDir() }
-    let mut app = viewKit.createWindow().children { dock: dock() }
 
-    let apps = app_list.map { as app_dir:
+    // アプリリストをループして各アプリの情報を構造化する
+    let apps = app_list.map { as apps_dir:
+        // in演算子を使ってディレクトリ内のabout.tomlへのフルパスを生成（ここだとapps_dir/about.tomlになる）
         let manifest_path = "about.toml" in apps_dir
-        let manifest = toml.parse(fs.read(manifest_path)).err(viewKit.window.errWindow("Read application manifest failed"))
 
+        // about.tomlを読み込んでTOMLとしてパースする。読み込みとかパースに失敗した場合はviewKitのerrWindow使ってエラー表示する
+        let manifest = toml.parse(fs.read(manifest_path))
+                        .err(panic, viewKit.window.errWindow("Read application manifest failed"))
+
+        // mapの戻り値としてアプリ情報を返す
         return (
-            name: app_dir.trimSuffix(".app"),
-            path: app_dir,
-            entry: manifest.entry
-            icon: manifest.icon ?? None()
+            name: app_dir.trimSuffix(".app"),   /// アプリ名
+            path: app_dir,                      /// アプリのルートディレクトリ
+            entry: manifest.entry,              /// アプリエントリ（about.tomlのentry）
+            icon: manifest.icon ?? None()       /// iconのパスかなければNone
         )
     }
 
-    recipe dock = dock().children(
+    // recipe構文は状態を監視して変更があれば自動でUIを再構築する動的なコンポーネント定義（ただの都合いい構文で実装できるかはわからない...）
+    // ここだとDock全体の構造を定義している
+    recipe dock: AppState = dock().children(
+        // 収集したアプリ情報の配列（apps）をループで回して、一つずつアイコンのパスを取得
         apps.map { as info, i:
+            // 各アプリのアイコンコンポーネントを生成
             appIcon(name: info.name)
-                .image(icon ?? icons.noImage)
-                .selected(i == index)
-                .onTap {
-                    process.exec(entry in apps_dir)
+                .image(info.icon ?? icons.noImage)          // アイコン画像を設定。情報がなければviewKitの画像なしアイコンを表示
+                .selected(i == index, appIcon.selected)     // 現在のiが選択中のindexと一致するか判定して選択されてたら選択時のアニメーション再生
+                .onClick {                                  // アイコンがクリックされた時の挙動を定義
+                    process.exec(info.entry in info.path)   // そのアプリのディレクトリ内にあるエントリーを起動
                 }
         }
     )
@@ -48,4 +56,18 @@ fn main() {
     let mut window = viewKit.window.create() with children(
         dock: App.dock,
     )
+
+    // イベントループ
+    window.onKeyTap { as key:
+        match key {
+            .right  => App.state.index += 1,    // 右矢印で+1
+            .left   => App.state.index -= 1,    // 左矢印で-1（u32なのでマイナスの値になってもそれ以上は下がらない）
+            .enter  => {                        // Enterで実行
+                let app = App.apps[App.state.index]
+                process.exec(app.entry in app.path)
+            },
+            .esc    => process.exit(0)
+            _       => { _ }
+        }
+    }
 }
