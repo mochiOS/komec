@@ -4,8 +4,10 @@ use inkwell::context::Context;
 use inkwell::OptimizationLevel;
 use pest_derive::Parser;
 use pest::Parser;
+use crate::codegen::CodegenContext;
 
 mod ast;
+mod codegen;
 
 #[derive(Parser)]
 #[grammar = "syntax/main.pest"]
@@ -72,7 +74,7 @@ fn main() {
 
     if debug == true {
         println!("Generated AST:");
-        for stmt in ast_state {
+        for stmt in &ast_state {
             println!("{:?}", stmt);
         }
     }
@@ -81,32 +83,27 @@ fn main() {
     let module = context.create_module("main");
     let builder = context.create_builder();
 
-    // 基本型の定義
     let i32_type = context.i32_type();
-    let i8_ptr_type = context.ptr_type(inkwell::AddressSpace::from(0u16));
-
-    // printf関数
-    let printf_fn_type = i32_type.fn_type(&[i8_ptr_type.into()], true);
-    let printf_function = module.add_function("printf", printf_fn_type, None);
-
-    // main関数
     let main_fn_type = i32_type.fn_type(&[], false);
     let main_function = module.add_function("main", main_fn_type, None);
-
     let entry_basic_block = context.append_basic_block(main_function, "entry");
     builder.position_at_end(entry_basic_block);
 
-    // TODO: ここで本来はさっき作った `ast_statements` をループで回す
+    let mut codegen = CodegenContext {
+        context: &context,
+        builder: &builder,
+        module: &module,
+        variables: std::collections::HashMap::new(),
+    };
 
-    let hw_string_ptr = builder.build_global_string_ptr("Hello, world!", "hw")
-        .expect("Failed to create global string pointer");
+    // ASTの配列を渡してLLVM IRを生成する
+    codegen.compile_statements(&ast_state);
 
-    builder.build_call(printf_function, &[hw_string_ptr.as_pointer_value().into()], "call")
-        .expect("Failed to call printf");
-
+    // main関数の終端（とりあえず0返す）
     builder.build_return(Some(&i32_type.const_int(0, false)))
         .expect("main function should return a value");
 
+    // JIT実行
     let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
     unsafe {
         execution_engine.get_function::<unsafe extern "C" fn()>("main").unwrap().call();
