@@ -354,6 +354,15 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 }),
             }
         }
+        Rule::bundle_stmt => {
+            let mut inner_pairs = pair.into_inner();
+            let name = inner_pairs.next().unwrap().as_str().to_string();
+            let mut body = Vec::new();
+            for stmt_pair in inner_pairs {
+                body.push(parse_stmt(stmt_pair));
+            }
+            Stmt::Bundle { name, body }
+        }
         _ => {
             println!("Rule: {:?}, Text: '{}'", pair.as_rule(), pair.as_str());
             unreachable!("Undefined: {:?}", pair.as_rule())
