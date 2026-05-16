@@ -127,6 +127,12 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 .into_inner().map(|p| p.as_str().to_string()).collect();
             Stmt::Import(path)
         }
+        Rule::expr_stmt => {
+            let in_expr = pair.into_inner().next().unwrap();        // expr_stmtの中にある実際の式
+            let expr = parse_expr(in_expr);                             // parse_exprを呼び出してExpr型に変換
+            Stmt::ExprStmt(expr)
+        }
+
         _ => unreachable!("Undefined: {:?}", pair.as_rule()),
     }
 }

@@ -2,8 +2,9 @@ use crate::ast::{Stmt, Expr, Op};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::values::{BasicValue, PointerValue};
+use inkwell::values::{BasicValue, PointerValue, ValueKind};
 use std::collections::HashMap;
+use crate::ast;
 
 /// ASTからLLVM IRを生成するコンテキスト
 pub struct CodegenContext<'a, 'ctx> {
@@ -89,6 +90,37 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .as_basic_value_enum()
                     }
                     _ => todo!("Codegen: Unknown binary op: {:?}", op),
+                }
+            }
+            Expr::CallChain { head, tails} => {
+                // LLVM moduleなるものから関数を探す
+                if let Some(ast::Accessor::Method(args)) = tails.first() {
+                    let function = self.module.get_function(head)
+                        .expect(&format!("Undefined function: {}", head));
+
+                    // 引数をLLVM Valueに変換
+                    let mut llvm_args = Vec::new();
+
+                    for arg in args {
+                        let val = self.compile_expr(arg);
+                        llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(val));
+                    }
+
+                    let call = self.builder.build_call(function, &llvm_args, "calltmp")
+                        .expect("Codegen: Failed to build function call");
+
+                    // 返り値の処理
+                    match call.try_as_basic_value() {
+                        ValueKind::Basic(val) => {
+                            val
+                        }
+                        // Voidとかでも一旦0: i32を返す
+                        ValueKind::Instruction(_) => {
+                            self.context.i32_type().const_int(0, false).as_basic_value_enum()
+                        }
+                    }
+                } else {
+                    panic!("Codegen: Undefined function: {}", head);
                 }
             }
             // TODO: 文字列などはまた実装
