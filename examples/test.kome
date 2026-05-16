@@ -12,4 +12,13 @@ fn main() {
     } else {
         printf("The sum is not greater than 10\n")
     }
+
+    while c > 0 {
+        printf("Current value of c: %d\n", c)
+        c -= 1
+    }
+
+    for i in 0..5 {
+        printf("Loop iteration: %d\n", i)
+    }
 }

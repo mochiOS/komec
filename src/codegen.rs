@@ -22,7 +22,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     pub fn compile_statements(&mut self, statements: &[Stmt]) {
         for stmt in statements {
             match stmt {
-                Stmt::Declaration { is_state, is_mut, name, value, range: _range } => {
+                Stmt::Declaration { is_public, is_state, is_mut, name, value, range: _range } => {
                     // 右辺の式を評価してLLVM Valueに変換
                     let llvm_value = self.compile_expr(value);
 
@@ -38,8 +38,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     // この変数を使えるようにシンボルテーブルに登録
                     self.variables.insert(name.clone(), alloc);
 
-                    // TODO: is_stateやrange(within ~ cycle)のロジックは、変数への代入命令を処理するときに境界チェックを行うBasic Blockを挟む形で実装する
-                    debug!("Codegen: Generated variable '{}' (state: {}, mut: {})", name, is_state, is_mut);
+                    // TODO: is_publicがtrueの場合、モジュール外から参照できるようにグローバル化するか、または、所属しているBundleの構造体に含める処理をここにはさむ。
+                    // is_stateやrange(within ~ cycle)のロジックは、変数への代入命令を処理するときに境界チェックを行うBasic Blockを挟む形で実装する
+                    debug!("Codegen: Generated variable '{}' (public: {}, state: {}, mut: {})", name, is_public, is_state, is_mut);
                 }
                 Stmt::Import(path) => {
                     let full_path = path.join(".");
@@ -54,7 +55,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::ExprStmt(expr) => {
                     self.compile_expr(expr);
                 }
-                Stmt::FnDecl { name, body } => {
+
+                #[allow(unused)]
+                Stmt::FnDecl { is_public, name, body } => {
+                    // TODO: 必要に応じて is_public の情報を compile_function に引き渡す
                     self.compile_function(name, body);
                 }
                 Stmt::If { condition, then_body, else_body } => {
@@ -99,6 +103,33 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     // 合流
                     self.builder.position_at_end(merge_bb);
+                }
+
+                Stmt::Bundle { name, body } => {
+                    debug!("Codegen: Entering bundle namespace: {}", name);
+                    // TODO: 内部の変数やレシピをこの名前空間に紐付ける処理（シンボルテーブルの階層化など）
+                    self.compile_statements(body);
+                }
+
+                #[allow(unused)]
+                Stmt::Recipe { is_public, name, state_deps, body } => {
+                    debug!("Codegen: Compiling recipe '{}' (public: {}, deps: {:?})", name, is_public, state_deps);
+                    // TODO: 構造を返す隠しLLVM関数の生成
+                }
+
+                Stmt::Assignment { is_default, name, value } => {
+                    debug!("Codegen: Assigning to '{}' (is_default: {})", name, is_default);
+                    let new_llvm_value = self.compile_expr(value);
+
+                    if let Some(alloc_ptr) = self.variables.get(name) {
+                        // 3. 値をメモリに書き戻す (store)
+                        self.builder.build_store(*alloc_ptr, new_llvm_value)
+                            .expect("Failed to store updated value");
+
+                        // TODO: もし対象の変数がstateなら、ここにrecipeの再評価のフックを仕込む
+                    } else {
+                        panic!("Codegen Error: Variable '{}' not found for assignment", name);
+                    }
                 }
                 _ => debug!("Codegen: Unknown statement: {:?}", stmt),
             }

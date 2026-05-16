@@ -14,6 +14,7 @@ stmt = {
 }
 
 visibility = { "public" }
+block = { "{" ~ stmt* ~ "}" }
 
 // インポート
 import_stmt = { "use" ~ path }
@@ -75,7 +76,7 @@ then_block = { "{" ~ stmt* ~ "}" }
 else_block = { "{" ~ stmt* ~ "}" }
 
 // while
-while_stmt = { "while" ~ expr ~ "{" ~ stmt* ~ "}" }
+while_stmt = { "while" ~ expr ~ block }
 
 // for
 for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "{" ~ stmt* ~ "}" }

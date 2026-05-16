@@ -17,6 +17,7 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     Declaration {
+        is_public: bool,
         is_state: bool,
         is_mut: bool,
         name: String,
@@ -25,6 +26,7 @@ pub enum Stmt {
     },
     ExprStmt(Expr),
     FnDecl {
+        is_public: bool,
         name: String,
         body: Vec<Stmt>,
     },
@@ -32,7 +34,28 @@ pub enum Stmt {
         condition: Expr,
         then_body: Box<Stmt>,
         else_body: Option<Box<Stmt>>,
-    }
+    },
+    While {
+        condition: Expr,
+        body: Box<Stmt>,
+    },
+    For {
+        init: Expr,
+        condition: Expr,
+        update: Option<Expr>,
+        body: Box<Stmt>,
+    },
+    Recipe {
+        is_public: bool,
+        name: String,
+        state_deps: Vec<String>,
+        body: Expr,
+    },
+    Assignment {
+        is_default: bool,
+        name: String,
+        value: Expr,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +135,12 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
 
             let mut next = inner.next().unwrap();
 
+            let mut public = false;
+            if next.as_rule() == Rule::visibility {
+                public = true;
+                next = inner.next().unwrap();
+            }
+
             if next.as_rule() == Rule::state_kw {
                 is_state = true;
                 next = inner.next().unwrap();
@@ -132,6 +161,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let range = inner.next().map(|p| parse_range_limit(p));
 
             Stmt::Declaration {
+                is_public: public,
                 is_state,
                 is_mut,
                 name,
@@ -153,12 +183,17 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let mut inner = pair.into_inner();
             let name = inner.next().unwrap().as_str().to_string();
 
+            let mut public = false;
+            if inner.peek().map_or(false, |p| p.as_rule() == Rule::visibility) {
+                public = true;
+            }
+
             let mut body = Vec::new();
             for stmt_pair in inner {
                 let inner_stmt = stmt_pair.into_inner().next().unwrap();
                 body.push(parse_stmt(inner_stmt));
             }
-            Stmt::FnDecl { name, body }
+            Stmt::FnDecl { is_public: public, name, body }
         }
 
         Rule::if_stmt => {
