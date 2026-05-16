@@ -61,7 +61,12 @@ pub enum Accessor {
 #[derive(Debug)]
 #[allow(unused)]
 pub enum Op {
-    Add, Sub, In, Question, // ??
+    Add,
+    Sub,
+    Mul,
+    Div,
+    In,
+    Question, // ??
 }
 
 /// `pest` のパース結果から単一の文を解析してASTの `Stmt` へ変換する
