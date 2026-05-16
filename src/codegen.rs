@@ -141,6 +141,13 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     panic!("Codegen: Undefined function: {}", head);
                 }
             }
+            Expr::String(s) => {
+                let global_str_ptr = self.builder
+                    .build_global_string_ptr(s, "str_literal")
+                    .expect("Codegen: Failed to get global string");
+
+                global_str_ptr.as_basic_value_enum()
+            }
             // TODO: 文字列などはまた実装
             _ => panic!("Codegen: Undefined expression: {:?}", expr),
         }
