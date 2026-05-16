@@ -99,6 +99,11 @@ fn main() {
     // ASTの配列を渡してLLVM IRを生成する
     codegen.compile_statements(&ast_state);
 
+    if debug == true {
+        println!("\nGenerated LLVM IR:");
+        codegen.module.print_to_stderr();
+    }
+
     // main関数の終端（とりあえず0返す）
     builder.build_return(Some(&i32_type.const_int(0, false)))
         .expect("main function should return a value");
