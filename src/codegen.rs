@@ -78,6 +78,16 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .expect("Failed to build sub instruction")
                             .as_basic_value_enum()
                     }
+                    Op::Mul => {
+                        self.builder.build_int_mul(left_val.into_int_value(), right_val.into_int_value(), "multmp")
+                            .expect("Failed to build mul instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Div => {
+                        self.builder.build_int_signed_div(left_val.into_int_value(), right_val.into_int_value(), "divtmp")
+                            .expect("Failed to build div instruction")
+                            .as_basic_value_enum()
+                    }
                     _ => todo!("Codegen: Unknown binary op: {:?}", op),
                 }
             }
