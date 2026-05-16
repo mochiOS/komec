@@ -410,7 +410,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             }
 
             Stmt::ExprStmt(Expr::Block(body))
-        },
+        }
         _ => {
             println!("Rule: {:?}, Text: '{}'", pair.as_rule(), pair.as_str());
             unreachable!("Undefined: {:?}", pair.as_rule())
@@ -508,6 +508,13 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                 Expr::CallChain { head, tails }
             }
         }
+        Rule::block => {
+            let mut body = Vec::new();
+            for stmt_pair in pair.into_inner() {
+                body.push(parse_stmt(stmt_pair));
+            }
+            Expr::Block(body)
+        },
         Rule::integer => Expr::Integer(pair.as_str().parse().unwrap()),
         Rule::string => Expr::String(pair.into_inner().next().unwrap().as_str().to_string()),
         Rule::ident => Expr::Ident(pair.as_str().to_string()),
