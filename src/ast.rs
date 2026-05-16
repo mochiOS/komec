@@ -75,7 +75,15 @@ pub enum Op {
     Mul,
     Div,
     In,
-    Question, // ??
+    Question,
+    Or,
+    And,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
 }
 
 /// `pest` のパース結果から単一の文を解析してASTの `Stmt` へ変換する
@@ -214,6 +222,14 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                     "/" => Op::Div,
                     "in" => Op::In,
                     "??" => Op::Question,
+                    "||" | "or" => Op::Or,
+                    "&&" | "and" => Op::And,
+                    "==" => Op::Eq,
+                    "!=" => Op::Neq,
+                    "<" => Op::Lt,
+                    ">" => Op::Gt,
+                    "<=" => Op::Le,
+                    ">=" => Op::Ge,
                     _ => todo!("Undefined op: {}", op_pair.as_str()),
                 };
                 let right_term = parse_expr(inner.next().unwrap());

@@ -6,4 +6,10 @@ fn main() {
     let c = a + b
 
     printf("The sum of %d and %d is %d\n", a, b, c)
+
+    if c > 10 {
+        printf("The sum is greater than 10\n")
+    } else {
+        printf("The sum is not greater than 10\n")
+    }
 }

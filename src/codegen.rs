@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::IntPredicate;
 use inkwell::module::Module;
 use inkwell::values::{BasicValue, PointerValue, ValueKind};
 use log::debug;
@@ -137,7 +138,54 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .expect("Failed to build div instruction")
                             .as_basic_value_enum()
                     }
-                    _ => todo!("Codegen: Unknown binary op: {:?}", op),
+                    Op::Eq => { // ==
+                        self.builder.build_int_compare(IntPredicate::EQ, left_val.into_int_value(), right_val.into_int_value(), "eqtmp")
+                            .expect("Failed to build icmp eq instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Neq => { // !=
+                        self.builder.build_int_compare(IntPredicate::NE, left_val.into_int_value(), right_val.into_int_value(), "netmp")
+                            .expect("Failed to build icmp ne instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Lt => { // <
+                        self.builder.build_int_compare(IntPredicate::SLT, left_val.into_int_value(), right_val.into_int_value(), "lttmp")
+                            .expect("Failed to build icmp slt instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Gt => { // >
+                        self.builder.build_int_compare(IntPredicate::SGT, left_val.into_int_value(), right_val.into_int_value(), "gttmp")
+                            .expect("Failed to build icmp sgt instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Le => { // <=
+                        self.builder.build_int_compare(IntPredicate::SLE, left_val.into_int_value(), right_val.into_int_value(), "letmp")
+                            .expect("Failed to build icmp sle instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Ge => { // >=
+                        self.builder.build_int_compare(IntPredicate::SGE, left_val.into_int_value(), right_val.into_int_value(), "getmp")
+                            .expect("Failed to build icmp sge instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::And => { // &&
+                        self.builder.build_and(left_val.into_int_value(), right_val.into_int_value(), "andtmp")
+                            .expect("Failed to build logical and instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Or => { // ||
+                        self.builder.build_or(left_val.into_int_value(), right_val.into_int_value(), "ortmp")
+                            .expect("Failed to build logical or instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::In => {
+                        // TODO: 実装
+                        todo!("Codegen: 'in' operator is not yet implemented.")
+                    }
+                    Op::Question => {
+                        // TODO: Null合体演算子実装
+                        todo!("Codegen: '??' operator is not yet implemented.")
+                    }
                 }
             }
             Expr::CallChain { head, tails} => {
