@@ -154,6 +154,8 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                 let op = match op_pair.as_str() {
                     "+" => Op::Add,
                     "-" => Op::Sub,
+                    "*" => Op::Mul,
+                    "/" => Op::Div,
                     "in" => Op::In,
                     "??" => Op::Question,
                     _ => todo!("Undefined op: {}", op_pair.as_str()),
