@@ -14,7 +14,14 @@ pub struct CodegenContext<'a, 'ctx> {
     pub context: &'ctx Context,
     pub builder: &'a Builder<'ctx>,
     pub module: &'a Module<'ctx>,
-    pub variables: HashMap<String, PointerValue<'ctx>>,
+    pub variables: HashMap<String, VariableInfo<'ctx>>,
+}
+
+/// 変数の情報
+#[derive(Clone, Debug)]
+pub struct VariableInfo<'ctx> {
+    pub ptr: PointerValue<'ctx>,
+    pub is_state: bool,
 }
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
@@ -22,25 +29,23 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     pub fn compile_statements(&mut self, statements: &[Stmt]) {
         for stmt in statements {
             match stmt {
+                #[allow(unused)]
                 Stmt::Declaration { is_public, is_state, is_mut, name, value, range: _range } => {
-                    // 右辺の式を評価してLLVM Valueに変換
                     let llvm_value = self.compile_expr(value);
-
-                    // TODO: 一旦i32固定としてやってるので型推論つくる
                     let i32_type = self.context.i32_type();
                     let alloc = self.builder.build_alloca(i32_type, name)
                         .expect("Failed to allocate variable");
 
-                    // 確保した領域に初期値をストア (store)
                     self.builder.build_store(alloc, llvm_value)
                         .expect("Failed to store initial value");
 
-                    // この変数を使えるようにシンボルテーブルに登録
-                    self.variables.insert(name.clone(), alloc);
+                    let info = VariableInfo {
+                        ptr: alloc,
+                        is_state: *is_state,
+                    };
+                    self.variables.insert(name.clone(), info);
 
-                    // TODO: is_publicがtrueの場合、モジュール外から参照できるようにグローバル化するか、または、所属しているBundleの構造体に含める処理をここにはさむ。
-                    // is_stateやrange(within ~ cycle)のロジックは、変数への代入命令を処理するときに境界チェックを行うBasic Blockを挟む形で実装する
-                    debug!("Codegen: Generated variable '{}' (public: {}, state: {}, mut: {})", name, is_public, is_state, is_mut);
+                    debug!("Codegen: Generated variable '{}' (state: {})", name, is_state);
                 }
                 Stmt::Import(path) => {
                     let full_path = path.join(".");
@@ -121,12 +126,36 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     debug!("Codegen: Assigning to '{}' (is_default: {})", name, is_default);
                     let new_llvm_value = self.compile_expr(value);
 
-                    if let Some(alloc_ptr) = self.variables.get(name) {
-                        // 3. 値をメモリに書き戻す (store)
-                        self.builder.build_store(*alloc_ptr, new_llvm_value)
-                            .expect("Failed to store updated value");
+                    if let Some(info) = self.variables.get(name) {
 
-                        // TODO: もし対象の変数がstateなら、ここにrecipeの再評価のフックを仕込む
+                        // 値をメモリ（allocaポインタ）に書き戻す
+                        self.builder.build_store(info.ptr, new_llvm_value)
+                            .expect(&format!("Failed to store value for variable '{}'", name));
+
+                        // もし対象の変数がstate変数だった場合通知関数を仕込む
+                        if info.is_state {
+                            // モジュールから通知関数（プロトタイプ）を取得
+                            let notify_fn = match self.module.get_function("__kome_runtime_notify_change") {
+                                Some(f) => f,
+                                None => {
+                                    // なければその場で外部関数として登録void __kome_runtime_notify_change(char*)
+                                    let void_type = self.context.void_type();
+                                    let i8_ptr_type = self.context.i32_type().ptr_type(inkwell::AddressSpace::from(0));
+                                    let fn_type = void_type.fn_type(&[i8_ptr_type.into()], false);
+                                    self.module.add_function("__kome_runtime_notify_change", fn_type, None)
+                                }
+                            };
+
+                            // 変数名の文字列をLLVMのグローバル文字列ポインタとして生成
+                            let var_name_global = self.builder.build_global_string_ptr(name, "state_var_name")
+                                .expect("Failed to generate global string ptr");
+
+                            // 関数を呼び出す命令（Call）を挿入
+                            self.builder.build_call(notify_fn, &[var_name_global.as_pointer_value().into()], "notify_call")
+                                .expect("Failed to build runtime notify call");
+
+                            debug!("Codegen: Inserted state change hook for '{}'", name);
+                        }
                     } else {
                         panic!("Codegen Error: Variable '{}' not found for assignment", name);
                     }
@@ -180,19 +209,24 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         panic!("Codegen Error: Invalid for loop condition structure");
                     };
 
-                    let alloc_ptr = if let Some(alloc) = self.variables.get(&loop_var_name) {
-                        *alloc
+                    // 修正: VariableInfoの参照ではなく、内部の ptr (PointerValue) を直接コピーして受け取る
+                    let loop_var_ptr = if let Some(info) = self.variables.get(&loop_var_name) {
+                        info.ptr // コピーされるため、ここで self の借用は終わる
                     } else {
                         let i32_type = self.context.i32_type();
                         let new_alloc = self.builder.build_alloca(i32_type, &loop_var_name)
                             .expect("Failed to allocate for-loop variable");
 
-                        self.variables.insert(loop_var_name.clone(), new_alloc);
+                        self.variables.insert(
+                            loop_var_name.clone(),
+                            VariableInfo { ptr: new_alloc, is_state: false }
+                        );
                         new_alloc
                     };
 
+                    // 修正: alloc_ptr.ptr ではなく、上で取り出した loop_var_ptr を使う
                     let start_val = self.compile_expr(init);
-                    self.builder.build_store(alloc_ptr, start_val)
+                    self.builder.build_store(loop_var_ptr, start_val)
                         .expect("Failed to store for-loop init value");
 
                     let cond_bb = self.context.append_basic_block(parent_func, "for_cond");
@@ -211,16 +245,18 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     // ループ本体
                     self.builder.position_at_end(body_bb);
-                    if let Stmt::Bundle { body: body_stmts, .. } = &**body {
-                        self.compile_statements(body_stmts);
-                    } else {
-                        self.compile_statements(&[*body.clone()]);
-                    }
 
+                    let stmts_to_compile: Vec<Stmt> = match &**body {
+                        Stmt::Bundle { body: body_stmts, .. } => body_stmts.clone(),
+                        other_stmt => vec![other_stmt.clone()],
+                    };
+
+                    // これでもうどこからも self は借用されていないので、安全に呼び出せます！
+                    self.compile_statements(&stmts_to_compile);
                     // インクリメント
                     if let Some(update_expr) = update {
                         let next_val = self.compile_expr(update_expr);
-                        self.builder.build_store(alloc_ptr, next_val)
+                        self.builder.build_store(loop_var_ptr, next_val)
                             .expect("Failed to update for-loop counter");
                     }
 
@@ -252,7 +288,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 let alloc = self.variables.get(name)
                     .expect(&format!("Undefined variable: {}", name));
                 let i32_type = self.context.i32_type();
-                self.builder.build_load(i32_type, *alloc, name)
+                self.builder.build_load(i32_type, alloc.ptr, name)
                     .expect("Failed to load variable")
             }
             Expr::BinaryOp {left, op, right} => {
