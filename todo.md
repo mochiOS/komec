@@ -32,7 +32,7 @@
 * [ ] `cycle`: 上限を超えたら `0` に戻すロジック
 * [ ] `clamp`: 上限で値を止めるロジック（`min`/`max` 処理）
 
-## Phase 3: 制御構文とクロージャの解析
+## 制御構文とクロージャの解析
 
 高階関数（`.filter {}` や `.map {}`）や `match` 文をパースし、データ構造に落とし込む。
 
@@ -44,7 +44,7 @@
 * [ ] **制御フローの Codegen**
 * [ ] `match` 文を LLVM の `switch` 命令または連続する `br` 命令に変換
 
-## Phase 4: `bundle` と宣言的UI (viewKit) の統合
+## `bundle` と宣言的UI (viewKit) の統合
 
 最終目標である、コンポーネント定義とイベントループを動作させる。
 
@@ -62,3 +62,52 @@
 
 * [ ] **型推論 (Type Inference)**: `let mut index = 0` から自動的に`i32`だと判定する仕組みの導入
 * [ ] **エラーハンドリングの改善**: パースエラーやコンパイルエラー時に、ソースコードの行数と列数をわかりやすく表示する
+
+## UI表示
+  まずは `clicked = 1` のように、既存の変数のメモリを書き換える仕組みを作ります。
+
+- [ ] **Pest文法の拡張: 代入文 (`assignment`)**
+  - `ident = expr` や `!default ident = expr` を解析できるようにする。
+- [ ] **ASTの定義追加**
+  - `Stmt::Assign { name: String, value: Expr }` の追加。
+- [ ] **Codegenの実装 (`build_store`)**
+  - `variables` マップから `alloca` されたポインタを検索する。
+  - `self.builder.build_store(pointer, new_value)` を実装し、メモリ書き換えを可能にする。
+
+## 文字列リテラルと関数呼び出しのサポート
+`text("Hello, world!")` や `card().children(...)` をLLVM側で正しく扱えるようにします。
+
+- [ ] **文字列リテラル (`Expr::Str`) のCodegen実装**
+  - `self.builder.build_global_string_ptr` を使い、LLVMのグローバル領域に文字列ポインタを配置する仕組み。
+- [ ] **関数・メソッド呼び出し (`Expr::Call` / `Expr::MethodCall`) のCodegen実装**
+  - `viewKit` 側の関数（C互換インターフェース）のプロトタイプをLLVMに登録する。
+  - `self.builder.build_call` で関数を呼び出し、戻り値（コンポーネントのポインタ）を受け取る。
+
+## `bundle`（名前空間・状態構造体）の実装
+`bundle App { ... }` を単なる関数の集まりではなく、プログラム全体で共有する「状態データの塊」として実体化します。
+
+- [ ] **Pest文法とASTの拡張: `bundle` スコープ**
+- [ ] **LLVM 構造体 (`StructType`) の生成**
+  - `bundle` 内の `state` 変数たちをメンバに持つ LLVM 構造体型を定義する。
+- [ ] **グローバルインスタンスの配置**
+  - アプリ起動時に、この状態構造体をグローバル変数として1つ確保する。
+
+## `recipe`（リアクティブ）と `is =>`（UIパターンマッチ）
+Kome言語のコア機能である、状態監視と、昨日成功させたBasic Block（分岐）の応用です。
+
+- [ ] **`is <target> <value> => <expr>` 構文のCodegen実装**
+  - ターゲット（例: `clicked`）の値をロードする。
+  - `IntPredicate::EQ` で値とマッチ条件（例: `0`）を比較する。
+  - 昨日実装した `Stmt::If` の仕組みを応用し、条件に応じたコンポーネント（`text(...)`）を生成するBasic Blockの条件分岐チェーンを作る。
+- [ ] **依存関係（通知システム）の組み込み**
+  - `recipe card: clicked` の定義を見て、`clicked` の変更時（Phase 1の代入時）に、このレシピ関数を強制的に再実行してUIを差し替える隠しLLVM命令を注入する。
+
+## `viewKit`とのリンク
+Rustで書かれた実際の画面描画エンジン（`viewKit`）と、生成したLLVM IRを合体させます。
+
+- [ ] **FFI（外部関数インターフェース）の設定**
+  - `window.create` などの実体となるC互換関数をRustの別クレート（ランタイム）側で用意。
+- [ ] **リンカの接続**
+  - `cargo run` 時、またはJIT起動時に、コンパイルされたLLVMコードと `viewkit` ライブラリを動的にリンクする。
+- [ ] **イベントコールバックの登録**
+  - `window.card.onClick { ... }` の中身をLLVM上の関数としてコンパイルし、その関数ポインタを `viewKit` のイベントループに登録する。
