@@ -81,7 +81,7 @@ pub enum Op {
 /// 文法定義（`.pest`）で許可されているにもかかわらず、この関数内で定義されていない
 /// 未実装のルールが渡された場合、`unreachable!` マクロによってパニックする
 #[allow(unused)]
-fn parse_stmt(pair: Pair<Rule>) -> Stmt {
+pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
     match pair.as_rule() {
         Rule::declaration => {
             let mut inner = pair.into_inner();
