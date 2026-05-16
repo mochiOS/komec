@@ -80,7 +80,7 @@ else_block = { "{" ~ stmt* ~ "}" }
 while_stmt = { "while" ~ expr ~ block }
 
 // for
-for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "{" ~ stmt* ~ "}" }
+for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "~" ~ expr ~ block }
 
 // recipe
 recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ expr }
