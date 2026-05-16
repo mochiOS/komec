@@ -272,17 +272,17 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let value = parse_expr(raw_value_pair);
 
             let final_value = match op_pair.as_rule() {
-                Rule::sub => {
+                Rule::sub_assign | Rule::sub => {
                     Expr::BinaryOp {
                         op: Op::Sub,
-                        left: Box::new(Expr::Integer(name.clone().parse().unwrap())),
+                        left: Box::new(Expr::Ident(name.clone())),
                         right: Box::new(value),
                     }
                 }
-                Rule::add => {
+                Rule::add_assign | Rule::add => {
                     Expr::BinaryOp {
                         op: Op::Add,
-                        left: Box::new(Expr::Integer(name.clone().parse().unwrap())),
+                        left: Box::new(Expr::Ident(name.clone())),
                         right: Box::new(value),
                     }
                 }
@@ -295,6 +295,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 value: final_value,
             }
         }
+
         Rule::for_stmt => {
             let mut inner = pair.into_inner();
 
