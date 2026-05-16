@@ -225,6 +225,27 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 else_body: else_body.map(|b| Box::new(Stmt::Bundle { name: "else".to_string(), body: b })),
             }
         }
+        Rule::while_stmt => {
+            let mut inner = pair.into_inner();
+            let condition = parse_expr(inner.next().unwrap());
+
+            // 2つ目の要素（blockルール）を取り出す
+            let block_pair = inner.next().unwrap();
+            let mut body_stmts = Vec::new();
+
+            // blockの中身({" ~ stmt* ~ "})をめくる
+            for stmt_pair in block_pair.into_inner() {
+                body_stmts.push(parse_stmt(stmt_pair));
+            }
+
+            Stmt::While {
+                condition,
+                body: Box::new(Stmt::Bundle {
+                    name: "while_body".to_string(),
+                    body: body_stmts,
+                }),
+            }
+        }
 
         _ => unreachable!("Undefined: {:?}", pair.as_rule()),
     }

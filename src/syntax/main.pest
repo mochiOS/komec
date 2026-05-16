@@ -6,11 +6,12 @@ stmt = {
     | bundle_stmt
     | fn_decl
     | if_stmt
+    | assignment
     | declaration
-    | expr_stmt
     | while_stmt
     | for_stmt
     | recipe_stmt
+    | expr_stmt
 }
 
 visibility = { "public" }
@@ -83,6 +84,14 @@ for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "{" ~ stmt* ~ "}" }
 
 // recipe
 recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ expr }
+
+assignment = { ("!default")? ~ ident ~ assignment_op ~ expr }
+
+// 代入演算子
+assignment_op = _{ assign | sub_assign | add_assign }
+assign     = { "=" }
+sub_assign = { "-=" }
+add_assign = { "+=" }
 
 constant = { string | integer | boolean | none }
 boolean = { "true" | "false" }
