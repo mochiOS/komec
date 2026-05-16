@@ -10,10 +10,8 @@ bundle App {
 }
 
 fn main() {
-    let app = App               // Appバンドルをインスタンス化
-
     keyboard.onPress(any) {
-        app.Index += 1          // キーが押されるたびにIndexをインクリメント
+        App.Index += 1          // キーが押されるたびにIndexをインクリメント
     };
 }
 
