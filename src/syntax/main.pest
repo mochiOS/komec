@@ -47,7 +47,7 @@ property_access = { "." ~ ident }
 child_access = { "with" ~ ident ~ "(" ~ (kv_pair ~ ("," ~ kv_pair)*)? ~ ")" }
 
 // 演算子
-infix_op = _{ add | sub | mul | div | pipe | question | in_op }
+infix_op = _{ add | sub | mul | div | pipe | question | in_op | or | and | eq | neq | lt | gt | le | ge }
 add = { "+" }
 sub = { "-" }
 mul = { "*" }
@@ -55,6 +55,14 @@ div = { "/" }
 pipe = { "|" }
 question = { "??" }
 in_op = { "in" } // path生成用の 'in' 演算子（example: "about.toml" in app_dirで{app_dir}/about.toml）
+or = { "or" | "||" }
+and = { "and" | "&&" }
+eq = { "==" }
+neq = { "!=" }
+lt = { "<" }
+gt = { ">" }
+le = { "<=" }
+ge = { ">=" }
 
 // コントロールフロー
 if_stmt = { "if" ~ expr ~ then_block ~ ("else" ~ else_block)? }
