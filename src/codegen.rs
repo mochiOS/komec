@@ -38,8 +38,23 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     // TODO: is_stateやrange(within ~ cycle)のロジックは、変数への代入命令を処理するときに境界チェックを行うBasic Blockを挟む形で実装する
                     println!("Codegen: Generated variable '{}' (state: {}, mut: {})", name, is_state, is_mut);
                 }
-                Stmt::Import(_) => {
-                    // インポートはコンパイル時のメタ情報やからLLVM命令の生成はスキップ
+                Stmt::Import(path) => {
+
+                    // TODO: めっちゃハードコードしてるので自動でパス解決できるようにする
+
+                    if path.len() == 2 && path[0] == "libc" && path[1] == "stdio" {
+                        println!("Codegen: Importing path '{:?}'", path);
+                        let i32_type = self.context.i32_type();
+                        let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::from(0));
+
+                        let printf_type = i32_type.fn_type(&[i8_ptr_type.into()], true);
+
+                        if self.module.get_function("printf").is_none() {
+                            self.module.add_function("printf", printf_type, None);
+                        }
+                    } else {
+                        panic!("Codegen: Unknown import path '{:?}'", path);
+                    }
                 }
                 Stmt::ExprStmt(expr) => {
                     self.compile_expr(expr);
