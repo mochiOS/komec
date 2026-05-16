@@ -49,7 +49,7 @@ term = {
 
 // メソッドチェーン viewKit.window.create().with(...)
 call_chain = { (ident | path) ~ (child_access | method_call | property_access)* }
-method_call = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+method_call = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" ~ block? }
 property_access = { "." ~ ident }
 child_access = { "with" ~ ident ~ "(" ~ (kv_pair ~ ("," ~ kv_pair)*)? ~ ")" }
 
