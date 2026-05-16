@@ -20,7 +20,7 @@ fn main() {
     env_logger::init();
     let args: Vec<String> = env::args().collect();
 
-    unsafe { env::set_var("RUST_LOG", "info"); }
+    unsafe { env::set_var("RUST_LOG", "debug"); }
 
     if args.len() == 1 {
         println!("Usage: {} <source_file>", args[0]);
@@ -96,6 +96,9 @@ fn main() {
 
     // ASTの配列を渡してLLVM IRを生成する
     codegen.compile_statements(&ast_state);
+
+    // デバッグ用LLVM IR
+    //println!("Generated LLVM IR:\n{}", module.print_to_string().to_string());
 
     let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
 

@@ -72,22 +72,32 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.builder.build_conditional_branch(condition.into_int_value(), then_bb, else_bb)
                         .expect("Failed to build conditional branch");
 
-                    // then
+                    // thenブロックの構築
                     self.builder.position_at_end(then_bb);
-                    self.compile_statements(&[*(*then_body).clone()]);
-                    self.builder.build_unconditional_branch(merge_bb)
-                        .expect("Failed to build unconditional branch");
 
-                    // else
-                    self.builder.position_at_end(else_bb);
-                    if let Some(else_stmt_box) = else_body {
-                        self.compile_statements(&[*(*else_stmt_box).clone()]);
+                    if let Stmt::Bundle { body, .. } = &**then_body {
+                        self.compile_statements(body);
+                    } else {
+                        self.compile_statements(&[*then_body.clone()]);
                     }
 
-                    // 合流ブロックにジャンプ
                     self.builder.build_unconditional_branch(merge_bb)
                         .expect("Failed to build unconditional branch");
 
+                    // elseブロックの構築
+                    self.builder.position_at_end(else_bb);
+                    if let Some(else_stmt_box) = else_body {
+                        if let Stmt::Bundle { body, .. } = &**else_stmt_box {
+                            self.compile_statements(body);
+                        } else {
+                            self.compile_statements(&[*else_stmt_box.clone()]);
+                        }
+                    }
+
+                    self.builder.build_unconditional_branch(merge_bb)
+                        .expect("Failed to build unconditional branch");
+
+                    // 合流
                     self.builder.position_at_end(merge_bb);
                 }
                 _ => debug!("Codegen: Unknown statement: {:?}", stmt),
