@@ -1,7 +1,6 @@
+use crate::Rule;
 use pest::iterators::Pair;
 use std::fmt::Debug;
-use log::debug;
-use crate::Rule;
 
 /// ASTの定義
 #[derive(Debug, Clone)]
