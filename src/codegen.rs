@@ -56,6 +56,39 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::FnDecl { name, body } => {
                     self.compile_function(name, body);
                 }
+                Stmt::If { condition, then_body, else_body } => {
+                    let condition = self.compile_expr(condition);
+                    let parent_func = self.builder.get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+
+                    let then_bb = self.context.append_basic_block(parent_func, "then");
+                    let else_bb = self.context.append_basic_block(parent_func, "else");
+                    let merge_bb = self.context.append_basic_block(parent_func, "ifcont");
+
+                    // 条件に応じて分岐
+                    self.builder.build_conditional_branch(condition.into_int_value(), then_bb, else_bb)
+                        .expect("Failed to build conditional branch");
+
+                    // then
+                    self.builder.position_at_end(then_bb);
+                    self.compile_statements(&[*(*then_body).clone()]);
+                    self.builder.build_unconditional_branch(merge_bb)
+                        .expect("Failed to build unconditional branch");
+
+                    // else
+                    self.builder.position_at_end(else_bb);
+                    if let Some(else_stmt_box) = else_body {
+                        self.compile_statements(&[*(*else_stmt_box).clone()]);
+                    }
+
+                    // 合流ブロックにジャンプ
+                    self.builder.build_unconditional_branch(merge_bb)
+                        .expect("Failed to build unconditional branch");
+
+                    self.builder.position_at_end(merge_bb);
+                }
                 _ => debug!("Codegen: Unknown statement: {:?}", stmt),
             }
         }

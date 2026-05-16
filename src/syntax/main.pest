@@ -5,6 +5,7 @@ stmt = {
     | decorator
     | bundle_stmt
     | fn_decl
+    | if_stmt
     | declaration
     | expr_stmt
 }
@@ -54,6 +55,11 @@ div = { "/" }
 pipe = { "|" }
 question = { "??" }
 in_op = { "in" } // path生成用の 'in' 演算子（example: "about.toml" in app_dirで{app_dir}/about.toml）
+
+// コントロールフロー
+if_stmt = { "if" ~ expr ~ then_block ~ ("else" ~ else_block)? }
+then_block = { "{" ~ stmt* ~ "}" }
+else_block = { "{" ~ stmt* ~ "}" }
 
 constant = { string | integer | boolean | none }
 boolean = { "true" | "false" }

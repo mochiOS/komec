@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::Rule;
 
 /// ASTの定義
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(unused)]
 pub enum Stmt {
     Import(Vec<String>),
@@ -27,10 +27,15 @@ pub enum Stmt {
     FnDecl {
         name: String,
         body: Vec<Stmt>,
+    },
+    If {
+        condition: Expr,
+        then_body: Box<Stmt>,
+        else_body: Option<Box<Stmt>>,
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(unused)]
 pub struct RangeLimit {
     pub start: Expr,
@@ -38,7 +43,7 @@ pub struct RangeLimit {
     pub cycle: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(unused)]
 pub enum Expr {
     Ident(String),
@@ -55,14 +60,14 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(unused)]
 pub enum Accessor {
     Property(String),
     Method(Vec<Expr>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(unused)]
 pub enum Op {
     Add,
@@ -146,6 +151,36 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 body.push(parse_stmt(inner_stmt));
             }
             Stmt::FnDecl { name, body }
+        }
+
+        Rule::if_stmt => {
+            let mut inner = pair.into_inner();
+            let condition = parse_expr(inner.next().unwrap());
+
+            // then_block
+            let then_pair = inner.next().unwrap();
+            let mut then_body = Vec::new();
+            for stmt_pair in then_pair.into_inner() {
+                let inner_stmt = stmt_pair.into_inner().next().unwrap();
+                then_body.push(parse_stmt(inner_stmt));
+            }
+
+            // else_block
+            let mut else_body = None;
+            if let Some(else_pair) = inner.next() {
+                let mut else_block_stmts = Vec::new();
+                for stmt_pair in else_pair.into_inner() {
+                    let inner_stmt = stmt_pair.into_inner().next().unwrap();
+                    else_block_stmts.push(parse_stmt(inner_stmt));
+                }
+                else_body = Some(else_block_stmts);
+            }
+
+            Stmt::If {
+                condition,
+                then_body: Box::new(Stmt::Bundle { name: "then".to_string(), body: then_body }),
+                else_body: else_body.map(|b| Box::new(Stmt::Bundle { name: "else".to_string(), body: b })),
+            }
         }
 
         _ => unreachable!("Undefined: {:?}", pair.as_rule()),
