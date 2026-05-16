@@ -131,6 +131,108 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         panic!("Codegen Error: Variable '{}' not found for assignment", name);
                     }
                 }
+
+                Stmt::While { condition, body } => {
+                    let parent_func = self.builder.get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+
+                    let cond_bb = self.context.append_basic_block(parent_func, "while_cond");
+                    let body_bb = self.context.append_basic_block(parent_func, "while_body");
+                    let end_bb = self.context.append_basic_block(parent_func, "while_end");
+
+                    self.builder.build_unconditional_branch(cond_bb)
+                        .expect("Failed to branch to while condition");
+
+                    self.builder.position_at_end(cond_bb);
+                    let cond_val = self.compile_expr(condition);
+                    self.builder.build_conditional_branch(cond_val.into_int_value(), body_bb, end_bb)
+                        .expect("Failed to build while conditional branch");
+
+                    self.builder.position_at_end(body_bb);
+                    if let Stmt::Bundle { body: body_stmts, .. } = &**body {
+                        self.compile_statements(body_stmts);
+                    } else {
+                        self.compile_statements(&[*body.clone()]);
+                    }
+
+                    self.builder.build_unconditional_branch(cond_bb)
+                        .expect("Failed to loop back to while condition");
+
+                    self.builder.position_at_end(end_bb);
+                }
+
+                Stmt::For { init, condition, update, body } => {
+                    let parent_func = self.builder.get_insert_block()
+                        .unwrap()
+                        .get_parent()
+                        .unwrap();
+
+                    // 条件式（i < end）の左辺からループ変数名（"i" など）を特定する
+                    let loop_var_name = if let Expr::BinaryOp { left, .. } = condition {
+                        if let Expr::Ident(name) = &**left {
+                            name.clone()
+                        } else {
+                            panic!("Codegen Error: For loop condition left-hand side must be an identifier");
+                        }
+                    } else {
+                        panic!("Codegen Error: Invalid for loop condition structure");
+                    };
+
+                    let alloc_ptr = if let Some(alloc) = self.variables.get(&loop_var_name) {
+                        *alloc
+                    } else {
+                        let i32_type = self.context.i32_type();
+                        let new_alloc = self.builder.build_alloca(i32_type, &loop_var_name)
+                            .expect("Failed to allocate for-loop variable");
+
+                        self.variables.insert(loop_var_name.clone(), new_alloc);
+                        new_alloc
+                    };
+
+                    let start_val = self.compile_expr(init);
+                    self.builder.build_store(alloc_ptr, start_val)
+                        .expect("Failed to store for-loop init value");
+
+                    let cond_bb = self.context.append_basic_block(parent_func, "for_cond");
+                    let body_bb = self.context.append_basic_block(parent_func, "for_body");
+                    let end_bb = self.context.append_basic_block(parent_func, "for_end");
+
+                    // 条件チェックへジャンプ
+                    self.builder.build_unconditional_branch(cond_bb)
+                        .expect("Failed to branch to for condition");
+
+                    // 条件チェック
+                    self.builder.position_at_end(cond_bb);
+                    let cond_val = self.compile_expr(condition);
+                    self.builder.build_conditional_branch(cond_val.into_int_value(), body_bb, end_bb)
+                        .expect("Failed to build for conditional branch");
+
+                    // ループ本体
+                    self.builder.position_at_end(body_bb);
+                    if let Stmt::Bundle { body: body_stmts, .. } = &**body {
+                        self.compile_statements(body_stmts);
+                    } else {
+                        self.compile_statements(&[*body.clone()]);
+                    }
+
+                    // インクリメント
+                    if let Some(update_expr) = update {
+                        let next_val = self.compile_expr(update_expr);
+                        self.builder.build_store(alloc_ptr, next_val)
+                            .expect("Failed to update for-loop counter");
+                    }
+
+                    // 条件チェックブロックへ戻る
+                    self.builder.build_unconditional_branch(cond_bb)
+                        .expect("Failed to loop back to for condition");
+
+                    self.builder.position_at_end(end_bb);
+
+                    self.variables.remove(&loop_var_name);
+                }
+
                 _ => debug!("Codegen: Unknown statement: {:?}", stmt),
             }
         }

@@ -1,5 +1,6 @@
 use pest::iterators::Pair;
 use std::fmt::Debug;
+use log::debug;
 use crate::Rule;
 
 /// ASTの定義
@@ -128,6 +129,10 @@ pub enum Op {
 #[allow(unused)]
 pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
     match pair.as_rule() {
+        Rule::stmt => {
+            let inner_pair = pair.into_inner().next().unwrap();
+            parse_stmt(inner_pair)
+        }
         Rule::declaration => {
             let mut inner = pair.into_inner();
             let mut is_state = false;
@@ -246,8 +251,113 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 }),
             }
         }
+        Rule::assignment => {
+            let mut inner = pair.into_inner();
+            let mut is_default = false;
 
-        _ => unreachable!("Undefined: {:?}", pair.as_rule()),
+            let mut next = inner.next().unwrap();
+
+            // "!default" キーワードがあるかチェック
+            if next.as_str() == "!default" {
+                is_default = true;
+                next = inner.next().unwrap();
+            }
+
+            // 変数名 (ident)
+            let name = next.as_str().to_string();
+
+            // 演算子 (-= や += などの処理)
+            let op_pair = inner.next().unwrap();
+            let raw_value_pair = inner.next().unwrap();
+            let value = parse_expr(raw_value_pair);
+
+            let final_value = match op_pair.as_rule() {
+                Rule::sub => {
+                    Expr::BinaryOp {
+                        op: Op::Sub,
+                        left: Box::new(Expr::Integer(name.clone().parse().unwrap())),
+                        right: Box::new(value),
+                    }
+                }
+                Rule::add => {
+                    Expr::BinaryOp {
+                        op: Op::Add,
+                        left: Box::new(Expr::Integer(name.clone().parse().unwrap())),
+                        right: Box::new(value),
+                    }
+                }
+                _ => value,
+            };
+
+            Stmt::Assignment {
+                is_default,
+                name,
+                value: final_value,
+            }
+        }
+        Rule::for_stmt => {
+            let mut inner = pair.into_inner();
+
+            // ループ変数名
+            let loop_var = inner.next().unwrap().as_str().to_string();
+
+            // 開始の値
+            let start_expr = parse_expr(inner.next().unwrap());
+
+            // 終了の値
+            let end_expr = parse_expr(inner.next().unwrap());
+
+            // ループの中身
+            let block_pair = inner.next().unwrap();
+            let mut body_stmts = Vec::new();
+            for stmt_pair in block_pair.into_inner() {
+                body_stmts.push(parse_stmt(stmt_pair));
+            }
+
+            Stmt::For {
+                // 初期化式
+                init: start_expr,
+
+                condition: Expr::BinaryOp {
+                    op: Op::Lt,
+                    left: Box::new(Expr::Ident(loop_var.clone())),
+                    right: Box::new(end_expr),
+                },
+
+                update: Some(Expr::BinaryOp {
+                    op: Op::Add,
+                    left: Box::new(Expr::Ident(loop_var.clone())),
+                    right: Box::new(Expr::Integer(1)),
+                }),
+
+                body: Box::new(Stmt::Bundle {
+                    name: "for_body".to_string(),
+                    body: body_stmts,
+                }),
+            }
+        }
+        Rule::while_stmt => {
+            let mut inner = pair.into_inner();
+            let condition = parse_expr(inner.next().unwrap());
+
+            let block_pair = inner.next().unwrap();
+            let mut body_stmts = Vec::new();
+            for stmt_pair in block_pair.into_inner() {
+                body_stmts.push(parse_stmt(stmt_pair));
+            }
+
+            Stmt::While {
+                condition,
+                body: Box::new(Stmt::Bundle {
+                    name: "while_body".to_string(),
+                    body: body_stmts,
+                }),
+            }
+        }
+        _ => {
+            println!("Rule: {:?}, Text: '{}'", pair.as_rule(), pair.as_str());
+            unreachable!("Undefined: {:?}", pair.as_rule())
+        },
     }
 }
 
