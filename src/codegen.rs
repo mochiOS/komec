@@ -41,6 +41,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::Import(_) => {
                     // インポートはコンパイル時のメタ情報やからLLVM命令の生成はスキップ
                 }
+                Stmt::ExprStmt(expr) => {
+                    self.compile_expr(expr);
+                }
                 _ => println!("Codegen: Unknown statement: {:?}", stmt),
             }
         }
