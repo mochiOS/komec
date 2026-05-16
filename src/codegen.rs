@@ -118,8 +118,65 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                 #[allow(unused)]
                 Stmt::Recipe { is_public, name, state_deps, body } => {
-                    debug!("Codegen: Compiling recipe '{}' (public: {}, deps: {:?})", name, is_public, state_deps);
-                    // TODO: 構造を返す隠しLLVM関数の生成
+                    debug!("Codegen: Compiling recipe '{}' (deps: {:?})", name, state_deps);
+
+                    // レシピ関数は引数なし・戻り値なしにすうｒ（仮想的に関数にしているだけで言語的には関数じゃない）
+                    let void_type = self.context.void_type();
+                    let recipe_fn_type = void_type.fn_type(&[], false);
+
+                    // 関数名は bundle 名とレシピ名を組み合わせて一意にする
+                    let recipe_fn_name = format!("App_recipe_{}", name);
+                    let recipe_function = self.module.add_function(&recipe_fn_name, recipe_fn_type, None);
+
+                    // レシピ関数の中身をビルドするための新しいブロックを作成
+                    let recipe_entry_bb = self.context.append_basic_block(recipe_function, "entry");
+
+                    // 現在のビルダーの位置（main関数など）を一時保存しておく
+                    let current_bb = self.builder.get_insert_block().unwrap();
+
+                    // ビルダーをレシピ関数の中に移動して、中身（printfなど）をコンパイル
+                    self.builder.position_at_end(recipe_entry_bb);
+
+                    let recipe_stmts: Vec<Stmt> = vec![Stmt::ExprStmt(body.clone())];
+                    self.compile_statements(&recipe_stmts);
+
+                    // レシピ関数の最後にreturn voidを挟む
+                    self.builder.build_return(None)
+                        .expect("Failed to build return for recipe function");
+
+                    self.builder.position_at_end(current_bb);
+
+                    let subscribe_fn = match self.module.get_function("__kome_runtime_subscribe") {
+                        Some(f) => f,
+                        None => {
+                            let address_space = inkwell::AddressSpace::from(0);
+                            let generic_ptr_type = self.context.ptr_type(address_space);
+
+                            let sub_fn_type = void_type.fn_type(
+                                &[generic_ptr_type.into(), generic_ptr_type.into()],
+                                false
+                            );
+                            self.module.add_function("__kome_runtime_subscribe", sub_fn_type, None)
+                        }
+                    };
+
+                    // 依存している全てのstate変数に対して、このレシピ関数を登録する命令を生成
+                    for dep_var in state_deps {
+                        // 変数名文字列のグローバルポインタを作成
+                        let dep_var_global = self.builder.build_global_string_ptr(dep_var, "dep_var_name")
+                            .expect("Failed to generate global string ptr");
+
+                        // レシピ関数のポインタを取得
+                        let recipe_fn_ptr = recipe_function.as_global_value().as_pointer_value();
+
+                        self.builder.build_call(
+                            subscribe_fn,
+                            &[dep_var_global.as_pointer_value().into(), recipe_fn_ptr.into()],
+                            "subscribe_call"
+                        ).expect("Failed to build runtime subscribe call");
+
+                        debug!("Codegen: Registered '{}' to look at state '{}'", recipe_fn_name, dep_var);
+                    }
                 }
 
                 Stmt::Assignment { is_default, name, value } => {
@@ -138,10 +195,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             let notify_fn = match self.module.get_function("__kome_runtime_notify_change") {
                                 Some(f) => f,
                                 None => {
-                                    // なければその場で外部関数として登録void __kome_runtime_notify_change(char*)
                                     let void_type = self.context.void_type();
-                                    let i8_ptr_type = self.context.i32_type().ptr_type(inkwell::AddressSpace::from(0));
-                                    let fn_type = void_type.fn_type(&[i8_ptr_type.into()], false);
+                                    let address_space = inkwell::AddressSpace::from(0);
+                                    let generic_ptr_type = self.context.ptr_type(address_space);
+                                    let fn_type = void_type.fn_type(&[generic_ptr_type.into()], false);
                                     self.module.add_function("__kome_runtime_notify_change", fn_type, None)
                                 }
                             };
