@@ -11,6 +11,7 @@ use crate::codegen::CodegenContext;
 mod ast;
 mod codegen;
 pub mod library;
+mod state;
 
 #[derive(Parser)]
 #[grammar = "syntax/main.pest"]
