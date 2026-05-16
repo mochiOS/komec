@@ -56,6 +56,7 @@ pub enum Stmt {
         name: String,
         value: Expr,
     },
+    Block(Vec<Stmt>),
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +82,7 @@ pub enum Expr {
         head: String,
         tails: Vec<Accessor>,
     },
+    Block(Vec<Stmt>),
 }
 
 #[derive(Debug, Clone)]
@@ -401,7 +403,14 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 body,
             }
         }
+        Rule::block => {
+            let mut body = Vec::new();
+            for stmt_pair in pair.into_inner() {
+                body.push(parse_stmt(stmt_pair));
+            }
 
+            Stmt::ExprStmt(Expr::Block(body))
+        },
         _ => {
             println!("Rule: {:?}, Text: '{}'", pair.as_rule(), pair.as_str());
             unreachable!("Undefined: {:?}", pair.as_rule())
