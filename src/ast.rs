@@ -363,10 +363,49 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             }
             Stmt::Bundle { name, body }
         }
+        Rule::recipe_stmt => {
+            let mut inner_pairs = pair.into_inner();
+            let mut is_public = false;
+
+            let mut next_pair = inner_pairs.next().unwrap();
+            let is_public = if next_pair.as_rule() == Rule::visibility {
+                is_public = true;
+                next_pair = inner_pairs.next().unwrap();
+                true
+            } else {
+                false
+            };
+
+            // レシピ名
+            let name = next_pair.as_str().to_string();
+
+            // 依存するstate変数のリスト（Noneならなし）
+            let mut state_deps = Vec::new();
+
+            let mut body_pair = None;
+            for p in inner_pairs {
+                if p.as_rule() == Rule::ident {
+                    state_deps.push(p.as_str().to_string());
+                } else {
+                    body_pair = Some(p);
+                    break;
+                }
+            }
+
+            let body = parse_expr(body_pair.unwrap());
+
+            Stmt::Recipe {
+                is_public,
+                name,
+                state_deps,
+                body,
+            }
+        }
+
         _ => {
             println!("Rule: {:?}, Text: '{}'", pair.as_rule(), pair.as_str());
             unreachable!("Undefined: {:?}", pair.as_rule())
-        },
+        }
     }
 }
 
