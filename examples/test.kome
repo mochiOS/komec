@@ -1,7 +1,9 @@
 use libc.stdio
 
-let a = 5
-let b = 10
-let c = a + b
+fn main() {
+    let a = 5
+    let b = 10
+    let c = a + b
 
-printf("The sum of %d and %d is %d\n", a, b, c)
+    printf("The sum of %d and %d is %d\n", a, b, c)
+}

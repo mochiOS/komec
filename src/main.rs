@@ -4,6 +4,8 @@ use inkwell::context::Context;
 use inkwell::OptimizationLevel;
 use pest_derive::Parser;
 use pest::Parser;
+use env_logger;
+use log::*;
 use crate::codegen::CodegenContext;
 
 mod ast;
@@ -15,16 +17,19 @@ pub mod library;
 pub struct KomeParser;
 
 fn main() {
+    env_logger::init();
     let args: Vec<String> = env::args().collect();
+
+    unsafe { env::set_var("RUST_LOG", "info"); }
 
     if args.len() == 1 {
         println!("Usage: {} <source_file>", args[0]);
         return;
     }
 
-    let mut debug = false;
+
     if args.len() > 2 && args[2] == "-d" {
-        debug = true;
+        unsafe { env::set_var("RUST_LOG", "debug"); }
     }
 
     let source_file = args[1].clone();
@@ -73,22 +78,14 @@ fn main() {
         }
     }
 
-    if debug == true {
-        println!("Generated AST:");
-        for stmt in &ast_state {
-            println!("{:?}", stmt);
-        }
+    debug!("Generated AST:");
+    for stmt in &ast_state {
+        debug!("{:?}", stmt);
     }
 
     let context = Context::create();
     let module = context.create_module("main");
     let builder = context.create_builder();
-
-    let i32_type = context.i32_type();
-    let main_fn_type = i32_type.fn_type(&[], false);
-    let main_function = module.add_function("main", main_fn_type, None);
-    let entry_basic_block = context.append_basic_block(main_function, "entry");
-    builder.position_at_end(entry_basic_block);
 
     let mut codegen = CodegenContext {
         context: &context,
@@ -100,18 +97,13 @@ fn main() {
     // ASTの配列を渡してLLVM IRを生成する
     codegen.compile_statements(&ast_state);
 
-    if debug == true {
-        println!("\nGenerated LLVM IR:");
-        codegen.module.print_to_stderr();
-    }
-
-    // main関数の終端（とりあえず0返す）
-    builder.build_return(Some(&i32_type.const_int(0, false)))
-        .expect("main function should return a value");
-
-    // JIT実行
     let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
+
     unsafe {
-        execution_engine.get_function::<unsafe extern "C" fn()>("main").unwrap().call();
+        if let Ok(main_function) = execution_engine.get_function::<unsafe extern "C" fn()>("main") {
+            main_function.call();
+        } else {
+            println!("Runtime Error: main function is not defined in the source file.");
+        }
     }
 }

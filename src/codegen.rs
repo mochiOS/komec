@@ -3,6 +3,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::values::{BasicValue, PointerValue, ValueKind};
+use log::debug;
 use crate::ast;
 use crate::ast::{Stmt, Expr, Op};
 use crate::library::LibraryManager;
@@ -20,7 +21,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     pub fn compile_statements(&mut self, statements: &[Stmt]) {
         for stmt in statements {
             match stmt {
-                Stmt::Declaration { is_state, is_mut, name, value, range } => {
+                Stmt::Declaration { is_state, is_mut, name, value, range: _range } => {
                     // 右辺の式を評価してLLVM Valueに変換
                     let llvm_value = self.compile_expr(value);
 
@@ -37,14 +38,14 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.variables.insert(name.clone(), alloc);
 
                     // TODO: is_stateやrange(within ~ cycle)のロジックは、変数への代入命令を処理するときに境界チェックを行うBasic Blockを挟む形で実装する
-                    println!("Codegen: Generated variable '{}' (state: {}, mut: {})", name, is_state, is_mut);
+                    debug!("Codegen: Generated variable '{}' (state: {}, mut: {})", name, is_state, is_mut);
                 }
                 Stmt::Import(path) => {
                     let full_path = path.join(".");
-                    println!("Codegen: importing library: {}", full_path);
+                    debug!("Codegen: importing library: {}", full_path);
 
                     let success = LibraryManager::new().load_c_header(&full_path, self.context, self.module);
-                    
+
                     if !success {
                         panic!("Codegen: Failed to load library: {}", full_path);
                     }
@@ -52,7 +53,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::ExprStmt(expr) => {
                     self.compile_expr(expr);
                 }
-                _ => println!("Codegen: Unknown statement: {:?}", stmt),
+                Stmt::FnDecl { name, body } => {
+                    self.compile_function(name, body);
+                }
+                _ => debug!("Codegen: Unknown statement: {:?}", stmt),
             }
         }
     }
@@ -143,7 +147,23 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 global_str_ptr.as_basic_value_enum()
             }
             // TODO: 文字列などはまた実装
-            _ => panic!("Codegen: Undefined expression: {:?}", expr),
         }
+    }
+
+    /// 関数をコンパイルする
+    pub fn compile_function(&mut self, name: &str, body: &[Stmt]) {
+        let i32_type = self.context.i32_type();
+        let fn_type = i32_type.fn_type(&[], false); // TODO: 考慮引数対応
+
+        let function = self.module.add_function(name, fn_type, None);
+        let entry_block = self.context.append_basic_block(function, "entry");
+
+        self.builder.position_at_end(entry_block);
+
+        self.variables.clear();
+        self.compile_statements(body);
+
+        self.builder.build_return(Some(&i32_type.const_int(0, false)))
+            .expect("Function should return a value");
     }
 }

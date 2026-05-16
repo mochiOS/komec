@@ -1,6 +1,7 @@
+use std::path::Path;
 use clang::{Clang, EntityKind, Index, TypeKind};
 use inkwell::module::Module;
-use std::path::Path;
+use log::*;
 
 pub struct LibraryManager {
     clang: Clang,
@@ -76,7 +77,7 @@ impl LibraryManager {
                         let fn_type = llvm_ret.fn_type(&llvm_args, is_variadic);
                         if module.get_function(&func_name).is_none() {
                             module.add_function(&func_name, fn_type, None);
-                            println!("LibraryManager: Loaded function '{}'", func_name);
+                            debug!("LibraryManager: Loaded function '{}'", func_name);
                         }
                     }
                 }

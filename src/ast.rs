@@ -24,6 +24,10 @@ pub enum Stmt {
         range: Option<RangeLimit>,
     },
     ExprStmt(Expr),
+    FnDecl {
+        name: String,
+        body: Vec<Stmt>,
+    }
 }
 
 #[derive(Debug)]
@@ -131,6 +135,17 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let in_expr = pair.into_inner().next().unwrap();        // expr_stmtの中にある実際の式
             let expr = parse_expr(in_expr);                             // parse_exprを呼び出してExpr型に変換
             Stmt::ExprStmt(expr)
+        }
+        Rule::fn_decl => {
+            let mut inner = pair.into_inner();
+            let name = inner.next().unwrap().as_str().to_string();
+
+            let mut body = Vec::new();
+            for stmt_pair in inner {
+                let inner_stmt = stmt_pair.into_inner().next().unwrap();
+                body.push(parse_stmt(inner_stmt));
+            }
+            Stmt::FnDecl { name, body }
         }
 
         _ => unreachable!("Undefined: {:?}", pair.as_rule()),
