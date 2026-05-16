@@ -15,6 +15,7 @@ pub struct CodegenContext<'a, 'ctx> {
     pub builder: &'a Builder<'ctx>,
     pub module: &'a Module<'ctx>,
     pub variables: HashMap<String, VariableInfo<'ctx>>,
+    pub library_manager: &'a LibraryManager,
 }
 
 /// 変数の情報
@@ -26,7 +27,7 @@ pub struct VariableInfo<'ctx> {
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     /// 複数の文（Statements）を順番に LLVM 命令に変換する
-    pub fn compile_statements(&mut self, statements: &[Stmt]) {
+    pub fn compile_statements(&mut self, statements: &[Stmt]) -> Result<(), Box<dyn std::error::Error>> {
         for stmt in statements {
             match stmt {
                 #[allow(unused)]
@@ -47,14 +48,33 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     debug!("Codegen: Generated variable '{}' (state: {})", name, is_state);
                 }
-                Stmt::Import(path) => {
-                    let full_path = path.join(".");
-                    debug!("Codegen: importing library: {}", full_path);
+                Stmt::Import(path_parts) => {
+                    let full_path = path_parts.join("."); // "std.io.keyboard"
 
-                    let success = LibraryManager::new().load_c_header(&full_path, self.context, self.module);
+                    if full_path.starts_with("libc.") {
+                        // libc読み込み
+                        self.library_manager.load_c_header(&full_path, self.context, &self.module);
+                    } else {
+                        // 環境変数KOME_STD_PATHからベースパスを取得。なかったら./から
+                        let std_root = std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
 
-                    if !success {
-                        panic!("Codegen: Failed to load library: {}", full_path);
+                        let relative_path = format!("{}.kome", path_parts.join("/"));
+                        let mut kome_file_path = std::path::PathBuf::from(std_root);
+                        kome_file_path.push(relative_path);
+
+                        if !kome_file_path.exists() {
+                            panic!("Standard library not found at: {:?}", kome_file_path);
+                        }
+
+                        let _source = std::fs::read_to_string(&kome_file_path)
+                            .map_err(|_| format!("Failed to read standard library: {:?}", kome_file_path))?;
+
+                        // 同名、あるいは関連する C のヘッダーや実装（.h）があればそれも読み込む
+                        let mut c_header_path = kome_file_path.clone();
+                        c_header_path.set_extension("h");
+                        if c_header_path.exists() {
+                            self.library_manager.load_c_header(c_header_path.to_str().unwrap(), self.context, &self.module);
+                        }
                     }
                 }
                 Stmt::ExprStmt(expr) => {
@@ -85,9 +105,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.builder.position_at_end(then_bb);
 
                     if let Stmt::Bundle { body, .. } = &**then_body {
-                        self.compile_statements(body);
+                        self.compile_statements(body).expect("Failed to compile then block statements");
                     } else {
-                        self.compile_statements(&[*then_body.clone()]);
+                        self.compile_statements(&[*then_body.clone()]).expect("Failed to compile then block statements");
                     }
 
                     self.builder.build_unconditional_branch(merge_bb)
@@ -97,9 +117,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.builder.position_at_end(else_bb);
                     if let Some(else_stmt_box) = else_body {
                         if let Stmt::Bundle { body, .. } = &**else_stmt_box {
-                            self.compile_statements(body);
+                            self.compile_statements(body).expect("Failed to compile else block statements");
                         } else {
-                            self.compile_statements(&[*else_stmt_box.clone()]);
+                            self.compile_statements(&[*else_stmt_box.clone()]).expect("Failed to compile else block statements");
                         }
                     }
 
@@ -113,7 +133,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::Bundle { name, body } => {
                     debug!("Codegen: Entering bundle namespace: {}", name);
                     // TODO: 内部の変数やレシピをこの名前空間に紐付ける処理（シンボルテーブルの階層化など）
-                    self.compile_statements(body);
+                    self.compile_statements(body).expect("Failed to compile bundle statements");
                 }
 
                 #[allow(unused)]
@@ -238,9 +258,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     self.builder.position_at_end(body_bb);
                     if let Stmt::Bundle { body: body_stmts, .. } = &**body {
-                        self.compile_statements(body_stmts);
+                        self.compile_statements(body_stmts).expect("Failed to compile while body statements");
                     } else {
-                        self.compile_statements(&[*body.clone()]);
+                        self.compile_statements(&[*body.clone()]).expect("Failed to compile while body statements");
                     }
 
                     self.builder.build_unconditional_branch(cond_bb)
@@ -309,7 +329,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     };
 
                     // これでもうどこからも self は借用されていないので、安全に呼び出せます！
-                    self.compile_statements(&stmts_to_compile);
+                    self.compile_statements(&stmts_to_compile).expect("Failed to compile for loop body statements");
                     // インクリメント
                     if let Some(update_expr) = update {
                         let next_val = self.compile_expr(update_expr);
@@ -329,6 +349,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 _ => debug!("Codegen: Unknown statement: {:?}", stmt),
             }
         }
+        Ok(())
     }
 
     /// 式（Expression）を評価し、LLVM の値（BasicValueEnum）を返す
@@ -425,7 +446,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 }
             }
             Expr::Block(stmts) => {
-                self.compile_statements(&*stmts.clone());
+                self.compile_statements(&*stmts.clone()).expect("Failed to compile block statements");
                 self.context.i32_type().const_int(0, false).as_basic_value_enum()
             }
             Expr::CallChain { head, tails} => {
@@ -482,7 +503,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
         self.builder.position_at_end(entry_block);
 
         self.variables.clear();
-        self.compile_statements(body);
+        self.compile_statements(body).expect("Failed to compile function body");
 
         self.builder.build_return(Some(&i32_type.const_int(0, false)))
             .expect("Function should return a value");

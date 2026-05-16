@@ -7,6 +7,7 @@ use pest::Parser;
 use env_logger;
 use log::*;
 use crate::codegen::CodegenContext;
+use crate::library::LibraryManager;
 
 mod ast;
 mod codegen;
@@ -93,6 +94,7 @@ fn main() {
         builder: &builder,
         module: &module,
         variables: std::collections::HashMap::new(),
+        library_manager: &LibraryManager::new(),
     };
 
     // ASTの配列を渡してLLVM IRを生成する
