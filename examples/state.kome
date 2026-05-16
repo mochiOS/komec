@@ -2,7 +2,7 @@ use libc.stdio
 use os.keyboard
 
 bundle App {
-    public state let mut Index = 0;
+    public state let mut Index = 0
 
     recipe button: Index = {
         printf("Button pressed: %d\n", Index)

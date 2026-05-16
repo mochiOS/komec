@@ -2,6 +2,7 @@ program = { SOI ~ (stmt)* ~ EOI }
 
 stmt = {
     import_stmt
+    | recipe_stmt
     | decorator
     | bundle_stmt
     | fn_decl
@@ -10,7 +11,6 @@ stmt = {
     | declaration
     | while_stmt
     | for_stmt
-    | recipe_stmt
     | expr_stmt
 }
 
@@ -83,7 +83,7 @@ while_stmt = { "while" ~ expr ~ block }
 for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "~" ~ expr ~ block }
 
 // recipe
-recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ expr }
+recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ block }
 
 assignment = { ("!default")? ~ ident ~ assignment_op ~ expr }
 
