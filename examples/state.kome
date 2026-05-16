@@ -1,5 +1,5 @@
 use libc.stdio
-use os.keyboard
+use std.io.keyboard
 
 bundle App {
     public state let mut Index = 0
