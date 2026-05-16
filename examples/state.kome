@@ -12,6 +12,6 @@ bundle App {
 fn main() {
     keyboard.onPress(any) {
         App.Index += 1          // キーが押されるたびにIndexをインクリメント
-    };
+    }
 }
 
