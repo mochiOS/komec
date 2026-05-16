@@ -332,7 +332,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     }
 
     /// 式（Expression）を評価し、LLVM の値（BasicValueEnum）を返す
-    fn compile_expr(&self, expr: &Expr) -> inkwell::values::BasicValueEnum<'ctx> {
+    fn compile_expr(&mut self, expr: &Expr) -> inkwell::values::BasicValueEnum<'ctx> {
         match expr {
             Expr::Integer(val) => {
                 // 整数リテラルをLLVMのi32に変換
@@ -423,6 +423,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         todo!("Codegen: '??' operator is not yet implemented.")
                     }
                 }
+            }
+            Expr::Block(stmts) => {
+                self.compile_statements(&*stmts.clone());
+                self.context.i32_type().const_int(0, false).as_basic_value_enum()
             }
             Expr::CallChain { head, tails} => {
                 // LLVM moduleなるものから関数を探す
