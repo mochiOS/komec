@@ -8,6 +8,7 @@ use crate::codegen::CodegenContext;
 
 mod ast;
 mod codegen;
+pub mod library;
 
 #[derive(Parser)]
 #[grammar = "syntax/main.pest"]

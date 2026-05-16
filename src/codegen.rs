@@ -1,10 +1,11 @@
-use crate::ast::{Stmt, Expr, Op};
+use std::collections::HashMap;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::values::{BasicValue, PointerValue, ValueKind};
-use std::collections::HashMap;
 use crate::ast;
+use crate::ast::{Stmt, Expr, Op};
+use crate::library::LibraryManager;
 
 /// ASTからLLVM IRを生成するコンテキスト
 pub struct CodegenContext<'a, 'ctx> {
@@ -39,21 +40,13 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     println!("Codegen: Generated variable '{}' (state: {}, mut: {})", name, is_state, is_mut);
                 }
                 Stmt::Import(path) => {
+                    let full_path = path.join(".");
+                    println!("Codegen: importing library: {}", full_path);
 
-                    // TODO: めっちゃハードコードしてるので自動でパス解決できるようにする
-
-                    if path.len() == 2 && path[0] == "libc" && path[1] == "stdio" {
-                        println!("Codegen: Importing path '{:?}'", path);
-                        let i32_type = self.context.i32_type();
-                        let i8_ptr_type = self.context.i8_type().ptr_type(inkwell::AddressSpace::from(0));
-
-                        let printf_type = i32_type.fn_type(&[i8_ptr_type.into()], true);
-
-                        if self.module.get_function("printf").is_none() {
-                            self.module.add_function("printf", printf_type, None);
-                        }
-                    } else {
-                        panic!("Codegen: Unknown import path '{:?}'", path);
+                    let success = LibraryManager::new().load_c_header(&full_path, self.context, self.module);
+                    
+                    if !success {
+                        panic!("Codegen: Failed to load library: {}", full_path);
                     }
                 }
                 Stmt::ExprStmt(expr) => {
