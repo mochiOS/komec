@@ -22,7 +22,7 @@ fn main() {
     }
 
     let mut debug = false;
-    if args[2] == "-d" {
+    if args.len() > 2 && args[2] == "-d" {
         debug = true;
     }
 
