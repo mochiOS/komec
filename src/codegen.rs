@@ -142,8 +142,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 }
             }
             Expr::String(s) => {
+                let unescaped = s.replace("\\n", "\n");
                 let global_str_ptr = self.builder
-                    .build_global_string_ptr(s, "str_literal")
+                    .build_global_string_ptr(&unescaped, "str_literal")
                     .expect("Codegen: Failed to get global string");
 
                 global_str_ptr.as_basic_value_enum()
