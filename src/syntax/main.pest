@@ -8,7 +8,12 @@ stmt = {
     | if_stmt
     | declaration
     | expr_stmt
+    | while_stmt
+    | for_stmt
+    | recipe_stmt
 }
+
+visibility = { "public" }
 
 // インポート
 import_stmt = { "use" ~ path }
@@ -26,7 +31,7 @@ fn_decl = { "fn" ~ ident ~ "(" ~ ")" ~ "{" ~ stmt* ~ "}" }
 
 // 変数宣言
 declaration = {
-    state_kw? ~ "let" ~ "mut"? ~ ident ~ "=" ~ expr ~ range_limit?
+    visibility? ~ state_kw? ~ "let" ~ "mut"? ~ ident ~ "=" ~ expr ~ range_limit?
 }
 state_kw = { "state" }
 range_limit = { "within" ~ expr ~ "~" ~ expr ~ cycle_kw? }
@@ -64,10 +69,19 @@ gt = { ">" }
 le = { "<=" }
 ge = { ">=" }
 
-// コントロールフロー
+// if
 if_stmt = { "if" ~ expr ~ then_block ~ ("else" ~ else_block)? }
 then_block = { "{" ~ stmt* ~ "}" }
 else_block = { "{" ~ stmt* ~ "}" }
+
+// while
+while_stmt = { "while" ~ expr ~ "{" ~ stmt* ~ "}" }
+
+// for
+for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "{" ~ stmt* ~ "}" }
+
+// recipe
+recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ expr }
 
 constant = { string | integer | boolean | none }
 boolean = { "true" | "false" }
