@@ -1,4 +1,4 @@
-use crate::ast::{Stmt, Expr};
+use crate::ast::{Stmt, Expr, Op};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
@@ -61,6 +61,25 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 let i32_type = self.context.i32_type();
                 self.builder.build_load(i32_type, *alloc, name)
                     .expect("Failed to load variable")
+            }
+            Expr::BinaryOp {left, op, right} => {
+                // 左辺と右辺をそれぞれLLVM IRにする
+                let left_val = self.compile_expr(left);
+                let right_val = self.compile_expr(right);
+
+                match op {
+                    Op::Add => {
+                        self.builder.build_int_add(left_val.into_int_value(), right_val.into_int_value(), "addtmp")
+                            .expect("Failed to build add instruction")
+                            .as_basic_value_enum()
+                    }
+                    Op::Sub => {
+                        self.builder.build_int_sub(left_val.into_int_value(), right_val.into_int_value(), "subtmp")
+                            .expect("Failed to build sub instruction")
+                            .as_basic_value_enum()
+                    }
+                    _ => todo!("Codegen: Unknown binary op: {:?}", op),
+                }
             }
             // TODO: 文字列などはまた実装
             _ => panic!("Codegen: Undefined expression: {:?}", expr),
