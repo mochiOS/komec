@@ -138,15 +138,80 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
 ///
 /// 解析された式を表す `Expr` 列挙型のバリアント
 /// または未知のルールに遭遇した場合は、フォールバックとして `Expr::Ident("unknown")`
-fn parse_expr(pair: Pair<Rule>) -> Expr {
-    let mut inner = pair.into_inner();
-    let head = inner.next().unwrap();
+pub fn parse_expr(pair: Pair<Rule>) -> Expr {
+    match pair.as_rule() {
+        Rule::expr => {
+            let mut inner = pair.into_inner();
+            let first_term = parse_expr(inner.next().unwrap());
 
-    match head.as_rule() {
-        Rule::integer => Expr::Integer(head.as_str().parse().unwrap()),
-        Rule::string => Expr::String(head.into_inner().next().unwrap().as_str().to_string()),
-        Rule::ident => Expr::Ident(head.as_str().to_string()),
-        _ => Expr::Ident("unknown".to_string()),
+            // 演算子が続く場合の処理
+            if let Some(op_pair) = inner.next() {
+                let op = match op_pair.as_str() {
+                    "+" => Op::Add,
+                    "-" => Op::Sub,
+                    "in" => Op::In,
+                    "??" => Op::Question,
+                    _ => todo!("Undefined op: {}", op_pair.as_str()),
+                };
+                let right_term = parse_expr(inner.next().unwrap());
+                Expr::BinaryOp {
+                    left: Box::new(first_term),
+                    op,
+                    right: Box::new(right_term),
+                }
+            } else {
+                first_term
+            }
+        }
+        Rule::term => {
+            // termの中身（call_chainかconstant）を取り出す
+            let inner_pair = pair.into_inner().next().unwrap();
+            parse_expr(inner_pair)
+        }
+        Rule::constant => {
+            let inner_pair = pair.into_inner().next().unwrap();
+            parse_expr(inner_pair)
+        }
+        Rule::call_chain => {
+            let mut inner = pair.into_inner();
+            let head_pair = inner.next().unwrap();
+            let head = head_pair.as_str().to_string();
+
+            // アクセサ（.propertyや()メソッド呼び出し）の解析
+            let mut tails = Vec::new();
+            for accessor_pair in inner {
+                match accessor_pair.as_rule() {
+                    Rule::property_access => {
+                        let prop_name = accessor_pair.into_inner().next().unwrap().as_str().to_string();
+                        tails.push(Accessor::Property(prop_name));
+                    }
+                    Rule::method_call => {
+                        let mut args = Vec::new();
+                        for arg_pair in accessor_pair.into_inner() {
+                            args.push(parse_expr(arg_pair));
+                        }
+                        tails.push(Accessor::Method(args));
+                    }
+                    _ => {
+                        // TODO: child_accessとかも実装
+                        println!("Skip: {:?}", accessor_pair);
+                    }
+                }
+            }
+
+            // アクセサが何もなければ、それはただの単一の識別子なので、Expr::Identとして返す
+            if tails.is_empty() && head_pair.as_rule() == Rule::ident {
+                Expr::Ident(head)
+            } else {
+                Expr::CallChain { head, tails }
+            }
+        }
+        Rule::integer => Expr::Integer(pair.as_str().parse().unwrap()),
+        Rule::string => Expr::String(pair.into_inner().next().unwrap().as_str().to_string()),
+        Rule::ident => Expr::Ident(pair.as_str().to_string()),
+        _ => {
+            panic!("parse_expr: Undefined rule: {:?}", pair.as_rule());
+        }
     }
 }
 
