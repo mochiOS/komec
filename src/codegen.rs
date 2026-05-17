@@ -143,10 +143,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.builder.position_at_end(merge_bb);
                 }
 
-                Stmt::Bundle { name, body } => {
-                    debug!("Codegen: Entering bundle namespace: {}", name);
-                    // TODO: 内部の変数やレシピをこの名前空間に紐付ける処理（シンボルテーブルの階層化など）
-                    self.compile_statements(body).expect("Failed to compile bundle statements");
+                Stmt::Bundle { name: _bundle_name, body } => {
+                    self.compile_statements(body)?;
                 }
 
                 #[allow(unused)]
@@ -212,43 +210,48 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                 }
 
-                Stmt::Assignment { is_default, name, value } => {
-                    debug!("Codegen: Assigning to '{}' (is_default: {})", name, is_default);
-                    let new_llvm_value = self.compile_expr(value);
+                Stmt::Declaration { is_public: _, is_state: _, is_mut: _, name, value, range: _ } => {
+                    let llvm_value = self.compile_expr(value);
 
-                    if let Some(info) = self.variables.get(name) {
+                    // 変数の型（一旦すべてi32と仮定。
+                    let i32_type = self.context.i32_type();
 
-                        // 値をメモリ（allocaポインタ）に書き戻す
-                        self.builder.build_store(info.ptr, new_llvm_value)
-                            .expect(&format!("Failed to store value for variable '{}'", name));
+                    let ptr = self.builder.build_alloca(i32_type, name)
+                        .expect("Failed to allocate variable");
 
-                        // もし対象の変数がstate変数だった場合通知関数を仕込む
-                        if info.is_state {
-                            // モジュールから通知関数（プロトタイプ）を取得
-                            let notify_fn = match self.module.get_function("__kome_runtime_notify_change") {
-                                Some(f) => f,
-                                None => {
-                                    let void_type = self.context.void_type();
-                                    let address_space = inkwell::AddressSpace::from(0);
-                                    let generic_ptr_type = self.context.ptr_type(address_space);
-                                    let fn_type = void_type.fn_type(&[generic_ptr_type.into()], false);
-                                    self.module.add_function("__kome_runtime_notify_change", fn_type, None)
-                                }
-                            };
+                    // 確保したメモリに初期値をストア
+                    self.builder.build_store(ptr, llvm_value)
+                        .expect("Failed to store initial value");
 
-                            // 変数名の文字列をLLVMのグローバル文字列ポインタとして生成
-                            let var_name_global = self.builder.build_global_string_ptr(name, "state_var_name")
-                                .expect("Failed to generate global string ptr");
+                    self.variables.insert(name.clone(), VariableInfo {
+                        ptr,
+                        is_state: false, // TODO: is_stateの扱い
+                    });
+                }
 
-                            // 関数を呼び出す命令（Call）を挿入
-                            self.builder.build_call(notify_fn, &[var_name_global.as_pointer_value().into()], "notify_call")
-                                .expect("Failed to build runtime notify call");
+                Stmt::Assignment { is_default: _, name, value } => {
+                    let var_info = self.variables.get(name)
+                        .or_else(|| {
+                            let short_name = name.split('.').last().unwrap().to_string();
+                            self.variables.get(&short_name)
+                        })
+                        .expect(&format!("Undefined variable for assignment: {}", name));
 
-                            debug!("Codegen: Inserted state change hook for '{}'", name);
-                        }
+                    let ptr = var_info.ptr;
+
+                    let current_val = self.builder.build_load(self.context.i32_type(), ptr, "loadtmp")
+                        .expect("Failed to load variable for assignment")
+                        .into_int_value();
+
+                    let rhs_val = self.compile_expr(value).into_int_value();
+
+                    let new_val = if name.contains('.') || rhs_val != current_val {
+                        rhs_val
                     } else {
-                        panic!("Codegen Error: Variable '{}' not found for assignment", name);
-                    }
+                        self.builder.build_int_add(current_val, rhs_val, "addtmp").expect("Failed to build add")
+                    };
+
+                    self.builder.build_store(ptr, new_val).expect("Failed to store assigned value");
                 }
 
                 Stmt::While { condition, body } => {
