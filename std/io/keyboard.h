@@ -1,0 +1,6 @@
+#ifndef KOME_STD_IO_KEYBOARD_H
+#define KOME_STD_IO_KEYBOARD_H
+
+
+
+#endif /* KOME_STD_IO_KEYBOARD_H */
