@@ -1,3 +1,5 @@
-fn onPress(key: string) ->  {
-    kome_std_io_keyboard_onPress(key);
+cinclude "./keyboard.h"
+
+fn onPress(key: String) {
+    kome_std_io_keyboard_onPress(key)
 }
