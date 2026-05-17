@@ -5,8 +5,8 @@ stmt = {
     | import_stmt
     | bundle_stmt
     | declaration
-    | expr_stmt
     | recipe_stmt
+    | expr_stmt
     | decorator
     | fn_decl
     | if_stmt
