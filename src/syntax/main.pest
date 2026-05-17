@@ -4,13 +4,13 @@ stmt = {
     cinclude_stmt
     | import_stmt
     | bundle_stmt
+    | declaration
     | expr_stmt
     | recipe_stmt
     | decorator
     | fn_decl
     | if_stmt
     | assignment
-    | declaration
     | while_stmt
     | for_stmt
 }
