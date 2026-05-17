@@ -97,27 +97,45 @@ fn main() {
         current_dir: std::path::PathBuf::new(),
     };
 
+    for stmt in &ast_state {
+        match stmt {
+            ast::Stmt::FnDecl { .. } | ast::Stmt::Recipe { .. } | ast::Stmt::Bundle { .. } | ast::Stmt::Import(..) => {
+                // 宣言文だけをコンパイル
+                codegen.compile_statements(&[stmt.clone()]).expect("Failed to compile declarations");
+            }
+            _ => {}
+        }
+    }
+
     let i32_type = context.i32_type();
-    let main_fn_type = i32_type.fn_type(&[], false);
-    let main_function = module.add_function("main", main_fn_type, None);
-    let entry_block = context.append_basic_block(main_function, "entry");
+    let entry_fn_type = i32_type.fn_type(&[], false);
+    let entry_function = module.add_function("__kome_entry", entry_fn_type, None);
+    let entry_block = context.append_basic_block(entry_function, "entry");
 
     builder.position_at_end(entry_block);
-    codegen.compile_statements(&ast_state).expect("Failed to compile statements");
+
+    for stmt in &ast_state {
+        match stmt {
+            ast::Stmt::Declaration { .. } | ast::Stmt::Assignment { .. } | ast::Stmt::ExprStmt(..) => {
+                codegen.compile_statements(&[stmt.clone()]).expect("Failed to compile entry logic");
+            }
+            _ => {}
+        }
+    }
 
     let zero = i32_type.const_int(0, false);
-    builder.build_return(Some(&zero)).expect("Failed to build main return");
+    builder.build_return(Some(&zero)).expect("Failed to build entry return");
 
-    // デバッグ用LLVM IR
-    println!("Generated LLVM IR:\n{}", module.print_to_string().to_string());
+    // デバッグ用
+    module.print_to_stderr();
 
     let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
 
     unsafe {
-        if let Ok(main_function) = execution_engine.get_function::<unsafe extern "C" fn() -> i32>("main") {
-            let _result = main_function.call();
+        if let Ok(entry_fn) = execution_engine.get_function::<unsafe extern "C" fn() -> i32>("__kome_entry") {
+            entry_fn.call();
         } else {
-            println!("Runtime Error: main function is not defined in the source file.");
+            println!("Runtime Error: Entry function is not defined.");
         }
     }
 }

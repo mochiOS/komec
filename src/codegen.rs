@@ -93,8 +93,30 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 }
 
                 Stmt::FnDecl { is_public: _, name, body } => {
-                    self.compile_function(name, body);
+                    let previous_block = self.builder.get_insert_block();
+
+                    let void_type = self.context.void_type();
+                    let fn_type = void_type.fn_type(&[], false);
+                    let function = self.module.add_function(name, fn_type, None);
+                    let entry_block = self.context.append_basic_block(function, "entry");
+
+                    self.variables.clear();
+                    self.builder.position_at_end(entry_block);
+
+                    self.compile_statements(body)?;
+
+                    if entry_block.get_terminator().is_none() {
+                        self.builder.build_return(None)
+                            .expect("Failed to build void return");
+                    }
+
+                    if let Some(prev) = previous_block {
+                        self.builder.position_at_end(prev);
+                    } else {
+                        debug!("Codegen: No previous block to return to after compiling function '{}'", name);
+                    }
                 }
+
                 Stmt::ExprStmt(expr) => {
                     self.compile_expr(expr);
                 }
@@ -151,103 +173,68 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::Recipe { is_public, name, state_deps, body } => {
                     debug!("Codegen: Compiling recipe '{}' (deps: {:?})", name, state_deps);
 
-                    self.variables.clear();
-                    let func = self.module.add_function(name, self.context.void_type().fn_type(&[], false), None);
+                    let previous_block = self.builder.get_insert_block();
 
-                    // レシピ関数は引数なし・戻り値なしにすうｒ（仮想的に関数にしているだけで言語的には関数じゃない）
-                    let void_type = self.context.void_type();
-                    let recipe_fn_type = void_type.fn_type(&[], false);
+                    self.variables.clear();
 
                     // 関数名は bundle 名とレシピ名を組み合わせて一意にする
+                    let void_type = self.context.void_type();
+                    let recipe_fn_type = void_type.fn_type(&[], false);
                     let recipe_fn_name = format!("App_recipe_{}", name);
                     let recipe_function = self.module.add_function(&recipe_fn_name, recipe_fn_type, None);
 
-                    // レシピ関数の中身をビルドするための新しいブロックを作成
                     let recipe_entry_bb = self.context.append_basic_block(recipe_function, "entry");
 
-                    // 現在のビルダーの位置（main関数など）を一時保存しておく
-                    let current_bb = self.builder.get_insert_block().unwrap();
-
-                    // ビルダーをレシピ関数の中に移動して、中身（printfなど）をコンパイル
                     self.builder.position_at_end(recipe_entry_bb);
 
                     let recipe_stmts: Vec<Stmt> = vec![Stmt::ExprStmt(body.clone())];
-                    self.compile_statements(&recipe_stmts);
+                    self.compile_statements(&recipe_stmts)?;
 
-                    // レシピ関数の最後にreturn voidを挟む
-                    self.builder.build_return(None)
-                        .expect("Failed to build return for recipe function");
-
-                    self.builder.position_at_end(current_bb);
-
-                    let subscribe_fn = match self.module.get_function("__kome_runtime_subscribe") {
-                        Some(f) => f,
-                        None => {
-                            let address_space = inkwell::AddressSpace::from(0);
-                            let generic_ptr_type = self.context.ptr_type(address_space);
-
-                            let sub_fn_type = void_type.fn_type(
-                                &[generic_ptr_type.into(), generic_ptr_type.into()],
-                                false
-                            );
-                            self.module.add_function("__kome_runtime_subscribe", sub_fn_type, None)
-                        }
-                    };
-
-                    // 依存している全てのstate変数に対して、このレシピ関数を登録する命令を生成
-                    for dep_var in state_deps {
-                        // 変数名文字列のグローバルポインタを作成
-                        let dep_var_global = self.builder.build_global_string_ptr(dep_var, "dep_var_name")
-                            .expect("Failed to generate global string ptr");
-
-                        // レシピ関数のポインタを取得
-                        let recipe_fn_ptr = recipe_function.as_global_value().as_pointer_value();
-
-                        self.builder.build_call(
-                            subscribe_fn,
-                            &[dep_var_global.as_pointer_value().into(), recipe_fn_ptr.into()],
-                            "subscribe_call"
-                        ).expect("Failed to build runtime subscribe call");
-
-                        debug!("Codegen: Registered '{}' to look at state '{}'", recipe_fn_name, dep_var);
+                    if recipe_entry_bb.get_terminator().is_none() {
+                        self.builder.build_return(None)
+                            .expect("Failed to build return for recipe function");
                     }
-                }
 
-                Stmt::Declaration { is_public: _, is_state, is_mut: _, name, value, range: _ } => {
-                    let llvm_value = self.compile_expr(value);
-                    let i32_type = self.context.i32_type();
+                    if let Some(prev) = previous_block {
+                        self.builder.position_at_end(prev);
 
-                    if *is_state {
-                        // すでに同名のグローバル変数がないかチェック
-                        let global_var = match self.module.get_global(name) {
-                            Some(g) => g,
-                            None => {
-                                let g = self.module.add_global(i32_type, None, name);
-                                // 初期値をセット（型に合わせて llvm_value から定数を取り出すか、一旦0初期化）
-                                g.set_initializer(&i32_type.const_int(0, false));
-                                g
+                        if prev.get_terminator().is_none() {
+                            let subscribe_fn = match self.module.get_function("__kome_runtime_subscribe") {
+                                Some(f) => f,
+                                None => {
+                                    let address_space = inkwell::AddressSpace::from(0);
+                                    let generic_ptr_type = self.context.ptr_type(address_space);
+
+                                    let sub_fn_type = void_type.fn_type(
+                                        &[generic_ptr_type.into(), generic_ptr_type.into()],
+                                        false
+                                    );
+                                    self.module.add_function("__kome_runtime_subscribe", sub_fn_type, None)
+                                }
+                            };
+
+                            // 依存している全てのstate変数に対して、このレシピ関数を登録する命令を生成
+                            for dep_var in state_deps {
+                                // 変数名文字列のグローバルポインタを作成
+                                let dep_var_global = self.builder.build_global_string_ptr(dep_var, "dep_var_name")
+                                    .expect("Failed to generate global string ptr");
+
+                                // レシピ関数のポインタを取得
+                                let recipe_fn_ptr = recipe_function.as_global_value().as_pointer_value();
+
+                                self.builder.build_call(
+                                    subscribe_fn,
+                                    &[dep_var_global.as_pointer_value().into(), recipe_fn_ptr.into()],
+                                    "subscribe_call"
+                                ).expect("Failed to build runtime subscribe call");
+
+                                debug!("Codegen: Registered '{}' to look at state '{}'", recipe_fn_name, dep_var);
                             }
-                        };
-
-                        // 関数を跨いで使えるようにグローバルポインタを登録
-                        self.variables.insert(name.clone(), VariableInfo {
-                            ptr: global_var.as_pointer_value(),
-                            is_state: true,
-                        });
-
+                        } else {
+                            debug!("Codegen: Skip subscribe call insertion because the parent block is already terminated.");
+                        }
                     } else {
-                        let ptr = self.builder.build_alloca(i32_type, name)
-                            .expect("Failed to allocate variable");
-
-                        // 確保したメモリに初期値をストア
-                        self.builder.build_store(ptr, llvm_value)
-                            .expect("Failed to store initial value");
-
-                        // ローカル変数としてマップに登録
-                        self.variables.insert(name.clone(), VariableInfo {
-                            ptr,
-                            is_state: false,
-                        });
+                        debug!("Codegen: No parent block available to insert runtime subscribe call.");
                     }
                 }
 
@@ -396,12 +383,18 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 i32_type.const_int(*val as u64, false).as_basic_value_enum()
             }
             Expr::Ident(name) => {
-                // ローカル変数->グローバル
                 let ptr = if let Some(var_info) = self.variables.get(name) {
                     var_info.ptr
                 } else if let Some(global_var) = self.module.get_global(name) {
                     global_var.as_pointer_value()
-                } else {
+                } else if let Some(short_name) = name.split('.').last() {
+                    if let Some(global_var) = self.module.get_global(short_name) {
+                        global_var.as_pointer_value()
+                    } else {
+                        panic!("Undefined variable: {} (tried short name: {})", name, short_name);
+                    }
+                }
+                else {
                     panic!("Undefined variable: {}", name);
                 };
 
