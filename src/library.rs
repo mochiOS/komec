@@ -18,10 +18,14 @@ impl LibraryManager {
     pub fn load_c_header<'a>(&self, header_name: &str, context: &'a inkwell::context::Context, module: &Module<'a>) -> bool {
         let parts: Vec<&str> = header_name.split('.').collect();
 
-        let header_name = match parts.last() {
-            Some(part) => part,
-            None => return false,
+         let header_name = if parts.len() == 2 && parts[0] == "libc" {
+            format!("{}", parts[1])
+        } else {
+            eprintln!("LibraryManager: Invalid header name format: {}", header_name);
+            return false;
         };
+
+
 
         let header_path = format!("/usr/include/{}.h", header_name);
         if !Path::new(&header_path).exists() {
