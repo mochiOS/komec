@@ -187,19 +187,31 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
         }
         Rule::fn_decl => {
             let mut inner = pair.into_inner();
-            let name = inner.next().unwrap().as_str().to_string();
+            let mut first = inner.next().unwrap();
 
-            let mut public = false;
-            if inner.peek().map_or(false, |p| p.as_rule() == Rule::visibility) {
-                public = true;
+            let mut is_public = false;
+            if first.as_str() == "public" {
+                is_public = true;
+                first = inner.next().unwrap();
             }
 
+            let name = first.as_str().to_string();
             let mut body = Vec::new();
-            for stmt_pair in inner {
-                let inner_stmt = stmt_pair.into_inner().next().unwrap();
-                body.push(parse_stmt(inner_stmt));
+
+            for sub_pair in inner {
+                match sub_pair.as_rule() {
+                    Rule::block => {
+                        for stmt_pair in sub_pair.into_inner() {
+                            if stmt_pair.as_rule() == Rule::stmt {
+                                body.push(parse_stmt(stmt_pair));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
-            Stmt::FnDecl { is_public: public, name, body }
+
+            Stmt::FnDecl { is_public, name, body }
         }
 
         Rule::if_stmt => {
