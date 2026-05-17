@@ -6,11 +6,11 @@ stmt = {
     | bundle_stmt
     | declaration
     | recipe_stmt
+    | assignment
     | expr_stmt
     | decorator
     | fn_decl
     | if_stmt
-    | assignment
     | while_stmt
     | for_stmt
 }
