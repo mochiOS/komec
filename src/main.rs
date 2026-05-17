@@ -88,7 +88,6 @@ fn main() {
     let context = Context::create();
     let module = context.create_module("main");
     let builder = context.create_builder();
-
     let mut codegen = CodegenContext {
         context: &context,
         builder: &builder,
@@ -98,8 +97,16 @@ fn main() {
         current_dir: std::path::PathBuf::new(),
     };
 
-    // ASTの配列を渡してLLVM IRを生成する
-    codegen.compile_statements(&ast_state).expect("TODO: panic message");
+    let i32_type = context.i32_type();
+    let main_fn_type = i32_type.fn_type(&[], false);
+    let main_function = module.add_function("main", main_fn_type, None);
+    let entry_block = context.append_basic_block(main_function, "entry");
+
+    builder.position_at_end(entry_block);
+    codegen.compile_statements(&ast_state).expect("Failed to compile statements");
+
+    let zero = i32_type.const_int(0, false);
+    builder.build_return(Some(&zero)).expect("Failed to build main return");
 
     // デバッグ用LLVM IR
     println!("Generated LLVM IR:\n{}", module.print_to_string().to_string());
@@ -107,8 +114,8 @@ fn main() {
     let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
 
     unsafe {
-        if let Ok(main_function) = execution_engine.get_function::<unsafe extern "C" fn()>("main") {
-            main_function.call();
+        if let Ok(main_function) = execution_engine.get_function::<unsafe extern "C" fn() -> i32>("main") {
+            let _result = main_function.call();
         } else {
             println!("Runtime Error: main function is not defined in the source file.");
         }

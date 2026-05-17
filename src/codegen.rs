@@ -151,6 +151,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::Recipe { is_public, name, state_deps, body } => {
                     debug!("Codegen: Compiling recipe '{}' (deps: {:?})", name, state_deps);
 
+                    self.variables.clear();
+                    let func = self.module.add_function(name, self.context.void_type().fn_type(&[], false), None);
+
                     // レシピ関数は引数なし・戻り値なしにすうｒ（仮想的に関数にしているだけで言語的には関数じゃない）
                     let void_type = self.context.void_type();
                     let recipe_fn_type = void_type.fn_type(&[], false);
@@ -210,48 +213,63 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                 }
 
-                Stmt::Declaration { is_public: _, is_state: _, is_mut: _, name, value, range: _ } => {
+                Stmt::Declaration { is_public: _, is_state, is_mut: _, name, value, range: _ } => {
                     let llvm_value = self.compile_expr(value);
-
-                    // 変数の型（一旦すべてi32と仮定。
                     let i32_type = self.context.i32_type();
 
-                    let ptr = self.builder.build_alloca(i32_type, name)
-                        .expect("Failed to allocate variable");
+                    if *is_state {
+                        // すでに同名のグローバル変数がないかチェック
+                        let global_var = match self.module.get_global(name) {
+                            Some(g) => g,
+                            None => {
+                                let g = self.module.add_global(i32_type, None, name);
+                                // 初期値をセット（型に合わせて llvm_value から定数を取り出すか、一旦0初期化）
+                                g.set_initializer(&i32_type.const_int(0, false));
+                                g
+                            }
+                        };
 
-                    // 確保したメモリに初期値をストア
-                    self.builder.build_store(ptr, llvm_value)
-                        .expect("Failed to store initial value");
+                        // 関数を跨いで使えるようにグローバルポインタを登録
+                        self.variables.insert(name.clone(), VariableInfo {
+                            ptr: global_var.as_pointer_value(),
+                            is_state: true,
+                        });
 
-                    self.variables.insert(name.clone(), VariableInfo {
-                        ptr,
-                        is_state: false, // TODO: is_stateの扱い
-                    });
+                    } else {
+                        let ptr = self.builder.build_alloca(i32_type, name)
+                            .expect("Failed to allocate variable");
+
+                        // 確保したメモリに初期値をストア
+                        self.builder.build_store(ptr, llvm_value)
+                            .expect("Failed to store initial value");
+
+                        // ローカル変数としてマップに登録
+                        self.variables.insert(name.clone(), VariableInfo {
+                            ptr,
+                            is_state: false,
+                        });
+                    }
                 }
 
                 Stmt::Assignment { is_default: _, name, value } => {
-                    let var_info = self.variables.get(name)
-                        .or_else(|| {
-                            let short_name = name.split('.').last().unwrap().to_string();
-                            self.variables.get(&short_name)
-                        })
-                        .expect(&format!("Undefined variable for assignment: {}", name));
+                    let short_name = name.split('.').last().unwrap().to_string();
 
-                    let ptr = var_info.ptr;
-
-                    let current_val = self.builder.build_load(self.context.i32_type(), ptr, "loadtmp")
-                        .expect("Failed to load variable for assignment")
-                        .into_int_value();
-
-                    let rhs_val = self.compile_expr(value).into_int_value();
-
-                    let new_val = if name.contains('.') || rhs_val != current_val {
-                        rhs_val
+                    let ptr = if let Some(var_info) = self.variables.get(name) {
+                        var_info.ptr
+                    } else if let Some(var_info) = self.variables.get(&short_name) {
+                        var_info.ptr
+                    } else if let Some(global_var) = self.module.get_global(name).or_else(|| self.module.get_global(&short_name)) {
+                        global_var.as_pointer_value()
                     } else {
-                        self.builder.build_int_add(current_val, rhs_val, "addtmp").expect("Failed to build add")
+                        panic!("Undefined variable for assignment: {} (short: {})", name, short_name);
                     };
 
-                    self.builder.build_store(ptr, new_val).expect("Failed to store assigned value");
+                    let current_val = self.builder.build_load(self.context.i32_type(), ptr, "loadtmp")
+                        .expect("Failed to load variable")
+                        .into_int_value();
+                    let rhs_val = self.compile_expr(value).into_int_value();
+                    let new_val = self.builder.build_int_add(current_val, rhs_val, "addtmp").expect("Failed to build add");
+                    self.builder.build_store(ptr, new_val).expect("Failed to store");
                 }
 
                 Stmt::While { condition, body } => {
@@ -378,11 +396,16 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 i32_type.const_int(*val as u64, false).as_basic_value_enum()
             }
             Expr::Ident(name) => {
-                // 変数名から値を取り出す
-                let alloc = self.variables.get(name)
-                    .expect(&format!("Undefined variable: {}", name));
-                let i32_type = self.context.i32_type();
-                self.builder.build_load(i32_type, alloc.ptr, name)
+                // ローカル変数->グローバル
+                let ptr = if let Some(var_info) = self.variables.get(name) {
+                    var_info.ptr
+                } else if let Some(global_var) = self.module.get_global(name) {
+                    global_var.as_pointer_value()
+                } else {
+                    panic!("Undefined variable: {}", name);
+                };
+
+                self.builder.build_load(self.context.i32_type(), ptr, name)
                     .expect("Failed to load variable")
             }
             Expr::BinaryOp {left, op, right} => {
@@ -541,19 +564,13 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     }
 
     /// 関数をコンパイルする
-    pub fn compile_function(&mut self, name: &str, body: &[Stmt]) {
-        let i32_type = self.context.i32_type();
-        let fn_type = i32_type.fn_type(&[], false); // TODO: 考慮引数対応
+    fn compile_function(&mut self, name: &str, body: &[Stmt]) {
+        let func = self.module.add_function(name, self.context.void_type().fn_type(&[], false), None);
+        let bb = self.context.append_basic_block(func, "entry");
+        self.builder.position_at_end(bb);
 
-        let function = self.module.add_function(name, fn_type, None);
-        let entry_block = self.context.append_basic_block(function, "entry");
+        self.compile_statements(body).unwrap();
 
-        self.builder.position_at_end(entry_block);
-
-        self.variables.clear();
-        self.compile_statements(body).expect("Failed to compile function body");
-
-        self.builder.build_return(Some(&i32_type.const_int(0, false)))
-            .expect("Function should return a value");
+        self.builder.build_return(Some(&self.context.i32_type().const_int(0, false))).unwrap();
     }
 }
