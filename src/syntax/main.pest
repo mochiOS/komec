@@ -32,8 +32,13 @@ kv_pair = { ident ~ ":" ~ expr }
 bundle_stmt = { "bundle" ~ ident ~ "{" ~ stmt* ~ "}" }
 
 // 関数定義 fn main() { ... }
-fn_decl = { "fn" ~ ident ~ "(" ~ ")" ~ "{" ~ stmt* ~ "}" }
+fn_decl = { "fn" ~ ident ~ "(" ~ (param ~ ("," ~ param)*)? ~ ")" ~ ("->" ~ type_spec)? ~ "{" ~ stmt* ~ "}" }
 
+// 引数の定義（例: key: string）
+param = { ident ~ ":" ~ type_spec }
+
+// 型の定義（識別子、または path を許可）
+type_spec = { path | ident }
 // 変数宣言
 declaration = {
     visibility? ~ state_kw? ~ "let" ~ "mut"? ~ ident ~ "=" ~ expr ~ range_limit?
