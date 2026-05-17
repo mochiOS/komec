@@ -3,16 +3,16 @@ program = { SOI ~ (stmt)* ~ EOI }
 stmt = {
     cinclude_stmt
     | import_stmt
+    | fn_decl
     | bundle_stmt
     | declaration
     | recipe_stmt
     | assignment
-    | expr_stmt
     | decorator
-    | fn_decl
     | if_stmt
     | while_stmt
     | for_stmt
+    | expr_stmt
 }
 
 visibility = { "public" }
