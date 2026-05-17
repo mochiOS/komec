@@ -1,7 +1,8 @@
 program = { SOI ~ (stmt)* ~ EOI }
 
 stmt = {
-    import_stmt
+    cinclude_stmt
+    | import_stmt
     | recipe_stmt
     | decorator
     | bundle_stmt
@@ -20,6 +21,8 @@ block = { "{" ~ stmt* ~ "}" }
 // インポート
 import_stmt = { "use" ~ path }
 path = { ident ~ ("." ~ ident)* }
+
+cinclude_stmt = { "cinclude" ~ string }
 
 // @name { ... } 形式のデコレータ
 decorator = { "@" ~ ident ~ ident ~ "{" ~ (kv_pair ~ ("," ~ kv_pair)* ~ ","?)? ~ "}" }
