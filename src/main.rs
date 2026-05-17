@@ -95,13 +95,14 @@ fn main() {
         module: &module,
         variables: std::collections::HashMap::new(),
         library_manager: &LibraryManager::new(),
+        current_dir: std::path::PathBuf::new(),
     };
 
     // ASTの配列を渡してLLVM IRを生成する
-    codegen.compile_statements(&ast_state);
+    codegen.compile_statements(&ast_state).expect("TODO: panic message");
 
     // デバッグ用LLVM IR
-    //println!("Generated LLVM IR:\n{}", module.print_to_string().to_string());
+    println!("Generated LLVM IR:\n{}", module.print_to_string().to_string());
 
     let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
 

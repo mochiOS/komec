@@ -5,8 +5,9 @@ use inkwell::IntPredicate;
 use inkwell::module::Module;
 use inkwell::values::{BasicValue, PointerValue, ValueKind};
 use log::debug;
+use pest::Parser;
 use crate::ast;
-use crate::ast::{Stmt, Expr, Op};
+use crate::ast::{Stmt, Expr, Op, parse_stmt};
 use crate::library::LibraryManager;
 
 /// ASTからLLVM IRを生成するコンテキスト
@@ -16,6 +17,7 @@ pub struct CodegenContext<'a, 'ctx> {
     pub module: &'a Module<'ctx>,
     pub variables: HashMap<String, VariableInfo<'ctx>>,
     pub library_manager: &'a LibraryManager,
+    pub current_dir: std::path::PathBuf,
 }
 
 /// 変数の情報
@@ -31,61 +33,72 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
         for stmt in statements {
             match stmt {
                 #[allow(unused)]
-                Stmt::Declaration { is_public, is_state, is_mut, name, value, range: _range } => {
-                    let llvm_value = self.compile_expr(value);
-                    let i32_type = self.context.i32_type();
-                    let alloc = self.builder.build_alloca(i32_type, name)
-                        .expect("Failed to allocate variable");
-
-                    self.builder.build_store(alloc, llvm_value)
-                        .expect("Failed to store initial value");
-
-                    let info = VariableInfo {
-                        ptr: alloc,
-                        is_state: *is_state,
-                    };
-                    self.variables.insert(name.clone(), info);
-
-                    debug!("Codegen: Generated variable '{}' (state: {})", name, is_state);
-                }
                 Stmt::Import(path_parts) => {
-                    let full_path = path_parts.join("."); // "std.io.keyboard"
+                    let full_path = path_parts.join(".");
 
                     if full_path.starts_with("libc.") {
-                        // libc読み込み
                         self.library_manager.load_c_header(&full_path, self.context, &self.module);
-                    } else {
-                        // 環境変数KOME_STD_PATHからベースパスを取得。なかったら./から
-                        let std_root = std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
+                        continue;
+                    }
 
-                        let relative_path = format!("{}.kome", path_parts.join("/"));
-                        let mut kome_file_path = std::path::PathBuf::from(std_root);
-                        kome_file_path.push(relative_path);
+                    let std_root = std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
+                    let relative_path = format!("{}.kome", path_parts.join("/"));
+                    let mut kome_file_path = std::path::PathBuf::from(std_root);
+                    kome_file_path.push(relative_path);
 
-                        if !kome_file_path.exists() {
-                            panic!("Standard library not found at: {:?}", kome_file_path);
-                        }
+                    if !kome_file_path.exists() {
+                        panic!("Standard library not found at: {:?}", kome_file_path);
+                    }
 
-                        let _source = std::fs::read_to_string(&kome_file_path)
-                            .map_err(|_| format!("Failed to read standard library: {:?}", kome_file_path))?;
+                    let source = std::fs::read_to_string(&kome_file_path)
+                        .map_err(|_| format!("Failed to read standard library: {:?}", kome_file_path))?;
 
-                        // 同名、あるいは関連する C のヘッダーや実装（.h）があればそれも読み込む
-                        let mut c_header_path = kome_file_path.clone();
-                        c_header_path.set_extension("h");
-                        if c_header_path.exists() {
-                            self.library_manager.load_c_header(c_header_path.to_str().unwrap(), self.context, &self.module);
+                    if let Some(parent) = kome_file_path.parent() {
+                        self.current_dir = parent.to_path_buf();
+                    }
+
+                    let mut c_header_path = kome_file_path.clone();
+                    c_header_path.set_extension("h");
+                    if c_header_path.exists() {
+                        self.library_manager.load_c_header(c_header_path.to_str().unwrap(), self.context, &self.module);
+                    }
+
+                    let pairs = match crate::KomeParser::parse(crate::Rule::program, &source) {
+                        Ok(p) => p,
+                        Err(e) => return Err(format!("Failed to parse {}: {:?}", full_path, e).into()),
+                    };
+
+                    let mut std_ast: Vec<Stmt> = Vec::new();
+
+                    for pair in pairs {
+                        match pair.as_rule() {
+                            crate::Rule::program => {
+                                for inner_pair in pair.into_inner() {
+                                    if inner_pair.as_rule() == crate::Rule::stmt {
+                                        let stmt = parse_stmt(inner_pair);
+                                        std_ast.push(stmt);
+                                    }
+                                }
+                            }
+                            crate::Rule::stmt => {
+                                let stmt = parse_stmt(pair);
+                                std_ast.push(stmt);
+                            }
+                            crate::Rule::EOI => {}
+                            _ => {}
                         }
                     }
+
+                    self.compile_statements(&std_ast)?;
+                }
+
+                Stmt::FnDecl { is_public: _, name, body } => {
+                    self.compile_function(name, body);
                 }
                 Stmt::ExprStmt(expr) => {
                     self.compile_expr(expr);
                 }
 
-                #[allow(unused)]
-                Stmt::FnDecl { is_public, name, body } => {
-                    // TODO: 必要に応じて is_public の情報を compile_function に引き渡す
-                    self.compile_function(name, body);
-                }
                 Stmt::If { condition, then_body, else_body } => {
                     let condition = self.compile_expr(condition);
                     let parent_func = self.builder.get_insert_block()
@@ -451,7 +464,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             }
             Expr::CallChain { head, tails} => {
                 // LLVM moduleなるものから関数を探す
-                if let Some(ast::Accessor::Method(args)) = tails.first() {
+                if let Some(ast::Accessor::Method(args, trailing_closure)) = tails.first() {
                     let function = self.module.get_function(head)
                         .expect(&format!("Undefined function: {}", head));
 
@@ -463,6 +476,39 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(val));
                     }
 
+                    // トレイリングクロージャが存在する場合、無名関数を作って引数の末尾に追加する
+                    if let Some(block_stmts) = trailing_closure {
+                        // 一意な無名関数名を決定（ __kome_anon_closure_N）
+                        let mut i = 0;
+                        let closure_name = loop {
+                            let name = format!("__kome_anon_closure_{}", i);
+                            if self.module.get_function(&name).is_none() {
+                                break name;
+                            }
+                            i += 1;
+                        };
+
+                        // 無名関数の型を定義 (void -> void)
+                        let void_type = self.context.void_type();
+                        let closure_fn_type = void_type.fn_type(&[], false);
+                        let closure_function = self.module.add_function(&closure_name, closure_fn_type, None);
+
+                        // 基本ブロックを生成して、一時的にビルダーの挿入先を無名関数の中へと移動させる
+                        let entry_bb = self.context.append_basic_block(closure_function, "entry");
+                        let current_bb = self.builder.get_insert_block().unwrap();
+                        self.builder.position_at_end(entry_bb);
+
+                        // クロージャ内のステートメント群（onPress内の処理など）をコンパイル
+                        self.compile_statements(block_stmts).expect("Failed to compile trailing closure body");
+
+                        // void関数なので値を返さずにReturn
+                        self.builder.build_return(None).expect("Failed to build return for closure");
+                        self.builder.position_at_end(current_bb);
+
+                        let closure_ptr = closure_function.as_global_value().as_pointer_value();
+                        llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(closure_ptr));
+                    }
+
                     let call = self.builder.build_call(function, &llvm_args, "calltmp")
                         .expect("Codegen: Failed to build function call");
 
@@ -471,7 +517,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         ValueKind::Basic(val) => {
                             val
                         }
-                        // Voidとかでも一旦0: i32を返す
                         ValueKind::Instruction(_) => {
                             self.context.i32_type().const_int(0, false).as_basic_value_enum()
                         }

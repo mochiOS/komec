@@ -3,6 +3,7 @@ program = { SOI ~ (stmt)* ~ EOI }
 stmt = {
     cinclude_stmt
     | import_stmt
+    | expr_stmt
     | recipe_stmt
     | decorator
     | bundle_stmt
@@ -12,7 +13,6 @@ stmt = {
     | declaration
     | while_stmt
     | for_stmt
-    | expr_stmt
 }
 
 visibility = { "public" }

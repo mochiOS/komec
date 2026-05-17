@@ -89,7 +89,7 @@ pub enum Expr {
 #[allow(unused)]
 pub enum Accessor {
     Property(String),
-    Method(Vec<Expr>),
+    Method(Vec<Expr>, Option<Vec<Stmt>>),   // Option<Vec<Stmt>>はトレイリングクロージャ
 }
 
 #[derive(Debug, Clone)]
@@ -474,34 +474,55 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
             let inner_pair = pair.into_inner().next().unwrap();
             parse_expr(inner_pair)
         }
+
         Rule::call_chain => {
             let mut inner = pair.into_inner();
             let head_pair = inner.next().unwrap();
             let head = head_pair.as_str().to_string();
 
-            // アクセサ（.propertyや()メソッド呼び出し）の解析
             let mut tails = Vec::new();
             for accessor_pair in inner {
-                match accessor_pair.as_rule() {
+                let target_pair = if accessor_pair.as_rule() == Rule::child_access {
+                    accessor_pair.into_inner().next().unwrap()
+                } else {
+                    accessor_pair
+                };
+
+                match target_pair.as_rule() {
                     Rule::property_access => {
-                        let prop_name = accessor_pair.into_inner().next().unwrap().as_str().to_string();
+                        let prop_name = target_pair.into_inner().next().unwrap().as_str().to_string();
                         tails.push(Accessor::Property(prop_name));
                     }
                     Rule::method_call => {
+                        let inner_method = target_pair.into_inner();
                         let mut args = Vec::new();
-                        for arg_pair in accessor_pair.into_inner() {
-                            args.push(parse_expr(arg_pair));
+                        let mut trailing_closure = None;
+
+                        for sub_item in inner_method {
+                            match sub_item.as_rule() {
+                                Rule::expr => {
+                                    args.push(parse_expr(sub_item));
+                                }
+                                Rule::block => {
+                                    // 後ろにくっついているブロック `{ ... }` を解析
+                                    let mut block_stmts = Vec::new();
+                                    for stmt_pair in sub_item.into_inner() {
+                                        if stmt_pair.as_rule() == Rule::stmt {
+                                            block_stmts.push(parse_stmt(stmt_pair));
+                                        }
+                                    }
+                                    trailing_closure = Some(block_stmts);
+                                }
+                                _ => {}
+                            }
                         }
-                        tails.push(Accessor::Method(args));
+
+                        tails.push(Accessor::Method(args, trailing_closure));
                     }
-                    _ => {
-                        // TODO: child_accessとかも実装
-                        println!("Skip: {:?}", accessor_pair);
-                    }
+                    _ => {}
                 }
             }
 
-            // アクセサが何もなければ、それはただの単一の識別子なので、Expr::Identとして返す
             if tails.is_empty() && head_pair.as_rule() == Rule::ident {
                 Expr::Ident(head)
             } else {
