@@ -3,10 +3,10 @@ program = { SOI ~ (stmt)* ~ EOI }
 stmt = {
     cinclude_stmt
     | import_stmt
+    | bundle_stmt
     | expr_stmt
     | recipe_stmt
     | decorator
-    | bundle_stmt
     | fn_decl
     | if_stmt
     | assignment
