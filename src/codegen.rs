@@ -30,6 +30,27 @@ pub struct VariableInfo<'ctx> {
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     /// 複数の文（Statements）を順番に LLVM 命令に変換する
     pub fn compile_statements(&mut self, statements: &[Stmt]) -> Result<(), Box<dyn std::error::Error>> {
+        let i32_type = self.context.i32_type();
+        for stmt in statements {
+            if let Stmt::Declaration { is_state, name, .. } = stmt {
+                if *is_state {
+                    let global_var = match self.module.get_global(name) {
+                        Some(g) => g,
+                        None => {
+                            let g = self.module.add_global(i32_type, None, name);
+                            g.set_initializer(&i32_type.const_int(0, false));
+                            g
+                        }
+                    };
+
+                    self.variables.insert(name.clone(), VariableInfo {
+                        ptr: global_var.as_pointer_value(),
+                        is_state: true,
+                    });
+                }
+            }
+        }
+
         for stmt in statements {
             match stmt {
                 #[allow(unused)]
