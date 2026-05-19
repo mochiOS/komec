@@ -219,41 +219,44 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     if let Some(prev) = previous_block {
                         self.builder.position_at_end(prev);
 
-                        if prev.get_terminator().is_none() {
-                            let subscribe_fn = match self.module.get_function("__kome_runtime_subscribe") {
-                                Some(f) => f,
-                                None => {
-                                    let address_space = inkwell::AddressSpace::from(0);
-                                    let generic_ptr_type = self.context.ptr_type(address_space);
-
-                                    let sub_fn_type = void_type.fn_type(
-                                        &[generic_ptr_type.into(), generic_ptr_type.into()],
-                                        false
-                                    );
-                                    self.module.add_function("__kome_runtime_subscribe", sub_fn_type, None)
-                                }
-                            };
-
-                            // 依存している全てのstate変数に対して、このレシピ関数を登録する命令を生成
-                            for dep_var in state_deps {
-                                // 変数名文字列のグローバルポインタを作成
-                                let dep_var_global = self.builder.build_global_string_ptr(dep_var, "dep_var_name")
-                                    .expect("Failed to generate global string ptr");
-
-                                // レシピ関数のポインタを取得
-                                let recipe_fn_ptr = recipe_function.as_global_value().as_pointer_value();
-
-                                self.builder.build_call(
-                                    subscribe_fn,
-                                    &[dep_var_global.as_pointer_value().into(), recipe_fn_ptr.into()],
-                                    "subscribe_call"
-                                ).expect("Failed to build runtime subscribe call");
-
-                                debug!("Codegen: Registered '{}' to look at state '{}'", recipe_fn_name, dep_var);
-                            }
-                        } else {
-                            debug!("Codegen: Skip subscribe call insertion because the parent block is already terminated.");
+                        // すでにret等がある場合は、その直前に挿入ポイントを戻す
+                        if let Some(terminator) = prev.get_terminator() {
+                            self.builder.position_before(&terminator);
                         }
+
+                        let subscribe_fn = match self.module.get_function("__kome_runtime_subscribe") {
+                            Some(f) => f,
+                            None => {
+                                let address_space = inkwell::AddressSpace::from(0);
+                                let generic_ptr_type = self.context.ptr_type(address_space);
+
+                                let sub_fn_type = void_type.fn_type(
+                                    &[generic_ptr_type.into(), generic_ptr_type.into()],
+                                    false
+                                );
+                                self.module.add_function("__kome_runtime_subscribe", sub_fn_type, None)
+                            }
+                        };
+
+                        // 依存している全てのstate変数に対して、このレシピ関数を登録する命令を生成
+                        for dep_var in state_deps {
+                            // 変数名文字列のグローバルポインタを作成
+                            let dep_var_global = self.builder.build_global_string_ptr(dep_var, "dep_var_name")
+                                .expect("Failed to generate global string ptr");
+
+                            // レシピ関数のポインタを取得
+                            let recipe_fn_ptr = recipe_function.as_global_value().as_pointer_value();
+
+                            self.builder.build_call(
+                                subscribe_fn,
+                                &[dep_var_global.as_pointer_value().into(), recipe_fn_ptr.into()],
+                                "subscribe_call"
+                            ).expect("Failed to build runtime subscribe call");
+
+                            debug!("Codegen: Registered '{}' to look at state '{}'", recipe_fn_name, dep_var);
+                        }
+
+                        self.builder.position_at_end(prev);
                     } else {
                         debug!("Codegen: No parent block available to insert runtime subscribe call.");
                     }
