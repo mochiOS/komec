@@ -1,3 +1,5 @@
+use libc.keyboard
+
 fn onPress(key: string) {
     kome_std_io_keyboard_onPress(key)
 }

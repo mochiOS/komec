@@ -80,16 +80,31 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     let mut c_header_path = kome_file_path.clone();
                     c_header_path.set_extension("h");
+
                     if c_header_path.exists() {
-                        self.library_manager.load_c_header(c_header_path.to_str().unwrap(), self.context, &self.module);
+                        if let Ok(absolute_path) = std::fs::canonicalize(&c_header_path) {
+                            self.library_manager.load_c_header(
+                                absolute_path.to_str().unwrap(),
+                                self.context,
+                                &self.module
+                            );
+                        } else {
+                            self.library_manager.load_c_header(
+                                c_header_path.to_str().unwrap(),
+                                self.context,
+                                &self.module
+                            );
+                        }
                     }
+
+                    let mut std_ast: Vec<Stmt> = Vec::new();
 
                     let pairs = match crate::KomeParser::parse(crate::Rule::program, &source) {
                         Ok(p) => p,
-                        Err(e) => return Err(format!("Failed to parse {}: {:?}", full_path, e).into()),
+                        Err(e) => {
+                            panic!("Failed to parse standard library file {:?}: {}", kome_file_path, e);
+                        }
                     };
-
-                    let mut std_ast: Vec<Stmt> = Vec::new();
 
                     for pair in pairs {
                         match pair.as_rule() {
@@ -505,13 +520,29 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 self.compile_statements(&*stmts.clone()).expect("Failed to compile block statements");
                 self.context.i32_type().const_int(0, false).as_basic_value_enum()
             }
-            Expr::CallChain { head, tails} => {
-                // LLVM moduleなるものから関数を探す
+            Expr::CallChain { head, tails } => {
                 if let Some(ast::Accessor::Method(args, trailing_closure)) = tails.first() {
-                    let function = self.module.get_function(head)
+                    let mut fn_name = head.clone();
+                    let lookup_name = fn_name.replace('.', "_");
+
+                    if self.module.get_function(&lookup_name).is_none() {
+                        if let Some(method_name) = head.split('.').last() {
+                            let fallback_name = format!("__bundle_{}", method_name);
+                            if self.module.get_function(&fallback_name).is_some() {
+                                fn_name = fallback_name;
+                            } else {
+                                fn_name = lookup_name;
+                            }
+                        } else {
+                            fn_name = lookup_name;
+                        }
+                    } else {
+                        fn_name = lookup_name;
+                    }
+
+                    let function = self.module.get_function(&fn_name)
                         .expect(&format!("Undefined function: {}", head));
 
-                    // 引数をLLVM Valueに変換
                     let mut llvm_args = Vec::new();
 
                     for arg in args {
@@ -519,9 +550,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(val));
                     }
 
-                    // トレイリングクロージャが存在する場合、無名関数を作って引数の末尾に追加する
                     if let Some(block_stmts) = trailing_closure {
-                        // 一意な無名関数名を決定（ __kome_anon_closure_N）
                         let mut i = 0;
                         let closure_name = loop {
                             let name = format!("__kome_anon_closure_{}", i);
@@ -531,20 +560,16 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             i += 1;
                         };
 
-                        // 無名関数の型を定義 (void -> void)
                         let void_type = self.context.void_type();
                         let closure_fn_type = void_type.fn_type(&[], false);
                         let closure_function = self.module.add_function(&closure_name, closure_fn_type, None);
 
-                        // 基本ブロックを生成して、一時的にビルダーの挿入先を無名関数の中へと移動させる
                         let entry_bb = self.context.append_basic_block(closure_function, "entry");
                         let current_bb = self.builder.get_insert_block().unwrap();
                         self.builder.position_at_end(entry_bb);
 
-                        // クロージャ内のステートメント群（onPress内の処理など）をコンパイル
                         self.compile_statements(block_stmts).expect("Failed to compile trailing closure body");
 
-                        // void関数なので値を返さずにReturn
                         self.builder.build_return(None).expect("Failed to build return for closure");
                         self.builder.position_at_end(current_bb);
 
@@ -555,7 +580,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     let call = self.builder.build_call(function, &llvm_args, "calltmp")
                         .expect("Codegen: Failed to build function call");
 
-                    // 返り値の処理
                     match call.try_as_basic_value() {
                         ValueKind::Basic(val) => {
                             val
@@ -568,6 +592,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     panic!("Codegen: Undefined function: {}", head);
                 }
             }
+
             Expr::String(s) => {
                 let unescaped = s.replace("\\n", "\n");
                 let global_str_ptr = self.builder

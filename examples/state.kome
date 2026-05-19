@@ -1,5 +1,6 @@
 use libc.stdio
 use std.io.keyboard
+use std.bundle
 
 bundle App {
     public state let mut Index = 0
@@ -10,6 +11,8 @@ bundle App {
 }
 
 fn main() {
+    App.run()
+
     keyboard.onPress(any) {
         App.Index += 1          // キーが押されるたびにIndexをインクリメント
     }
