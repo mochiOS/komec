@@ -2,6 +2,7 @@
 name = "Kome"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 inkwell = {  version = "0.9.0", features = ["llvm22-1"] }
@@ -11,3 +12,8 @@ clang = "2.0.0"
 log = "0.4.29"
 env_logger = "0.11.10"
 lazy_static = "1.5.0"
+
+[build-dependencies]
+cc = "1.0"
+walkdir = "2.3"
+
