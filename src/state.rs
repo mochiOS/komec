@@ -10,17 +10,10 @@ lazy_static! {
     static ref RECIPIENT_REGISTRY: Mutex<HashMap<String, Vec<RecipeFn>>> = Mutex::new(HashMap::new());
 }
 
-/// 変数とレシピの依存関係を動的に登録する関数
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __kome_runtime_subscribe(var_name_ptr: *const c_char, recipe: RecipeFn) {
-    unsafe {
-        if var_name_ptr.is_null() { return; }
-        if let Ok(c_str) = CStr::from_ptr(var_name_ptr).to_str() {
-            let mut registry = RECIPIENT_REGISTRY.lock().unwrap();
-            registry.entry(c_str.to_string()).or_insert_with(Vec::new).push(recipe);
-        }
-    }
-}
+// NOTE: subscription is implemented in the C runtime (std/runtime.c).
+// The Rust-side registry was removed to avoid duplicate symbol when linking
+// the C runtime. If you want Rust to own the registry instead, remove the
+// C implementation in `std/runtime.c` and reintroduce the function below.
 
 /// stateへの代入命令の直後に呼び出される通知関数
 ///
