@@ -33,7 +33,7 @@ fn main() {
     env_logger::init();
     let args: Vec<String> = env::args().collect();
 
-    unsafe { env::set_var("RUST_LOG", "debug"); }
+    unsafe { env::set_var("RUST_LOG", "debug!"); }
 
     if args.len() == 1 {
         println!("Usage: {} <source_file>", args[0]);
@@ -42,7 +42,7 @@ fn main() {
 
 
     if args.len() > 2 && args[2] == "-d" {
-        unsafe { env::set_var("RUST_LOG", "debug"); }
+        unsafe { env::set_var("RUST_LOG", "debug!"); }
     }
 
     let source_file = args[1].clone();
@@ -157,27 +157,27 @@ fn main() {
         if let Some(fn_val) = module.get_function("__kome_runtime_start_loop") {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_start_loop as usize);
-            eprintln!("[jit-map] mapped __kome_runtime_start_loop -> {:p}", __kome_runtime_start_loop as *const ());
+            debug!("[jit-map] mapped __kome_runtime_start_loop -> {:p}", __kome_runtime_start_loop as *const ());
         }
 
         if let Some(fn_val) = module.get_function("__kome_runtime_subscribe") {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_subscribe as usize);
-            eprintln!("[jit-map] mapped __kome_runtime_subscribe -> {:p}", __kome_runtime_subscribe as *const ());
+            debug!("[jit-map] mapped __kome_runtime_subscribe -> {:p}", __kome_runtime_subscribe as *const ());
         }
 
         if let Some(fn_val) = module.get_function("__kome_runtime_process_events") {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as usize);
-            eprintln!("[jit-map] mapped __kome_runtime_process_events -> {:p}", __kome_runtime_process_events as *const ());
+            debug!("[jit-map] mapped __kome_runtime_process_events -> {:p}", __kome_runtime_process_events as *const ());
         }
     }
 
     unsafe {
         if let Ok(entry_fn) = execution_engine.get_function::<unsafe extern "C" fn() -> i32>("__kome_entry") {
-            eprintln!("[runtime-debug] calling __kome_entry()");
+            debug!("[runtime] calling __kome_entry()");
             entry_fn.call();
-            eprintln!("[runtime-debug] returned from __kome_entry()");
+            debug!("[runtime] returned from __kome_entry()");
         } else {
             println!("Runtime Error: Entry function is not defined.");
         }
@@ -186,20 +186,20 @@ fn main() {
     // If a main() function was generated, call it so user code runs
     unsafe {
         if let Ok(main_fn) = execution_engine.get_function::<unsafe extern "C" fn()>("main") {
-            eprintln!("[runtime-debug] calling main()");
+            debug!("[runtime] calling main()");
             debug!("Calling generated main() function");
             main_fn.call();
-            eprintln!("[runtime-debug] returned from main()");
+            debug!("[runtime] returned from main()");
         }
     }
 
     // After main() runs, process any registered event callbacks
     unsafe {
         if let Ok(process_events) = execution_engine.get_function::<unsafe extern "C" fn()>("__kome_runtime_process_events") {
-            eprintln!("[runtime-debug] calling __kome_runtime_process_events()");
+            debug!("[runtime] calling __kome_runtime_process_events()");
             debug!("Processing runtime events");
             process_events.call();
-            eprintln!("[runtime-debug] returned from __kome_runtime_process_events()");
+            debug!("[runtime] returned from __kome_runtime_process_events()");
         }
     }
 
