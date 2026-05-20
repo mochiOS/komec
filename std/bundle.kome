@@ -1,7 +1,5 @@
 use libc.bundle
 
-bundle __bundle {
-    fn run() {
-        __kome_runtime_start_loop()
-    }
+bundle.run() {
+    __kome_runtime_start_loop()
 }

@@ -1,0 +1,11 @@
+use libc.stdio
+use std.bundle
+
+bundle App {
+    public state let mut Index = 0
+
+    recipe button: Index = {
+        printf("Button pressed: %d\n", Index)
+    }
+}
+

@@ -198,8 +198,12 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let name = first.as_str().to_string();
             let mut body = Vec::new();
 
+            // Parse all remaining items which could be params, return type, or statements
             for sub_pair in inner {
                 match sub_pair.as_rule() {
+                    Rule::stmt => {
+                        body.push(parse_stmt(sub_pair));
+                    }
                     Rule::block => {
                         for stmt_pair in sub_pair.into_inner() {
                             if stmt_pair.as_rule() == Rule::stmt {
@@ -207,6 +211,8 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                             }
                         }
                     }
+                    // Skip parameters and type specifications
+                    Rule::param | Rule::type_spec | Rule::path | Rule::ident => {}
                     _ => {}
                 }
             }

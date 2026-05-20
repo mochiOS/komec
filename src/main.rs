@@ -8,6 +8,17 @@ use env_logger;
 use log::*;
 use crate::codegen::CodegenContext;
 use crate::library::LibraryManager;
+use std::ffi::CString;
+use inkwell::values::AsValueRef;
+
+// Declare the C runtime functions as extern so we can obtain their addresses
+// directly (without dlsym). These symbols are provided by the C sources
+// compiled into the crate by build.rs.
+unsafe extern "C" {
+    fn __kome_runtime_start_loop();
+    fn __kome_runtime_subscribe(name: *const std::os::raw::c_char, cb: *const ());
+    fn __kome_runtime_process_events();
+}
 
 mod ast;
 mod codegen;
@@ -114,6 +125,13 @@ fn main() {
 
     builder.position_at_end(entry_block);
 
+    // Call any registration functions (e.g., onPress) to set up subscriptions
+    if let Some(on_press_fn) = module.get_function("onPress") {
+        builder.build_call(on_press_fn, &[], "call_onpress").ok();
+    }
+
+
+
     for stmt in &ast_state {
         match stmt {
             ast::Stmt::Declaration { .. } | ast::Stmt::Assignment { .. } | ast::Stmt::ExprStmt(..) => {
@@ -131,11 +149,57 @@ fn main() {
 
     let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
 
+    // Register known C runtime symbols with the JIT so external calls resolve correctly.
+    // We obtain direct addresses of the linked C functions via extern declarations
+    // above and register them with the JIT. This avoids needing -export-dynamic
+    // and also avoids dlsym/libclang interaction issues.
+    unsafe {
+        if let Some(fn_val) = module.get_function("__kome_runtime_start_loop") {
+            let gv = fn_val.as_global_value();
+            execution_engine.add_global_mapping(&gv, __kome_runtime_start_loop as usize);
+            eprintln!("[jit-map] mapped __kome_runtime_start_loop -> {:p}", __kome_runtime_start_loop as *const ());
+        }
+
+        if let Some(fn_val) = module.get_function("__kome_runtime_subscribe") {
+            let gv = fn_val.as_global_value();
+            execution_engine.add_global_mapping(&gv, __kome_runtime_subscribe as usize);
+            eprintln!("[jit-map] mapped __kome_runtime_subscribe -> {:p}", __kome_runtime_subscribe as *const ());
+        }
+
+        if let Some(fn_val) = module.get_function("__kome_runtime_process_events") {
+            let gv = fn_val.as_global_value();
+            execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as usize);
+            eprintln!("[jit-map] mapped __kome_runtime_process_events -> {:p}", __kome_runtime_process_events as *const ());
+        }
+    }
+
     unsafe {
         if let Ok(entry_fn) = execution_engine.get_function::<unsafe extern "C" fn() -> i32>("__kome_entry") {
+            eprintln!("[runtime-debug] calling __kome_entry()");
             entry_fn.call();
+            eprintln!("[runtime-debug] returned from __kome_entry()");
         } else {
             println!("Runtime Error: Entry function is not defined.");
+        }
+    }
+
+    // If a main() function was generated, call it so user code runs
+    unsafe {
+        if let Ok(main_fn) = execution_engine.get_function::<unsafe extern "C" fn()>("main") {
+            eprintln!("[runtime-debug] calling main()");
+            debug!("Calling generated main() function");
+            main_fn.call();
+            eprintln!("[runtime-debug] returned from main()");
+        }
+    }
+
+    // After main() runs, process any registered event callbacks
+    unsafe {
+        if let Ok(process_events) = execution_engine.get_function::<unsafe extern "C" fn()>("__kome_runtime_process_events") {
+            eprintln!("[runtime-debug] calling __kome_runtime_process_events()");
+            debug!("Processing runtime events");
+            process_events.call();
+            eprintln!("[runtime-debug] returned from __kome_runtime_process_events()");
         }
     }
 }

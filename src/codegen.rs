@@ -30,6 +30,24 @@ pub struct VariableInfo<'ctx> {
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     /// 複数の文（Statements）を順番に LLVM 命令に変換する
     pub fn compile_statements(&mut self, statements: &[Stmt]) -> Result<(), Box<dyn std::error::Error>> {
+        eprintln!("DEBUG: compile_statements called with {} statements", statements.len());
+        for (i, stmt) in statements.iter().enumerate() {
+            eprintln!("DEBUG:   stmt[{}] type: {}", i, match stmt {
+                Stmt::Declaration{..} => "Declaration",
+                Stmt::Assignment{..} => "Assignment",
+                Stmt::ExprStmt(_) => "ExprStmt",
+                Stmt::FnDecl{..} => "FnDecl",
+                Stmt::Bundle{..} => "Bundle",
+                Stmt::Import{..} => "Import",
+                Stmt::Recipe{..} => "Recipe",
+                Stmt::If{..} => "If",
+                Stmt::While{..} => "While",
+                Stmt::For{..} => "For",
+                Stmt::Decorator{..} => "Decorator",
+                Stmt::Block(_) => "Block",
+            });
+        }
+
         let i32_type = self.context.i32_type();
         for stmt in statements {
             if let Stmt::Declaration { is_state, name, .. } = stmt {
@@ -129,6 +147,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 }
 
                 Stmt::FnDecl { is_public: _, name, body } => {
+                    eprintln!("DEBUG compile_statements: FnDecl '{}' with {} body statements", name, body.len());
                     let previous_block = self.builder.get_insert_block();
 
                     let void_type = self.context.void_type();
@@ -201,8 +220,34 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.builder.position_at_end(merge_bb);
                 }
 
-                Stmt::Bundle { name: _bundle_name, body } => {
+                Stmt::Bundle { name: bundle_name, body } => {
+                    /* compile bundle body first */
                     self.compile_statements(body)?;
+
+                    /* Then auto-generate run() method for every bundle */
+                    let run_fn_name = format!("{}_run", bundle_name);
+                    if self.module.get_function(&run_fn_name).is_none() {
+                        let void_type = self.context.void_type();
+                        let fn_type = void_type.fn_type(&[], false);
+                        let run_function = self.module.add_function(&run_fn_name, fn_type, None);
+                        let entry_block = self.context.append_basic_block(run_function, "entry");
+
+                        let prev_block = self.builder.get_insert_block();
+                        self.builder.position_at_end(entry_block);
+
+                        /* Call the runtime start loop */
+                        if let Some(loop_fn) = self.module.get_function("__kome_runtime_start_loop") {
+                            self.builder.build_call(loop_fn, &[], "call_start_loop").ok();
+                        }
+
+                        self.builder.build_return(None).ok();
+
+                        if let Some(prev) = prev_block {
+                            self.builder.position_at_end(prev);
+                        }
+
+                        debug!("Codegen: Auto-generated run() for bundle '{}'", bundle_name);
+                    }
                 }
 
                 #[allow(unused)]
@@ -521,6 +566,42 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 self.context.i32_type().const_int(0, false).as_basic_value_enum()
             }
             Expr::CallChain { head, tails } => {
+                /* Handle bundle.method() calls (e.g., App.run()) */
+                eprintln!("DEBUG: compile_expr CallChain head={}, tails.len={}", head, tails.len());
+                for (i, tail) in tails.iter().enumerate() {
+                    eprintln!("DEBUG:   tail[{}] = {:?}", i, tail);
+                }
+                if tails.len() >= 2 {
+                    eprintln!("DEBUG: Found CallChain with {} tails", tails.len());
+                    if let (ast::Accessor::Property(method_name), ast::Accessor::Method(args, trailing_closure)) =
+                        (&tails[0], &tails[1]) {
+                        eprintln!("DEBUG: Property + Method found: {}.{}()", head, method_name);
+                        let bundle_name = head;
+                        let fn_name = format!("{}_{}", bundle_name, method_name);
+                        eprintln!("DEBUG: Looking for function: {}", fn_name);
+                        if let Some(function) = self.module.get_function(&fn_name) {
+                            eprintln!("DEBUG: Found function: {}", fn_name);
+                            let mut llvm_args = Vec::new();
+                            for arg in args {
+                                let val = self.compile_expr(arg);
+                                llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(val));
+                            }
+
+                            let call = self.builder.build_call(function, &llvm_args, "calltmp")
+                                .expect("Codegen: Failed to build function call");
+
+                            match call.try_as_basic_value() {
+                                ValueKind::Basic(val) => {
+                                    return val;
+                                }
+                                ValueKind::Instruction(_) => {
+                                    return self.context.i32_type().const_int(0, false).as_basic_value_enum();
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Some(ast::Accessor::Method(args, trailing_closure)) = tails.first() {
                     let mut fn_name = head.clone();
                     let lookup_name = fn_name.replace('.', "_");

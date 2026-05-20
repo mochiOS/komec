@@ -126,16 +126,23 @@ impl LibraryManager {
                             }
                         }
 
-                        let llvm_ret = match result_type.get_kind() {
-                            TypeKind::Int => context.i32_type(),
-                            _ => context.i32_type(),
-                        };
-
                         // 可変長引数（printfなど）かどうかの判定
                         let is_variadic = func_type.is_variadic();
 
                         // LLVMモジュールに関数を登録
-                        let fn_type = llvm_ret.fn_type(&llvm_args, is_variadic);
+                        // Return typeをClangのTypeKindに基づいて直接決定する（Void/Int/Pointerを扱う）
+                        let fn_type = match result_type.get_kind() {
+                            TypeKind::Void => context.void_type().fn_type(&llvm_args, is_variadic),
+                            TypeKind::Int => context.i32_type().fn_type(&llvm_args, is_variadic),
+                            TypeKind::Pointer => {
+                                let ptr = context.ptr_type(inkwell::AddressSpace::from(0));
+                                ptr.fn_type(&llvm_args, is_variadic)
+                            }
+                            _ => {
+                                // フォールバック: 未知の型は i32 として扱う
+                                context.i32_type().fn_type(&llvm_args, is_variadic)
+                            }
+                        };
                         if module.get_function(&func_name).is_none() {
                             module.add_function(&func_name, fn_type, None);
                             debug!("LibraryManager: Loaded function '{}'", func_name);

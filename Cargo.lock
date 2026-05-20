@@ -11,6 +11,7 @@ dependencies = [
  "env_logger",
  "inkwell",
  "lazy_static",
+ "libc",
  "log",
  "pest",
  "pest_derive",

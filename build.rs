@@ -28,5 +28,9 @@ fn main() {
     }
 
     build.compile("kome_std");
+
+    // Ensure exported symbols from the final binary are visible to the JIT (dlsym).
+    // This makes symbols from compiled C runtime available when LLVM JIT resolves externs.
+    println!("cargo:rustc-link-arg=-Wl,-export-dynamic");
 }
 
