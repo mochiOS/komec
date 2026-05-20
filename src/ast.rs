@@ -28,6 +28,7 @@ pub enum Stmt {
     FnDecl {
         is_public: bool,
         name: String,
+        params: Vec<FnParam>,
         body: Vec<Stmt>,
     },
     If {
@@ -57,6 +58,13 @@ pub enum Stmt {
         value: Expr,
     },
     Block(Vec<Stmt>),
+}
+
+#[derive(Debug, Clone)]
+#[allow(unused)]
+pub struct FnParam {
+    pub name: String,
+    pub ty: String,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +204,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             }
 
             let name = first.as_str().to_string();
+            let mut params: Vec<FnParam> = Vec::new();
             let mut body = Vec::new();
 
             // Parse all remaining items which could be params, return type, or statements
@@ -211,13 +220,21 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                             }
                         }
                     }
+                    Rule::param => {
+                        let mut p = sub_pair.into_inner();
+                        let pname = p.next().map(|x| x.as_str().to_string()).unwrap_or_default();
+                        let pty = p.next().map(|x| x.as_str().to_string()).unwrap_or_else(|| "Int".to_string());
+                        if !pname.is_empty() {
+                            params.push(FnParam { name: pname, ty: pty });
+                        }
+                    }
                     // Skip parameters and type specifications
-                    Rule::param | Rule::type_spec | Rule::path | Rule::ident => {}
+                    Rule::type_spec | Rule::path | Rule::ident => {}
                     _ => {}
                 }
             }
 
-            Stmt::FnDecl { is_public, name, body }
+            Stmt::FnDecl { is_public, name, params, body }
         }
 
         Rule::if_stmt => {

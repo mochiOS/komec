@@ -8,7 +8,7 @@
 /// # Arguments
 /// * `any` - 任意のデータ（未使用）
 /// * `closure` - コールバック関数へのポインタ
-void keyboard_onPress(void *any, void *closure) {
+void __kome_std_keyboard_onPress(void *any, void *closure) {
     (void)any;
     fprintf(stderr, "keyboard_onPress: closure=%p - invoking subscriptions\n", closure);
 
@@ -26,7 +26,7 @@ void keyboard_onPress(void *any, void *closure) {
 /// # Arguments
 /// * `any` - 任意のデータ（未使用）
 /// * `closure` - コールバック関数へのポインタ
-void keyboard_scan(void *any, void *closure) {
+void __kome_std_keyboard_scan(void *any, void *closure) {
     (void)any;
     if (closure) {
         __kome_runtime_subscribe("keyboard.scan", closure);

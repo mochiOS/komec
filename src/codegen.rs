@@ -27,6 +27,13 @@ pub struct CodegenContext<'a, 'ctx> {
 pub struct VariableInfo<'ctx> {
     pub ptr: PointerValue<'ctx>,
     pub is_state: bool,
+    pub kind: VariableKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariableKind {
+    I32,
+    Ptr,
 }
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
@@ -66,6 +73,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.variables.insert(name.clone(), VariableInfo {
                         ptr: global_var.as_pointer_value(),
                         is_state: true,
+                        kind: VariableKind::I32,
                     });
                 }
             }
@@ -76,6 +84,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 #[allow(unused)]
                 Stmt::Import(path_parts) => {
                     let full_path = path_parts.join(".");
+                    let module_prefix = path_parts.last().cloned().unwrap_or_default();
 
                     if full_path.starts_with("libc.") {
                         self.library_manager.load_c_header(&full_path, self.context, &self.module);
@@ -145,20 +154,64 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         }
                     }
 
+                    // Namespace std modules by prefixing their function names with the module name.
+                    // Example: `use std.io.keyboard` makes `fn scan(...)` available as `keyboard.scan(...)`
+                    // by compiling it as `keyboard_scan`.
+                    if !module_prefix.is_empty() {
+                        for stmt in std_ast.iter_mut() {
+                            if let Stmt::FnDecl { name, .. } = stmt {
+                                if !name.contains('.') && !name.starts_with(&format!("{module_prefix}_")) {
+                                    *name = format!("{module_prefix}_{name}");
+                                }
+                            }
+                        }
+                    }
+
                     self.compile_statements(&std_ast)?;
                 }
 
-                Stmt::FnDecl { is_public: _, name, body } => {
+                Stmt::FnDecl { is_public: _, name, params, body } => {
                     eprintln!("DEBUG compile_statements: FnDecl '{}' with {} body statements", name, body.len());
                     let previous_block = self.builder.get_insert_block();
 
                     let void_type = self.context.void_type();
-                    let fn_type = void_type.fn_type(&[], false);
-                    let function = self.module.add_function(name, fn_type, None);
+                    let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                    let i32_t = self.context.i32_type();
+
+                    let mut llvm_param_types = Vec::new();
+                    let mut param_kinds = Vec::new();
+                    for p in params {
+                        let ty = p.ty.as_str();
+                        let (llvm_ty, kind) = match ty {
+                            "Ptr" | "Any" | "String" => (ptr_t.into(), VariableKind::Ptr),
+                            "Int" | "i32" => (i32_t.into(), VariableKind::I32),
+                            _ => (i32_t.into(), VariableKind::I32),
+                        };
+                        llvm_param_types.push(llvm_ty);
+                        param_kinds.push(kind);
+                    }
+
+                    let fn_type = void_type.fn_type(&llvm_param_types, false);
+                    let llvm_name = name.replace('.', "_");
+                    let function = self.module.add_function(&llvm_name, fn_type, None);
                     let entry_block = self.context.append_basic_block(function, "entry");
 
                     self.variables.clear();
                     self.builder.position_at_end(entry_block);
+
+                    for (idx, p) in params.iter().enumerate() {
+                        let kind = param_kinds.get(idx).copied().unwrap_or(VariableKind::I32);
+                        let alloca = match kind {
+                            VariableKind::I32 => self.builder.build_alloca(i32_t, &p.name).expect("alloca i32"),
+                            VariableKind::Ptr => self.builder.build_alloca(ptr_t, &p.name).expect("alloca ptr"),
+                        };
+                        let arg = function.get_nth_param(idx as u32).expect("param");
+                        self.builder.build_store(alloca, arg).expect("store param");
+                        self.variables.insert(
+                            p.name.clone(),
+                            VariableInfo { ptr: alloca, is_state: false, kind },
+                        );
+                    }
 
                     self.compile_statements(body)?;
 
@@ -399,7 +452,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                         self.variables.insert(
                             loop_var_name.clone(),
-                            VariableInfo { ptr: new_alloc, is_state: false }
+                            VariableInfo { ptr: new_alloc, is_state: false, kind: VariableKind::I32 }
                         );
                         new_alloc
                     };
@@ -486,8 +539,19 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     panic!("Undefined variable: {}", name);
                 };
 
-                self.builder.build_load(self.context.i32_type(), ptr, name)
-                    .expect("Failed to load variable")
+                if let Some(var_info) = self.variables.get(name) {
+                    match var_info.kind {
+                        VariableKind::I32 => self.builder.build_load(self.context.i32_type(), ptr, name)
+                            .expect("Failed to load variable"),
+                        VariableKind::Ptr => {
+                            let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                            self.builder.build_load(ptr_t, ptr, name).expect("Failed to load ptr variable")
+                        }
+                    }
+                } else {
+                    self.builder.build_load(self.context.i32_type(), ptr, name)
+                        .expect("Failed to load variable")
+                }
             }
             Expr::BinaryOp {left, op, right} => {
                 // 左辺と右辺をそれぞれLLVM IRにする

@@ -1,11 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "std.h"
 #include "bundle.h"
 #include "io/keyboard.h"
 #include "runtime.h"
 #include <pthread.h>
 #include <unistd.h>
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -41,7 +43,7 @@ void __kome_runtime_subscribe(const char *name, void *callback) {
     s->next = subscriptions;
     subscriptions = s;
 
-    fprintf(stderr, "__kome_runtime_subscribe: %s -> %p\n", copy, callback);
+    debug("__kome_runtime_subscribe: %s -> %p\n", copy, callback);
 }
 
 void __kome_runtime_invoke_subscriptions(void) {
@@ -125,7 +127,7 @@ static void *event_thread(void *arg) {
                         }
                         if (sym && found_count < MAX_FUNCS) {
                             found_funcs[found_count++] = (void(*)(void))sym;
-                            fprintf(stderr, "runtime: discovered recipe function: %s -> %p\n", funcname, sym);
+                            debug("runtime: discovered recipe function: %s -> %p\n", funcname, sym);
                         }
                     }
                 }
@@ -135,13 +137,12 @@ static void *event_thread(void *arg) {
         free(source_file);
     }
 
-    /* simulate a few key presses */
     for (int i = 0; i < 5; ++i) {
-        fprintf(stderr, "runtime: simulating keyboard press %d\n", i+1);
+        debug("runtime: simulating keyboard press %d\n", i+1);
         for (int j = 0; j < found_count; ++j) {
             found_funcs[j]();
         }
-        keyboard_onPress(NULL, NULL);
+        __kome_std_keyboard_onPress(NULL, NULL);
         usleep(200 * 1000);
     }
 
@@ -153,7 +154,7 @@ void __kome_runtime_process_events(void) {
     /* Attempt to call onPress() to register recipes */
     void (*on_press)(void) = dlsym(dlopen(NULL, RTLD_LAZY), "onPress");
     if (on_press) {
-        fprintf(stderr, "__kome_runtime_process_events: calling onPress() to register recipes\n");
+        debug("__kome_runtime_process_events: calling onPress() to register recipes\n");
         on_press();
     }
 
@@ -164,7 +165,7 @@ void __kome_runtime_process_events(void) {
         cur = cur->next;
     }
     __kome_runtime_invoke_subscriptions();
-    fprintf(stderr, "__kome_runtime_process_events: invoked %d callbacks\n", count);
+    debug("__kome_runtime_process_events: invoked %d callbacks\n", count);
 }
 
 __attribute__((constructor))

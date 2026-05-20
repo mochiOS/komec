@@ -7,7 +7,7 @@
 #include "bundle.h"
 
 extern void __kome_runtime_process_events(void);
-extern void keyboard_onPress(void *any, void *closure);
+extern void __kome_std_keyboard_onPress(void *any, void *closure);
 
 static int g_loop_started = 0;
 static volatile sig_atomic_t g_keep_running = 1;
@@ -53,7 +53,7 @@ static void *bundle_main_loop(void *arg) {
             char buf[64];
             ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
             if (n > 0) {
-                keyboard_onPress(NULL, NULL);
+                __kome_std_keyboard_onPress(NULL, NULL);
             }
         }
     }

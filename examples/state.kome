@@ -17,4 +17,3 @@ fn main() {
 
     App.run()
 }
-

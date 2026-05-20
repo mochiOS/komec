@@ -1,3 +1,7 @@
-fn scan(key: String) {
+fn scan(any: Any, closure: Ptr) {
+    __kome_std_keyboard_scan(any, closure)
+}
 
+fn onPress(any: Any, closure: Ptr) {
+    __kome_std_keyboard_onPress(any, closure)
 }
