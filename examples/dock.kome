@@ -54,7 +54,12 @@ bundle App {
 }
 
 fn main() {
-    let mut window = viewKit.window.create() with children(
+    let config: windowConfig = {
+        title: "Dock",
+        decoration: "false",
+    }
+
+    let mut window = viewKit.window.create(config) with children(
         dock: App.dock,
     )
 
