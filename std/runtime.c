@@ -67,6 +67,21 @@ void keyboard_onPress(void *any, void *closure) {
     }
 }
 
+/*
+ * Convenience wrapper used by Kome code when calling `keyboard.scan(any) { ... }`.
+ * The Kome code generation will produce a call to `keyboard_scan` with the
+ * closure function pointer; here we register that closure with the runtime so
+ * it will be invoked when a key press is detected.
+ */
+void keyboard_scan(void *any, void *closure) {
+    (void)any;
+    if (closure) {
+        __kome_runtime_subscribe("keyboard.scan", closure);
+        fprintf(stderr, "keyboard_scan: subscribed closure %p\n", closure);
+    } else {
+        fprintf(stderr, "keyboard_scan: called with NULL closure\n");
+    }
+}
 
 /// プログラムのコマンドライン引数を解析して、.komeファイルを見つける。
 /// そのファイルを読み込んで、bundleとrecipeの定義を探し、対応する関数を動的にロードして保存する。
@@ -221,4 +236,3 @@ static void __kome_std_runtime_shutdown(void) {
         cur = cur->next;
     }
 }
-

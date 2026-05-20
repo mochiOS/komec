@@ -100,7 +100,7 @@ impl LibraryManager {
         if header_path.ends_with("stdio.h") || header_name.starts_with("libc.") {
             // printf, puts, fflush, putchar, getchar, vprintf などを簡易登録
             let i32_t = context.i32_type();
-            let void_t = context.void_type();
+            let _void_t = context.void_type();
             let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
 
             // int printf(const char *fmt, ...);
@@ -170,20 +170,7 @@ impl LibraryManager {
             }
             return true;
         }
-
-        // keyboard ヘッダに関してもフォールバック登録
-        if header_path.ends_with("keyboard.h") || header_name.contains("keyboard") {
-            let void_t = context.void_type();
-            let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
-
-            // void keyboard_onPress(void* any, void* closure)
-            if module.get_function("keyboard_onPress").is_none() {
-                let fn_ty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
-                module.add_function("keyboard_onPress", fn_ty, None);
-                debug!("LibraryManager: Added builtin prototype 'keyboard_onPress'");
-            }
-            return true;
-        }
+        
 
         // デフォルトは既存の clang ベースのパーサを使うが、libclang が環境で不安定な場合は
         // ここで失敗することがあるため安全に扱う必要がある。まずは試行して失敗したら false を返す。

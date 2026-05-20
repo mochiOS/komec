@@ -2,8 +2,8 @@ fn main() {
     let mut build = cc::Build::new();
 
     build.include("std");
+    println!("cargo:rerun-if-changed=std");
 
-    // Collect .c files under std/
     let mut files = Vec::new();
     for entry in walkdir::WalkDir::new("std") {
         let entry = match entry {
@@ -11,6 +11,7 @@ fn main() {
             Err(_) => continue,
         };
         if entry.file_type().is_file() {
+            println!("cargo:rerun-if-changed={}", entry.path().display());
             if let Some(ext) = entry.path().extension() {
                 if ext == "c" {
                     files.push(entry.path().to_string_lossy().into_owned());
@@ -29,8 +30,6 @@ fn main() {
 
     build.compile("kome_std");
 
-    // Ensure exported symbols from the final binary are visible to the JIT (dlsym).
-    // This makes symbols from compiled C runtime available when LLVM JIT resolves externs.
     println!("cargo:rustc-link-arg=-Wl,-export-dynamic");
 }
 

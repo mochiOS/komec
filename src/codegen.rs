@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use inkwell::module::Module;
 use inkwell::values::{BasicValue, PointerValue, ValueKind};
@@ -466,7 +467,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             Expr::Ident(name) => {
                 // Special case: "any" is a placeholder for event handlers
                 if name == "any" {
-                    return self.context.i32_type().const_int(0, false).as_basic_value_enum();
+                    let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                    return ptr_t.const_null().as_basic_value_enum();
                 }
 
                 let ptr = if let Some(var_info) = self.variables.get(name) {
