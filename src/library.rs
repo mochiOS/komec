@@ -1,22 +1,127 @@
 use std::path::Path;
 use clang::{Clang, EntityKind, Index, TypeKind};
+use inkwell::types::BasicType;
+use inkwell::types::BasicTypeEnum;
 use inkwell::module::Module;
 use log::*;
+use std::sync::OnceLock;
 
 pub struct LibraryManager {
-    clang: &'static Clang,
 }
 
 impl LibraryManager {
     pub fn new() -> Self {
-        // Create Clang and leak it to avoid destructor ordering issues between libclang and LLVM
-        // (some environments crash in clang/LLVM destructor chains at program exit).
-        let clang = Clang::new().expect("Failed to initialize clang");
-        let boxed = Box::new(clang);
-        let leaked: &'static Clang = Box::leak(boxed);
-        LibraryManager {
-            clang: leaked,
+        LibraryManager {}
+    }
+
+    fn clang() -> &'static Clang {
+        static CLANG: OnceLock<usize> = OnceLock::new();
+        let addr = *CLANG.get_or_init(|| {
+            // Create Clang and leak it to avoid destructor ordering issues between libclang and LLVM
+            // (some environments crash in clang/LLVM destructor chains at program exit).
+            let clang = Clang::new().expect("Failed to initialize clang");
+            Box::into_raw(Box::new(clang)) as usize
+        });
+        // Safety: `addr` is created from `Box::into_raw` and intentionally leaked for `'static`.
+        unsafe { &*(addr as *const Clang) }
+    }
+
+    fn try_load_simple_header<'a>(
+        &self,
+        header_path: &str,
+        context: &'a inkwell::context::Context,
+        module: &Module<'a>,
+    ) -> bool {
+        // Only attempt for non-system headers (std/ or local headers).
+        if header_path.starts_with("/usr/include") {
+            return false;
         }
+
+        let source = match std::fs::read_to_string(header_path) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        let void_t = context.void_type();
+        let i32_t = context.i32_type();
+        let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
+
+        let mut added_any = false;
+
+        for raw_line in source.lines() {
+            let line = raw_line.split("//").next().unwrap_or("").trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if !line.ends_with(';') || !line.contains('(') || !line.contains(')') {
+                continue;
+            }
+            if line.contains("typedef") || line.contains('{') || line.contains('}') {
+                continue;
+            }
+
+            // Very small C prototype parser: "<ret> <name>(<args>);"
+            let (before_paren, after_paren) = match line.split_once('(') {
+                Some(v) => v,
+                None => continue,
+            };
+            let args_str = match after_paren.rsplit_once(')') {
+                Some((a, _)) => a.trim(),
+                None => continue,
+            };
+
+            let before_paren = before_paren.trim_end_matches(';').trim();
+            let mut head_parts = before_paren.split_whitespace().collect::<Vec<_>>();
+            if head_parts.len() < 2 {
+                continue;
+            }
+            let name = head_parts.pop().unwrap();
+            let ret = head_parts.join(" ");
+
+            let ret_kind = match ret.as_str() {
+                "void" => None,
+                "int" => Some(i32_t.as_basic_type_enum()),
+                _ => Some(ptr_t.as_basic_type_enum()), // conservative fallback
+            };
+
+            let mut arg_types: Vec<BasicTypeEnum<'a>> = Vec::new();
+            let mut is_variadic = false;
+            let args_trimmed = args_str.trim();
+            if !(args_trimmed.is_empty() || args_trimmed == "void") {
+                for arg in args_trimmed.split(',') {
+                    let arg = arg.trim();
+                    if arg == "..." {
+                        is_variadic = true;
+                        continue;
+                    }
+                    // Parse type only; ignore parameter name.
+                    let arg_type = if arg.contains('*') {
+                        ptr_t.as_basic_type_enum()
+                    } else if arg.starts_with("int") {
+                        i32_t.as_basic_type_enum()
+                    } else if arg.starts_with("void") {
+                        ptr_t.as_basic_type_enum()
+                    } else {
+                        // Unknown: treat as pointer
+                        ptr_t.as_basic_type_enum()
+                    };
+                    arg_types.push(arg_type);
+                }
+            }
+
+            if module.get_function(name).is_some() {
+                continue;
+            }
+
+            let fn_ty = match ret_kind {
+                None => void_t.fn_type(&arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(), is_variadic),
+                Some(rt) => rt.fn_type(&arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(), is_variadic),
+            };
+            module.add_function(name, fn_ty, None);
+            added_any = true;
+        }
+
+        added_any
     }
 
     /// libcのヘッダーを読み込む
@@ -95,6 +200,12 @@ impl LibraryManager {
             return false;
         }
 
+        // Prefer a tiny safe prototype loader for local/std headers to avoid libclang instability.
+        // If it can parse at least one function prototype, we're done.
+        if self.try_load_simple_header(&header_path, context, module) {
+            return true;
+        }
+
         // 一部のよく使うヘッダについては libclang に頼らずプロトタイプを手で登録して
         // libclang の TranslationUnit 破棄時の不安定性を回避する
         if header_path.ends_with("stdio.h") || header_name.starts_with("libc.") {
@@ -147,34 +258,11 @@ impl LibraryManager {
 
             return true;
         }
-
-        // bundle や runtime 用のヘッダが要求された場合も、プロトタイプだけ登録しておく
-        if header_path.ends_with("bundle.h") || header_name.contains("std.bundle") || header_name.contains("bundle") {
-            let void_t = context.void_type();
-            let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
-
-            // void __kome_runtime_start_loop(void)
-            if module.get_function("__kome_runtime_start_loop").is_none() {
-                let fn_ty = void_t.fn_type(&[], false);
-                module.add_function("__kome_runtime_start_loop", fn_ty, None);
-            }
-            // void __kome_runtime_process_events(void)
-            if module.get_function("__kome_runtime_process_events").is_none() {
-                let fn_ty = void_t.fn_type(&[], false);
-                module.add_function("__kome_runtime_process_events", fn_ty, None);
-            }
-            // void __kome_runtime_subscribe(const char*, void*) -- 保守的にポインタで扱う
-            if module.get_function("__kome_runtime_subscribe").is_none() {
-                let fn_ty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
-                module.add_function("__kome_runtime_subscribe", fn_ty, None);
-            }
-            return true;
-        }
         
 
         // デフォルトは既存の clang ベースのパーサを使うが、libclang が環境で不安定な場合は
         // ここで失敗することがあるため安全に扱う必要がある。まずは試行して失敗したら false を返す。
-        let index = Index::new(&self.clang, false, false);
+        let index = Index::new(Self::clang(), false, false);
         let tu = match index.parser(&header_path).parse() {
             Ok(tu) => tu,
             Err(_) => return false,

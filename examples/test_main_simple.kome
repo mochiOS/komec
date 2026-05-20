@@ -1,6 +1,0 @@
-use libc.stdio
-
-fn main() {
-    printf("Hello from main\n")
-}
-

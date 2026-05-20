@@ -3,6 +3,7 @@
 #include <string.h>
 #include "bundle.h"
 #include "io/keyboard.h"
+#include "runtime.h"
 #include <pthread.h>
 #include <unistd.h>
 #ifndef _GNU_SOURCE
@@ -43,20 +44,7 @@ void __kome_runtime_subscribe(const char *name, void *callback) {
     fprintf(stderr, "__kome_runtime_subscribe: %s -> %p\n", copy, callback);
 }
 
-/// キーボードイベントが発生したときに呼び出される関数
-///
-/// # Arguments
-/// * `any` - 任意のデータ
-/// * `closure` - コールバック関数へのポインタ
-void keyboard_onPress(void *any, void *closure) {
-    (void)any;
-    fprintf(stderr, "keyboard_onPress: closure=%p - invoking subscriptions\n", closure);
-
-    if (closure) {
-        void (*cb)(void) = (void(*)(void))closure;
-        cb();
-    }
-
+void __kome_runtime_invoke_subscriptions(void) {
     Sub *cur = subscriptions;
     while (cur) {
         if (cur->callback) {
@@ -64,22 +52,6 @@ void keyboard_onPress(void *any, void *closure) {
             cb2();
         }
         cur = cur->next;
-    }
-}
-
-/*
- * Convenience wrapper used by Kome code when calling `keyboard.scan(any) { ... }`.
- * The Kome code generation will produce a call to `keyboard_scan` with the
- * closure function pointer; here we register that closure with the runtime so
- * it will be invoked when a key press is detected.
- */
-void keyboard_scan(void *any, void *closure) {
-    (void)any;
-    if (closure) {
-        __kome_runtime_subscribe("keyboard.scan", closure);
-        fprintf(stderr, "keyboard_scan: subscribed closure %p\n", closure);
-    } else {
-        fprintf(stderr, "keyboard_scan: called with NULL closure\n");
     }
 }
 
@@ -91,7 +63,6 @@ void keyboard_scan(void *any, void *closure) {
 /// * `arg` - 使われない引数lol
 static void *event_thread(void *arg) {
     (void)arg;
-    /* wait for potential subscription registration to happen in main */
     usleep(200 * 1000); /* 200ms */
 
     char cmdline_buf[4096];
@@ -177,15 +148,7 @@ static void *event_thread(void *arg) {
     return NULL;
 }
 
-/* Explicit event processing function.
- * Call this after main() to deliver queued callbacks.
- * This is needed because JIT generation happens after constructor runs,
- * so subscriptions are not set up until after main() runs.
- *
- * This function will:
- * 1. Try to find and call onPress() to register recipes
- * 2. Then invoke all subscribed callbacks
- */
+/// 定期的に呼び出される関数。ここでは、onPress()を呼び出してレシピを登録し、その後、保存されたコールバックをすべて呼び出す。
 void __kome_runtime_process_events(void) {
     /* Attempt to call onPress() to register recipes */
     void (*on_press)(void) = dlsym(dlopen(NULL, RTLD_LAZY), "onPress");
@@ -194,17 +157,13 @@ void __kome_runtime_process_events(void) {
         on_press();
     }
 
-    /* Call all registered subscriptions */
-    Sub *cur = subscriptions;
     int count = 0;
+    Sub *cur = subscriptions;
     while (cur) {
-        if (cur->callback) {
-            void (*cb)(void) = (void(*)(void))cur->callback;
-            cb();
-            count++;
-        }
+        if (cur->callback) count++;
         cur = cur->next;
     }
+    __kome_runtime_invoke_subscriptions();
     fprintf(stderr, "__kome_runtime_process_events: invoked %d callbacks\n", count);
 }
 
@@ -216,17 +175,11 @@ static void __kome_std_runtime_init(void) {
     }
 }
 
-/* Destructor: called when program is shutting down (after __kome_entry returns).
- * This gives us a chance to invoke discovered recipe callbacks so that
- * examples which don't keep a running event loop can still demonstrate
- * state/reactivity before the process exits.
- */
+/// プログラム終了時に呼び出される関数。少し待ってから保存されたコールバックをすべて呼び出す。
 __attribute__((destructor))
 static void __kome_std_runtime_shutdown(void) {
-    /* small delay to allow finalization elsewhere */
     usleep(50 * 1000);
 
-    /* invoke subscriptions once more at shutdown */
     Sub *cur = subscriptions;
     while (cur) {
         if (cur->callback) {

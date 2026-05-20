@@ -1,4 +1,3 @@
-fn onPress(key: string) {
-    // Call runtime's keyboard event handler
-    // (Arguments are: any=0 (null), closure parameter passed from JIT)
+fn scan(key: String) {
+
 }
