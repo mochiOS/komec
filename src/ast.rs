@@ -98,7 +98,7 @@ pub enum Expr {
 #[allow(unused)]
 pub enum Accessor {
     Property(String),
-    Method(Vec<Expr>, Option<Vec<Stmt>>),   // Option<Vec<Stmt>>はトレイリングクロージャ
+    Method(Vec<Expr>, Option<Vec<Stmt>>), // Option<Vec<Stmt>>はトレイリングクロージャ
 }
 
 #[derive(Debug, Clone)]
@@ -185,8 +185,13 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             }
         }
         Rule::import_stmt => {
-            let path = pair.into_inner().next().unwrap()
-                .into_inner().map(|p| p.as_str().to_string()).collect();
+            let path = pair
+                .into_inner()
+                .next()
+                .unwrap()
+                .into_inner()
+                .map(|p| p.as_str().to_string())
+                .collect();
             Stmt::Import(path)
         }
         Rule::cinclude_stmt => {
@@ -196,8 +201,8 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             Stmt::CInclude(inner)
         }
         Rule::expr_stmt => {
-            let in_expr = pair.into_inner().next().unwrap();        // expr_stmtの中にある実際の式
-            let expr = parse_expr(in_expr);                             // parse_exprを呼び出してExpr型に変換
+            let in_expr = pair.into_inner().next().unwrap(); // expr_stmtの中にある実際の式
+            let expr = parse_expr(in_expr); // parse_exprを呼び出してExpr型に変換
             Stmt::ExprStmt(expr)
         }
         Rule::fn_decl => {
@@ -230,9 +235,15 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                     Rule::param => {
                         let mut p = sub_pair.into_inner();
                         let pname = p.next().map(|x| x.as_str().to_string()).unwrap_or_default();
-                        let pty = p.next().map(|x| x.as_str().to_string()).unwrap_or_else(|| "Int".to_string());
+                        let pty = p
+                            .next()
+                            .map(|x| x.as_str().to_string())
+                            .unwrap_or_else(|| "Int".to_string());
                         if !pname.is_empty() {
-                            params.push(FnParam { name: pname, ty: pty });
+                            params.push(FnParam {
+                                name: pname,
+                                ty: pty,
+                            });
                         }
                     }
                     // Skip parameters and type specifications
@@ -241,7 +252,12 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 }
             }
 
-            Stmt::FnDecl { is_public, name, params, body }
+            Stmt::FnDecl {
+                is_public,
+                name,
+                params,
+                body,
+            }
         }
 
         Rule::if_stmt => {
@@ -269,8 +285,16 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
 
             Stmt::If {
                 condition,
-                then_body: Box::new(Stmt::Bundle { name: "then".to_string(), body: then_body }),
-                else_body: else_body.map(|b| Box::new(Stmt::Bundle { name: "else".to_string(), body: b })),
+                then_body: Box::new(Stmt::Bundle {
+                    name: "then".to_string(),
+                    body: then_body,
+                }),
+                else_body: else_body.map(|b| {
+                    Box::new(Stmt::Bundle {
+                        name: "else".to_string(),
+                        body: b,
+                    })
+                }),
             }
         }
         Rule::while_stmt => {
@@ -315,20 +339,16 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let value = parse_expr(raw_value_pair);
 
             let final_value = match op_pair.as_rule() {
-                Rule::sub_assign | Rule::sub => {
-                    Expr::BinaryOp {
-                        op: Op::Sub,
-                        left: Box::new(Expr::Ident(name.clone())),
-                        right: Box::new(value),
-                    }
-                }
-                Rule::add_assign | Rule::add => {
-                    Expr::BinaryOp {
-                        op: Op::Add,
-                        left: Box::new(Expr::Ident(name.clone())),
-                        right: Box::new(value),
-                    }
-                }
+                Rule::sub_assign | Rule::sub => Expr::BinaryOp {
+                    op: Op::Sub,
+                    left: Box::new(Expr::Ident(name.clone())),
+                    right: Box::new(value),
+                },
+                Rule::add_assign | Rule::add => Expr::BinaryOp {
+                    op: Op::Add,
+                    left: Box::new(Expr::Ident(name.clone())),
+                    right: Box::new(value),
+                },
                 _ => value,
             };
 
@@ -532,7 +552,12 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
 
                 match target_pair.as_rule() {
                     Rule::property_access => {
-                        let prop_name = target_pair.into_inner().next().unwrap().as_str().to_string();
+                        let prop_name = target_pair
+                            .into_inner()
+                            .next()
+                            .unwrap()
+                            .as_str()
+                            .to_string();
                         tails.push(Accessor::Property(prop_name));
                     }
                     Rule::method_call => {
@@ -577,7 +602,7 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                 body.push(parse_stmt(stmt_pair));
             }
             Expr::Block(body)
-        },
+        }
         Rule::integer => Expr::Integer(pair.as_str().parse().unwrap()),
         Rule::string => Expr::String(pair.into_inner().next().unwrap().as_str().to_string()),
         Rule::ident => Expr::Ident(pair.as_str().to_string()),

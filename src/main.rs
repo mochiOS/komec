@@ -1,15 +1,15 @@
-use std::fs;
-use std::env;
-use inkwell::context::Context;
-use inkwell::OptimizationLevel;
-use pest_derive::Parser;
-use pest::Parser;
-use env_logger;
-use log::*;
 use crate::codegen::CodegenContext;
 use crate::library::LibraryManager;
-use std::ffi::CString;
+use env_logger;
+use inkwell::OptimizationLevel;
+use inkwell::context::Context;
 use inkwell::values::AsValueRef;
+use log::*;
+use pest::Parser;
+use pest_derive::Parser;
+use std::env;
+use std::ffi::CString;
+use std::fs;
 
 // Declare the C runtime functions as extern so we can obtain their addresses
 // directly (without dlsym). These symbols are provided by the C sources
@@ -34,16 +34,19 @@ fn main() {
     env_logger::init();
     let args: Vec<String> = env::args().collect();
 
-    unsafe { env::set_var("RUST_LOG", "debug!"); }
+    unsafe {
+        env::set_var("RUST_LOG", "debug!");
+    }
 
     if args.len() == 1 {
         println!("Usage: {} <source_file>", args[0]);
         return;
     }
 
-
     if args.len() > 2 && args[2] == "-d" {
-        unsafe { env::set_var("RUST_LOG", "debug!"); }
+        unsafe {
+            env::set_var("RUST_LOG", "debug!");
+        }
     }
 
     let source_file = args[1].clone();
@@ -82,9 +85,7 @@ fn main() {
                     let ast_node = ast::parse_stmt(inner_stmt);
                     ast_state.push(ast_node);
                 }
-                Rule::EOI => {
-                    /* ignore */
-                }
+                Rule::EOI => { /* ignore */ }
                 _ => {
                     println!("Invalid rule: {:?}", pair.as_rule());
                 }
@@ -113,9 +114,14 @@ fn main() {
 
     for stmt in &ast_state {
         match stmt {
-            ast::Stmt::FnDecl { .. } | ast::Stmt::Recipe { .. } | ast::Stmt::Bundle { .. } | ast::Stmt::Import(..) => {
+            ast::Stmt::FnDecl { .. }
+            | ast::Stmt::Recipe { .. }
+            | ast::Stmt::Bundle { .. }
+            | ast::Stmt::Import(..) => {
                 // 宣言文だけをコンパイル
-                codegen.compile_statements(&[stmt.clone()]).expect("Failed to compile declarations");
+                codegen
+                    .compile_statements(&[stmt.clone()])
+                    .expect("Failed to compile declarations");
             }
             _ => {}
         }
@@ -133,24 +139,30 @@ fn main() {
         builder.build_call(on_press_fn, &[], "call_onpress").ok();
     }
 
-
-
     for stmt in &ast_state {
         match stmt {
-            ast::Stmt::Declaration { .. } | ast::Stmt::Assignment { .. } | ast::Stmt::ExprStmt(..) => {
-                codegen.compile_statements(&[stmt.clone()]).expect("Failed to compile entry logic");
+            ast::Stmt::Declaration { .. }
+            | ast::Stmt::Assignment { .. }
+            | ast::Stmt::ExprStmt(..) => {
+                codegen
+                    .compile_statements(&[stmt.clone()])
+                    .expect("Failed to compile entry logic");
             }
             _ => {}
         }
     }
 
     let zero = i32_type.const_int(0, false);
-    builder.build_return(Some(&zero)).expect("Failed to build entry return");
+    builder
+        .build_return(Some(&zero))
+        .expect("Failed to build entry return");
 
     // デバッグ用
     module.print_to_stderr();
 
-    let execution_engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).unwrap();
+    let execution_engine = module
+        .create_jit_execution_engine(OptimizationLevel::Aggressive)
+        .unwrap();
 
     // Register known C runtime symbols with the JIT so external calls resolve correctly.
     // We obtain direct addresses of the linked C functions via extern declarations
@@ -160,30 +172,44 @@ fn main() {
         if let Some(fn_val) = module.get_function("__kome_runtime_start_loop") {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_start_loop as usize);
-            debug!("[jit-map] mapped __kome_runtime_start_loop -> {:p}", __kome_runtime_start_loop as *const ());
+            debug!(
+                "[jit-map] mapped __kome_runtime_start_loop -> {:p}",
+                __kome_runtime_start_loop as *const ()
+            );
         }
 
         if let Some(fn_val) = module.get_function("__kome_runtime_subscribe") {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_subscribe as usize);
-            debug!("[jit-map] mapped __kome_runtime_subscribe -> {:p}", __kome_runtime_subscribe as *const ());
+            debug!(
+                "[jit-map] mapped __kome_runtime_subscribe -> {:p}",
+                __kome_runtime_subscribe as *const ()
+            );
         }
 
         if let Some(fn_val) = module.get_function("__kome_runtime_process_events") {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as usize);
-            debug!("[jit-map] mapped __kome_runtime_process_events -> {:p}", __kome_runtime_process_events as *const ());
+            debug!(
+                "[jit-map] mapped __kome_runtime_process_events -> {:p}",
+                __kome_runtime_process_events as *const ()
+            );
         }
 
         if let Some(fn_val) = module.get_function("__kome_runtime_emit") {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_emit as usize);
-            debug!("[jit-map] mapped __kome_runtime_emit -> {:p}", __kome_runtime_emit as *const ());
+            debug!(
+                "[jit-map] mapped __kome_runtime_emit -> {:p}",
+                __kome_runtime_emit as *const ()
+            );
         }
     }
 
     unsafe {
-        if let Ok(entry_fn) = execution_engine.get_function::<unsafe extern "C" fn() -> i32>("__kome_entry") {
+        if let Ok(entry_fn) =
+            execution_engine.get_function::<unsafe extern "C" fn() -> i32>("__kome_entry")
+        {
             debug!("[runtime] calling __kome_entry()");
             entry_fn.call();
             debug!("[runtime] returned from __kome_entry()");
@@ -204,7 +230,9 @@ fn main() {
 
     // After main() runs, process any registered event callbacks
     unsafe {
-        if let Ok(process_events) = execution_engine.get_function::<unsafe extern "C" fn()>("__kome_runtime_process_events") {
+        if let Ok(process_events) =
+            execution_engine.get_function::<unsafe extern "C" fn()>("__kome_runtime_process_events")
+        {
             debug!("[runtime] calling __kome_runtime_process_events()");
             debug!("Processing runtime events");
             process_events.call();
@@ -212,5 +240,7 @@ fn main() {
         }
     }
 
-    unsafe { libc::_exit(0); }
+    unsafe {
+        libc::_exit(0);
+    }
 }

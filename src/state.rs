@@ -1,13 +1,14 @@
+use lazy_static::lazy_static;
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
-use std::collections::HashMap;
 use std::sync::Mutex;
-use lazy_static::lazy_static;
 
 type RecipeFn = unsafe extern "C" fn();
 
 lazy_static! {
-    static ref RECIPIENT_REGISTRY: Mutex<HashMap<String, Vec<RecipeFn>>> = Mutex::new(HashMap::new());
+    static ref RECIPIENT_REGISTRY: Mutex<HashMap<String, Vec<RecipeFn>>> =
+        Mutex::new(HashMap::new());
 }
 
 // NOTE: subscription is implemented in the C runtime (std/runtime.c).
@@ -21,7 +22,9 @@ lazy_static! {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __kome_runtime_notify_change(var_name_ptr: *const c_char) {
     unsafe {
-        if var_name_ptr.is_null() { return; }
+        if var_name_ptr.is_null() {
+            return;
+        }
 
         if let Ok(c_str) = CStr::from_ptr(var_name_ptr).to_str() {
             let registry = RECIPIENT_REGISTRY.lock().unwrap();

@@ -1,13 +1,12 @@
-use std::path::Path;
 use clang::{Clang, EntityKind, Index, TypeKind};
+use inkwell::module::Module;
 use inkwell::types::BasicType;
 use inkwell::types::BasicTypeEnum;
-use inkwell::module::Module;
 use log::*;
+use std::path::Path;
 use std::sync::OnceLock;
 
-pub struct LibraryManager {
-}
+pub struct LibraryManager {}
 
 impl LibraryManager {
     pub fn new() -> Self {
@@ -125,8 +124,14 @@ impl LibraryManager {
             }
 
             let fn_ty = match ret_kind {
-                None => void_t.fn_type(&arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(), is_variadic),
-                Some(rt) => rt.fn_type(&arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(), is_variadic),
+                None => void_t.fn_type(
+                    &arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(),
+                    is_variadic,
+                ),
+                Some(rt) => rt.fn_type(
+                    &arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(),
+                    is_variadic,
+                ),
             };
             module.add_function(name, fn_ty, None);
             added.push(name.to_string());
@@ -136,8 +141,14 @@ impl LibraryManager {
     }
 
     /// libcのヘッダーを読み込む
-    pub fn load_c_header<'a>(&self, header_name: &str, context: &'a inkwell::context::Context, module: &Module<'a>) -> bool {
-        self.load_c_header_collect(header_name, context, module).is_some()
+    pub fn load_c_header<'a>(
+        &self,
+        header_name: &str,
+        context: &'a inkwell::context::Context,
+        module: &Module<'a>,
+    ) -> bool {
+        self.load_c_header_collect(header_name, context, module)
+            .is_some()
     }
 
     pub fn load_c_header_collect<'a>(
@@ -153,7 +164,10 @@ impl LibraryManager {
             let actual_name = if parts.len() == 2 && parts[0] == "libc" {
                 parts[1]
             } else {
-                eprintln!("LibraryManager: Invalid header name format: {}", header_name);
+                eprintln!(
+                    "LibraryManager: Invalid header name format: {}",
+                    header_name
+                );
                 return None;
             };
 
@@ -166,7 +180,8 @@ impl LibraryManager {
                 if Path::new(&local_path).exists() {
                     local_path
                 } else {
-                    let std_root = std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
+                    let std_root =
+                        std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
                     let std_base = Path::new(&std_root).join("std");
 
                     // 再帰探索ヘルパー
@@ -207,7 +222,10 @@ impl LibraryManager {
                         if alt.exists() {
                             alt.to_string_lossy().into_owned()
                         } else {
-                            eprintln!("LibraryManager: Header not found in system, local or std (recursively): {}.h", actual_name);
+                            eprintln!(
+                                "LibraryManager: Header not found in system, local or std (recursively): {}.h",
+                                actual_name
+                            );
                             return None;
                         }
                     }
@@ -216,7 +234,10 @@ impl LibraryManager {
         };
 
         if !Path::new(&header_path).exists() {
-            eprintln!("LibraryManager: Header file not found on disk: {}", header_path);
+            eprintln!(
+                "LibraryManager: Header file not found on disk: {}",
+                header_path
+            );
             return None;
         }
 
@@ -290,7 +311,6 @@ impl LibraryManager {
                 "__overflow".to_string(),
             ]);
         }
-        
 
         // デフォルトは既存の clang ベースのパーサを使うが、libclang が環境で不安定な場合は
         // ここで失敗することがあるため安全に扱う必要がある。まずは試行して失敗したら false を返す。
@@ -309,7 +329,6 @@ impl LibraryManager {
             // 関数宣言だけをピックアップ
             if child.get_kind() == EntityKind::FunctionDecl {
                 if let Some(func_name) = child.get_name() {
-
                     // 特定の関数だけをロード対象にする、あるいは全てロードする
                     if let Some(func_type) = child.get_type() {
                         let result_type = func_type.get_result_type().unwrap();
