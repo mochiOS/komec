@@ -26,6 +26,7 @@ typedef struct Sub {
 } Sub;
 
 static Sub *subscriptions = NULL;
+static int g_onpress_called = 0;
 
 /// ランタイムにコールバックを保存する
 ///
@@ -50,6 +51,18 @@ void __kome_runtime_invoke_subscriptions(void) {
     Sub *cur = subscriptions;
     while (cur) {
         if (cur->callback) {
+            void (*cb2)(void) = (void(*)(void))cur->callback;
+            cb2();
+        }
+        cur = cur->next;
+    }
+}
+
+void __kome_runtime_emit(const char *name) {
+    if (!name) return;
+    Sub *cur = subscriptions;
+    while (cur) {
+        if (cur->callback && cur->name && strcmp(cur->name, name) == 0) {
             void (*cb2)(void) = (void(*)(void))cur->callback;
             cb2();
         }
@@ -137,13 +150,16 @@ static void *event_thread(void *arg) {
         free(source_file);
     }
 
-    for (int i = 0; i < 5; ++i) {
-        debug("runtime: simulating keyboard press %d\n", i+1);
-        for (int j = 0; j < found_count; ++j) {
-            found_funcs[j]();
+    const char *sim = getenv("KOME_STD_SIMULATE_KEYS");
+    if (sim && sim[0] == '1') {
+        for (int i = 0; i < 5; ++i) {
+            debug("runtime: simulating keyboard press %d\n", i+1);
+            for (int j = 0; j < found_count; ++j) {
+                found_funcs[j]();
+            }
+            __kome_std_keyboard_onPress(NULL, NULL);
+            usleep(200 * 1000);
         }
-        __kome_std_keyboard_onPress(NULL, NULL);
-        usleep(200 * 1000);
     }
 
     return NULL;
@@ -152,20 +168,14 @@ static void *event_thread(void *arg) {
 /// 定期的に呼び出される関数。ここでは、onPress()を呼び出してレシピを登録し、その後、保存されたコールバックをすべて呼び出す。
 void __kome_runtime_process_events(void) {
     /* Attempt to call onPress() to register recipes */
-    void (*on_press)(void) = dlsym(dlopen(NULL, RTLD_LAZY), "onPress");
-    if (on_press) {
-        debug("__kome_runtime_process_events: calling onPress() to register recipes\n");
-        on_press();
+    if (!g_onpress_called) {
+        g_onpress_called = 1;
+        void (*on_press)(void) = dlsym(dlopen(NULL, RTLD_LAZY), "onPress");
+        if (on_press) {
+            debug("__kome_runtime_process_events: calling onPress() to register recipes\n");
+            on_press();
+        }
     }
-
-    int count = 0;
-    Sub *cur = subscriptions;
-    while (cur) {
-        if (cur->callback) count++;
-        cur = cur->next;
-    }
-    __kome_runtime_invoke_subscriptions();
-    debug("__kome_runtime_process_events: invoked %d callbacks\n", count);
 }
 
 __attribute__((constructor))
@@ -179,14 +189,5 @@ static void __kome_std_runtime_init(void) {
 /// プログラム終了時に呼び出される関数。少し待ってから保存されたコールバックをすべて呼び出す。
 __attribute__((destructor))
 static void __kome_std_runtime_shutdown(void) {
-    usleep(50 * 1000);
-
-    Sub *cur = subscriptions;
-    while (cur) {
-        if (cur->callback) {
-            void (*cb)(void) = (void(*)(void))cur->callback;
-            cb();
-        }
-        cur = cur->next;
-    }
+    (void)0;
 }

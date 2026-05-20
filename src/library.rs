@@ -32,21 +32,32 @@ impl LibraryManager {
         context: &'a inkwell::context::Context,
         module: &Module<'a>,
     ) -> bool {
+        self.try_load_simple_header_collect(header_path, context, module)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn try_load_simple_header_collect<'a>(
+        &self,
+        header_path: &str,
+        context: &'a inkwell::context::Context,
+        module: &Module<'a>,
+    ) -> Option<Vec<String>> {
         // Only attempt for non-system headers (std/ or local headers).
         if header_path.starts_with("/usr/include") {
-            return false;
+            return None;
         }
 
         let source = match std::fs::read_to_string(header_path) {
             Ok(s) => s,
-            Err(_) => return false,
+            Err(_) => return None,
         };
 
         let void_t = context.void_type();
         let i32_t = context.i32_type();
         let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
 
-        let mut added_any = false;
+        let mut added: Vec<String> = Vec::new();
 
         for raw_line in source.lines() {
             let line = raw_line.split("//").next().unwrap_or("").trim();
@@ -118,14 +129,23 @@ impl LibraryManager {
                 Some(rt) => rt.fn_type(&arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(), is_variadic),
             };
             module.add_function(name, fn_ty, None);
-            added_any = true;
+            added.push(name.to_string());
         }
 
-        added_any
+        Some(added)
     }
 
     /// libcのヘッダーを読み込む
     pub fn load_c_header<'a>(&self, header_name: &str, context: &'a inkwell::context::Context, module: &Module<'a>) -> bool {
+        self.load_c_header_collect(header_name, context, module).is_some()
+    }
+
+    pub fn load_c_header_collect<'a>(
+        &self,
+        header_name: &str,
+        context: &'a inkwell::context::Context,
+        module: &Module<'a>,
+    ) -> Option<Vec<String>> {
         let header_path = if header_name.ends_with(".h") {
             header_name.to_string()
         } else {
@@ -134,7 +154,7 @@ impl LibraryManager {
                 parts[1]
             } else {
                 eprintln!("LibraryManager: Invalid header name format: {}", header_name);
-                return false;
+                return None;
             };
 
             // まずシステムヘッダを探す
@@ -188,7 +208,7 @@ impl LibraryManager {
                             alt.to_string_lossy().into_owned()
                         } else {
                             eprintln!("LibraryManager: Header not found in system, local or std (recursively): {}.h", actual_name);
-                            return false;
+                            return None;
                         }
                     }
                 }
@@ -197,13 +217,15 @@ impl LibraryManager {
 
         if !Path::new(&header_path).exists() {
             eprintln!("LibraryManager: Header file not found on disk: {}", header_path);
-            return false;
+            return None;
         }
 
         // Prefer a tiny safe prototype loader for local/std headers to avoid libclang instability.
         // If it can parse at least one function prototype, we're done.
-        if self.try_load_simple_header(&header_path, context, module) {
-            return true;
+        if let Some(names) = self.try_load_simple_header_collect(&header_path, context, module) {
+            if !names.is_empty() {
+                return Some(names);
+            }
         }
 
         // 一部のよく使うヘッダについては libclang に頼らずプロトタイプを手で登録して
@@ -256,7 +278,17 @@ impl LibraryManager {
                 module.add_function("__overflow", fn_ty, None);
             }
 
-            return true;
+            return Some(vec![
+                "printf".to_string(),
+                "puts".to_string(),
+                "fflush".to_string(),
+                "putchar".to_string(),
+                "getchar".to_string(),
+                "vprintf".to_string(),
+                "__sputc".to_string(),
+                "__uflow".to_string(),
+                "__overflow".to_string(),
+            ]);
         }
         
 
@@ -265,13 +297,14 @@ impl LibraryManager {
         let index = Index::new(Self::clang(), false, false);
         let tu = match index.parser(&header_path).parse() {
             Ok(tu) => tu,
-            Err(_) => return false,
+            Err(_) => return None,
         };
 
         // ASTのトップレベルのノードを取得
         let entity = tu.get_entity();
 
         // ヘッダ内の全ての定義を走査
+        let mut added: Vec<String> = Vec::new();
         for child in entity.get_children() {
             // 関数宣言だけをピックアップ
             if child.get_kind() == EntityKind::FunctionDecl {
@@ -317,11 +350,12 @@ impl LibraryManager {
                         if module.get_function(&func_name).is_none() {
                             module.add_function(&func_name, fn_type, None);
                             debug!("LibraryManager: Loaded function '{}'", func_name);
+                            added.push(func_name);
                         }
                     }
                 }
             }
         }
-        true
+        Some(added)
     }
 }

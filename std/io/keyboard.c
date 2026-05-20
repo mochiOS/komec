@@ -18,7 +18,7 @@ void __kome_std_keyboard_onPress(void *any, void *closure) {
         cb();
     }
 
-    __kome_runtime_invoke_subscriptions();
+    __kome_runtime_emit("keyboard.scan");
 }
 
 /// キーボードイベントのスキャン関数

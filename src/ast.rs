@@ -7,6 +7,7 @@ use std::fmt::Debug;
 #[allow(unused)]
 pub enum Stmt {
     Import(Vec<String>),
+    CInclude(String),
     Decorator {
         name: String,
         target: String,
@@ -187,6 +188,12 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let path = pair.into_inner().next().unwrap()
                 .into_inner().map(|p| p.as_str().to_string()).collect();
             Stmt::Import(path)
+        }
+        Rule::cinclude_stmt => {
+            let s = pair.into_inner().next().unwrap();
+            // `string` rule yields inner_str
+            let inner = s.into_inner().next().unwrap().as_str().to_string();
+            Stmt::CInclude(inner)
         }
         Rule::expr_stmt => {
             let in_expr = pair.into_inner().next().unwrap();        // expr_stmtの中にある実際の式

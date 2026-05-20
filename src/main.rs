@@ -18,6 +18,7 @@ unsafe extern "C" {
     fn __kome_runtime_start_loop();
     fn __kome_runtime_subscribe(name: *const std::os::raw::c_char, cb: *const ());
     fn __kome_runtime_process_events();
+    fn __kome_runtime_emit(name: *const std::os::raw::c_char);
 }
 
 mod ast;
@@ -106,6 +107,8 @@ fn main() {
         variables: std::collections::HashMap::new(),
         library_manager: &LibraryManager::new(),
         current_dir: std::path::PathBuf::new(),
+        current_module_prefix: None,
+        allowed_externs: std::collections::HashSet::new(),
     };
 
     for stmt in &ast_state {
@@ -170,6 +173,12 @@ fn main() {
             let gv = fn_val.as_global_value();
             execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as usize);
             debug!("[jit-map] mapped __kome_runtime_process_events -> {:p}", __kome_runtime_process_events as *const ());
+        }
+
+        if let Some(fn_val) = module.get_function("__kome_runtime_emit") {
+            let gv = fn_val.as_global_value();
+            execution_engine.add_global_mapping(&gv, __kome_runtime_emit as usize);
+            debug!("[jit-map] mapped __kome_runtime_emit -> {:p}", __kome_runtime_emit as *const ());
         }
     }
 

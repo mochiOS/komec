@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::AddressSpace;
@@ -19,6 +20,8 @@ pub struct CodegenContext<'a, 'ctx> {
     pub variables: HashMap<String, VariableInfo<'ctx>>,
     pub library_manager: &'a LibraryManager,
     pub current_dir: std::path::PathBuf,
+    pub current_module_prefix: Option<String>,
+    pub allowed_externs: HashSet<String>,
 }
 
 /// 変数の情報
@@ -42,6 +45,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
         eprintln!("DEBUG: compile_statements called with {} statements", statements.len());
         for (i, stmt) in statements.iter().enumerate() {
             eprintln!("DEBUG:   stmt[{}] type: {}", i, match stmt {
+                Stmt::CInclude(_) => "CInclude",
                 Stmt::Declaration{..} => "Declaration",
                 Stmt::Assignment{..} => "Assignment",
                 Stmt::ExprStmt(_) => "ExprStmt",
@@ -81,13 +85,41 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
         for stmt in statements {
             match stmt {
+                Stmt::CInclude(path) => {
+                    // Resolve relative includes against the current directory of the file being compiled.
+                    let mut p = std::path::PathBuf::from(path);
+                    if p.is_relative() {
+                        p = self.current_dir.join(p);
+                    }
+                    let p = std::fs::canonicalize(&p).unwrap_or(p);
+                    if let Some(names) = self.library_manager.load_c_header_collect(
+                        p.to_string_lossy().as_ref(),
+                        self.context,
+                        &self.module,
+                    ) {
+                        if self.current_module_prefix.is_some() {
+                            for n in names {
+                                self.allowed_externs.insert(n);
+                            }
+                        }
+                    }
+                }
                 #[allow(unused)]
                 Stmt::Import(path_parts) => {
                     let full_path = path_parts.join(".");
                     let module_prefix = path_parts.last().cloned().unwrap_or_default();
 
                     if full_path.starts_with("libc.") {
-                        self.library_manager.load_c_header(&full_path, self.context, &self.module);
+                        if let Some(names) = self
+                            .library_manager
+                            .load_c_header_collect(&full_path, self.context, &self.module)
+                        {
+                            if self.current_module_prefix.is_some() {
+                                for n in names {
+                                    self.allowed_externs.insert(n);
+                                }
+                            }
+                        }
                         continue;
                     }
 
@@ -105,25 +137,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     if let Some(parent) = kome_file_path.parent() {
                         self.current_dir = parent.to_path_buf();
-                    }
-
-                    let mut c_header_path = kome_file_path.clone();
-                    c_header_path.set_extension("h");
-
-                    if c_header_path.exists() {
-                        if let Ok(absolute_path) = std::fs::canonicalize(&c_header_path) {
-                            self.library_manager.load_c_header(
-                                absolute_path.to_str().unwrap(),
-                                self.context,
-                                &self.module
-                            );
-                        } else {
-                            self.library_manager.load_c_header(
-                                c_header_path.to_str().unwrap(),
-                                self.context,
-                                &self.module
-                            );
-                        }
                     }
 
                     let mut std_ast: Vec<Stmt> = Vec::new();
@@ -167,7 +180,17 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         }
                     }
 
+                    // Compile std module in an isolated "extern allowlist" scope so std code can
+                    // only call C functions declared via `cinclude`/`use libc.*` inside that module.
+                    let prev_prefix = self.current_module_prefix.take();
+                    let prev_allowed = std::mem::take(&mut self.allowed_externs);
+                    self.current_module_prefix = Some(module_prefix.clone());
+                    self.allowed_externs = HashSet::new();
+
                     self.compile_statements(&std_ast)?;
+
+                    self.current_module_prefix = prev_prefix;
+                    self.allowed_externs = prev_allowed;
                 }
 
                 Stmt::FnDecl { is_public: _, name, params, body } => {
@@ -196,7 +219,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     let function = self.module.add_function(&llvm_name, fn_type, None);
                     let entry_block = self.context.append_basic_block(function, "entry");
 
-                    self.variables.clear();
+                    self.variables.retain(|_, v| v.is_state);
                     self.builder.position_at_end(entry_block);
 
                     for (idx, p) in params.iter().enumerate() {
@@ -311,7 +334,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     let previous_block = self.builder.get_insert_block();
 
-                    self.variables.clear();
+                    self.variables.retain(|_, v| v.is_state);
 
                     // 関数名は bundle 名とレシピ名を組み合わせて一意にする
                     let void_type = self.context.void_type();
@@ -380,18 +403,38 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::Assignment { is_default: _, name, value } => {
                     let short_name = name.split('.').last().unwrap().to_string();
 
-                    let ptr = if let Some(var_info) = self.variables.get(name) {
-                        var_info.ptr
+                    let (ptr, is_state_target) = if let Some(var_info) = self.variables.get(name) {
+                        (var_info.ptr, var_info.is_state)
                     } else if let Some(var_info) = self.variables.get(&short_name) {
-                        var_info.ptr
+                        (var_info.ptr, var_info.is_state)
                     } else if let Some(global_var) = self.module.get_global(name).or_else(|| self.module.get_global(&short_name)) {
-                        global_var.as_pointer_value()
+                        (global_var.as_pointer_value(), false)
                     } else {
                         panic!("Undefined variable for assignment: {} (short: {})", name, short_name);
                     };
 
                     let rhs_val = self.compile_expr(value).into_int_value();
                     self.builder.build_store(ptr, rhs_val).expect("Failed to store");
+
+                    if is_state_target {
+                        let void_t = self.context.void_type();
+                        let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                        let emit_fn = match self.module.get_function("__kome_runtime_emit") {
+                            Some(f) => f,
+                            None => {
+                                let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
+                                self.module.add_function("__kome_runtime_emit", fn_ty, None)
+                            }
+                        };
+
+                        let var_name = self.builder.build_global_string_ptr(&short_name, "state_name")
+                            .expect("state name");
+                        self.builder.build_call(
+                            emit_fn,
+                            &[var_name.as_pointer_value().into()],
+                            "emit_state_change",
+                        ).expect("emit");
+                    }
                 }
 
                 Stmt::While { condition, body } => {
@@ -649,6 +692,16 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         eprintln!("DEBUG: Looking for function: {}", fn_name);
                         if let Some(function) = self.module.get_function(&fn_name) {
                             eprintln!("DEBUG: Found function: {}", fn_name);
+                            if function.count_basic_blocks() == 0 {
+                                if self.current_module_prefix.is_some()
+                                    && !self.allowed_externs.contains(&fn_name)
+                                {
+                                    panic!(
+                                        "Std module tried to call C function '{}' without declaring it via `cinclude` (or `use libc.*`) in that std file.",
+                                        fn_name
+                                    );
+                                }
+                            }
                             let mut llvm_args = Vec::new();
                             for arg in args {
                                 let val = self.compile_expr(arg);
@@ -719,6 +772,14 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     let function = self.module.get_function(&fn_name)
                         .expect(&format!("Undefined function: {}", head));
+                    if function.count_basic_blocks() == 0 {
+                        if self.current_module_prefix.is_some() && !self.allowed_externs.contains(&fn_name) {
+                            panic!(
+                                "Std module tried to call C function '{}' without declaring it via `cinclude` (or `use libc.*`) in that std file.",
+                                fn_name
+                            );
+                        }
+                    }
 
                     let mut llvm_args = Vec::new();
 
@@ -754,8 +815,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(closure_ptr));
                     }
 
-                    let call = self.builder.build_call(function, &llvm_args, "calltmp")
-                        .expect("Codegen: Failed to build function call");
+                            let call = self.builder.build_call(function, &llvm_args, "calltmp")
+                                .expect("Codegen: Failed to build function call");
 
                     match call.try_as_basic_value() {
                         ValueKind::Basic(val) => {
