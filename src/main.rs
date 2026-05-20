@@ -202,4 +202,6 @@ fn main() {
             eprintln!("[runtime-debug] returned from __kome_runtime_process_events()");
         }
     }
+
+    unsafe { libc::_exit(0); }
 }

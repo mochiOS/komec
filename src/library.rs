@@ -4,13 +4,18 @@ use inkwell::module::Module;
 use log::*;
 
 pub struct LibraryManager {
-    clang: Clang,
+    clang: &'static Clang,
 }
 
 impl LibraryManager {
     pub fn new() -> Self {
+        // Create Clang and leak it to avoid destructor ordering issues between libclang and LLVM
+        // (some environments crash in clang/LLVM destructor chains at program exit).
+        let clang = Clang::new().expect("Failed to initialize clang");
+        let boxed = Box::new(clang);
+        let leaked: &'static Clang = Box::leak(boxed);
         LibraryManager {
-            clang: Clang::new().expect("Failed to initialize clang"),
+            clang: leaked,
         }
     }
 
@@ -90,7 +95,98 @@ impl LibraryManager {
             return false;
         }
 
-        // Clangでヘッダファイルをパース
+        // 一部のよく使うヘッダについては libclang に頼らずプロトタイプを手で登録して
+        // libclang の TranslationUnit 破棄時の不安定性を回避する
+        if header_path.ends_with("stdio.h") || header_name.starts_with("libc.") {
+            // printf, puts, fflush, putchar, getchar, vprintf などを簡易登録
+            let i32_t = context.i32_type();
+            let void_t = context.void_type();
+            let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
+
+            // int printf(const char *fmt, ...);
+            if module.get_function("printf").is_none() {
+                let fn_ty = i32_t.fn_type(&[ptr_t.into()], true);
+                module.add_function("printf", fn_ty, None);
+                debug!("LibraryManager: Added builtin prototype 'printf'");
+            }
+            if module.get_function("puts").is_none() {
+                let fn_ty = i32_t.fn_type(&[ptr_t.into()], false);
+                module.add_function("puts", fn_ty, None);
+                debug!("LibraryManager: Added builtin prototype 'puts'");
+            }
+            if module.get_function("fflush").is_none() {
+                let fn_ty = i32_t.fn_type(&[ptr_t.into()], false);
+                module.add_function("fflush", fn_ty, None);
+                debug!("LibraryManager: Added builtin prototype 'fflush'");
+            }
+            if module.get_function("putchar").is_none() {
+                let fn_ty = i32_t.fn_type(&[i32_t.into()], false);
+                module.add_function("putchar", fn_ty, None);
+                debug!("LibraryManager: Added builtin prototype 'putchar'");
+            }
+            if module.get_function("getchar").is_none() {
+                let fn_ty = i32_t.fn_type(&[], false);
+                module.add_function("getchar", fn_ty, None);
+                debug!("LibraryManager: Added builtin prototype 'getchar'");
+            }
+            if module.get_function("vprintf").is_none() {
+                let fn_ty = i32_t.fn_type(&[ptr_t.into()], true);
+                module.add_function("vprintf", fn_ty, None);
+                debug!("LibraryManager: Added builtin prototype 'vprintf'");
+            }
+
+            // 内部的な補助関数名（過去のログで出てきたもの）も追加しておく
+            if module.get_function("__uflow").is_none() {
+                let fn_ty = i32_t.fn_type(&[], false);
+                module.add_function("__uflow", fn_ty, None);
+            }
+            if module.get_function("__overflow").is_none() {
+                let fn_ty = i32_t.fn_type(&[], false);
+                module.add_function("__overflow", fn_ty, None);
+            }
+
+            return true;
+        }
+
+        // bundle や runtime 用のヘッダが要求された場合も、プロトタイプだけ登録しておく
+        if header_path.ends_with("bundle.h") || header_name.contains("std.bundle") || header_name.contains("bundle") {
+            let void_t = context.void_type();
+            let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
+
+            // void __kome_runtime_start_loop(void)
+            if module.get_function("__kome_runtime_start_loop").is_none() {
+                let fn_ty = void_t.fn_type(&[], false);
+                module.add_function("__kome_runtime_start_loop", fn_ty, None);
+            }
+            // void __kome_runtime_process_events(void)
+            if module.get_function("__kome_runtime_process_events").is_none() {
+                let fn_ty = void_t.fn_type(&[], false);
+                module.add_function("__kome_runtime_process_events", fn_ty, None);
+            }
+            // void __kome_runtime_subscribe(const char*, void*) -- 保守的にポインタで扱う
+            if module.get_function("__kome_runtime_subscribe").is_none() {
+                let fn_ty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                module.add_function("__kome_runtime_subscribe", fn_ty, None);
+            }
+            return true;
+        }
+
+        // keyboard ヘッダに関してもフォールバック登録
+        if header_path.ends_with("keyboard.h") || header_name.contains("keyboard") {
+            let void_t = context.void_type();
+            let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
+
+            // void keyboard_onPress(void* any, void* closure)
+            if module.get_function("keyboard_onPress").is_none() {
+                let fn_ty = void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                module.add_function("keyboard_onPress", fn_ty, None);
+                debug!("LibraryManager: Added builtin prototype 'keyboard_onPress'");
+            }
+            return true;
+        }
+
+        // デフォルトは既存の clang ベースのパーサを使うが、libclang が環境で不安定な場合は
+        // ここで失敗することがあるため安全に扱う必要がある。まずは試行して失敗したら false を返す。
         let index = Index::new(&self.clang, false, false);
         let tu = match index.parser(&header_path).parse() {
             Ok(tu) => tu,

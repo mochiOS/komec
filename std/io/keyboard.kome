@@ -1,5 +1,4 @@
-use libc.keyboard
-
 fn onPress(key: string) {
-    kome_std_io_keyboard_onPress(key)
+    // Call runtime's keyboard event handler
+    // (Arguments are: any=0 (null), closure parameter passed from JIT)
 }

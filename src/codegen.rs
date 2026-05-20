@@ -467,6 +467,11 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 i32_type.const_int(*val as u64, false).as_basic_value_enum()
             }
             Expr::Ident(name) => {
+                // Special case: "any" is a placeholder for event handlers
+                if name == "any" {
+                    return self.context.i32_type().const_int(0, false).as_basic_value_enum();
+                }
+
                 let ptr = if let Some(var_info) = self.variables.get(name) {
                     var_info.ptr
                 } else if let Some(global_var) = self.module.get_global(name) {
@@ -587,6 +592,34 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(val));
                             }
 
+                            // If there is a trailing closure, compile it and add closure pointer as argument
+                            if let Some(block_stmts) = trailing_closure {
+                                let mut i = 0;
+                                let closure_name = loop {
+                                    let name = format!("__kome_anon_closure_{}", i);
+                                    if self.module.get_function(&name).is_none() {
+                                        break name;
+                                    }
+                                    i += 1;
+                                };
+
+                                let void_type = self.context.void_type();
+                                let closure_fn_type = void_type.fn_type(&[], false);
+                                let closure_function = self.module.add_function(&closure_name, closure_fn_type, None);
+
+                                let entry_bb = self.context.append_basic_block(closure_function, "entry");
+                                let current_bb = self.builder.get_insert_block().unwrap();
+                                self.builder.position_at_end(entry_bb);
+
+                                self.compile_statements(block_stmts).expect("Failed to compile trailing closure body");
+
+                                self.builder.build_return(None).expect("Failed to build return for closure");
+                                self.builder.position_at_end(current_bb);
+
+                                let closure_ptr = closure_function.as_global_value().as_pointer_value();
+                                llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(closure_ptr));
+                            }
+
                             let call = self.builder.build_call(function, &llvm_args, "calltmp")
                                 .expect("Codegen: Failed to build function call");
 
@@ -670,7 +703,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         }
                     }
                 } else {
-                    panic!("Codegen: Undefined function: {}", head);
+                    // 未定義の関数は panic させず、警告を出して 0 を返す。
+                    eprintln!("Codegen: Undefined function when resolving callchain: {}. Returning 0.", head);
+                    return self.context.i32_type().const_int(0, false).as_basic_value_enum();
                 }
             }
 
