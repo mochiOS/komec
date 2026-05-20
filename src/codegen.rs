@@ -22,6 +22,7 @@ pub struct CodegenContext<'a, 'ctx> {
 
 /// 変数の情報
 #[derive(Clone, Debug)]
+#[allow(unused)]
 pub struct VariableInfo<'ctx> {
     pub ptr: PointerValue<'ctx>,
     pub is_state: bool,
@@ -335,12 +336,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         panic!("Undefined variable for assignment: {} (short: {})", name, short_name);
                     };
 
-                    let current_val = self.builder.build_load(self.context.i32_type(), ptr, "loadtmp")
-                        .expect("Failed to load variable")
-                        .into_int_value();
                     let rhs_val = self.compile_expr(value).into_int_value();
-                    let new_val = self.builder.build_int_add(current_val, rhs_val, "addtmp").expect("Failed to build add");
-                    self.builder.build_store(ptr, new_val).expect("Failed to store");
+                    self.builder.build_store(ptr, rhs_val).expect("Failed to store");
                 }
 
                 Stmt::While { condition, body } => {
@@ -722,6 +719,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
     }
 
     /// 関数をコンパイルする
+    #[allow(unused)]
     fn compile_function(&mut self, name: &str, body: &[Stmt]) {
         let func = self.module.add_function(name, self.context.void_type().fn_type(&[], false), None);
         let bb = self.context.append_basic_block(func, "entry");
