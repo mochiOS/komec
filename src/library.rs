@@ -25,6 +25,7 @@ impl LibraryManager {
         unsafe { &*(addr as *const Clang) }
     }
 
+    #[allow(unused)]
     fn try_load_simple_header<'a>(
         &self,
         header_path: &str,

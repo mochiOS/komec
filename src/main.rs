@@ -3,22 +3,20 @@ use crate::library::LibraryManager;
 use env_logger;
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
-use inkwell::values::AsValueRef;
 use log::*;
 use pest::Parser;
 use pest_derive::Parser;
 use std::env;
-use std::ffi::CString;
 use std::fs;
 
 // Declare the C runtime functions as extern so we can obtain their addresses
 // directly (without dlsym). These symbols are provided by the C sources
 // compiled into the crate by build.rs.
 unsafe extern "C" {
-    fn __kome_runtime_start_loop();
-    fn __kome_runtime_subscribe(name: *const std::os::raw::c_char, cb: *const ());
-    fn __kome_runtime_process_events();
-    fn __kome_runtime_emit(name: *const std::os::raw::c_char);
+    unsafe fn __kome_runtime_start_loop();
+    unsafe fn __kome_runtime_subscribe(name: *const std::os::raw::c_char, cb: *const ());
+    unsafe fn __kome_runtime_process_events();
+    unsafe fn __kome_runtime_emit(name: *const std::os::raw::c_char);
 }
 
 mod ast;
@@ -164,46 +162,40 @@ fn main() {
         .create_jit_execution_engine(OptimizationLevel::Aggressive)
         .unwrap();
 
-    // Register known C runtime symbols with the JIT so external calls resolve correctly.
-    // We obtain direct addresses of the linked C functions via extern declarations
-    // above and register them with the JIT. This avoids needing -export-dynamic
-    // and also avoids dlsym/libclang interaction issues.
-    unsafe {
-        if let Some(fn_val) = module.get_function("__kome_runtime_start_loop") {
-            let gv = fn_val.as_global_value();
-            execution_engine.add_global_mapping(&gv, __kome_runtime_start_loop as usize);
-            debug!(
-                "[jit-map] mapped __kome_runtime_start_loop -> {:p}",
-                __kome_runtime_start_loop as *const ()
-            );
-        }
+    if let Some(fn_val) = module.get_function("__kome_runtime_start_loop") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_runtime_start_loop as usize);
+        debug!(
+            "[jit-map] mapped __kome_runtime_start_loop -> {:p}",
+            __kome_runtime_start_loop as *const ()
+        );
+    }
 
-        if let Some(fn_val) = module.get_function("__kome_runtime_subscribe") {
-            let gv = fn_val.as_global_value();
-            execution_engine.add_global_mapping(&gv, __kome_runtime_subscribe as usize);
-            debug!(
-                "[jit-map] mapped __kome_runtime_subscribe -> {:p}",
-                __kome_runtime_subscribe as *const ()
-            );
-        }
+    if let Some(fn_val) = module.get_function("__kome_runtime_subscribe") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_runtime_subscribe as usize);
+        debug!(
+            "[jit-map] mapped __kome_runtime_subscribe -> {:p}",
+            __kome_runtime_subscribe as *const ()
+        );
+    }
 
-        if let Some(fn_val) = module.get_function("__kome_runtime_process_events") {
-            let gv = fn_val.as_global_value();
-            execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as usize);
-            debug!(
-                "[jit-map] mapped __kome_runtime_process_events -> {:p}",
-                __kome_runtime_process_events as *const ()
-            );
-        }
+    if let Some(fn_val) = module.get_function("__kome_runtime_process_events") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as usize);
+        debug!(
+            "[jit-map] mapped __kome_runtime_process_events -> {:p}",
+            __kome_runtime_process_events as *const ()
+        );
+    }
 
-        if let Some(fn_val) = module.get_function("__kome_runtime_emit") {
-            let gv = fn_val.as_global_value();
-            execution_engine.add_global_mapping(&gv, __kome_runtime_emit as usize);
-            debug!(
-                "[jit-map] mapped __kome_runtime_emit -> {:p}",
-                __kome_runtime_emit as *const ()
-            );
-        }
+    if let Some(fn_val) = module.get_function("__kome_runtime_emit") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_runtime_emit as usize);
+        debug!(
+            "[jit-map] mapped __kome_runtime_emit -> {:p}",
+            __kome_runtime_emit as *const ()
+        );
     }
 
     unsafe {
