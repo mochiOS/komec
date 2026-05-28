@@ -1,0 +1,27 @@
+use libc.stdio
+
+enum Err {
+    Success,
+    PermissionDenied,
+    NotFound,
+    InvalidInput,
+    UnexpectedEof,
+    WouldBlock,
+    BrokenPipe,
+    AlreadyClosed,
+    Unsupported,
+    LibcError(i32),
+    Unknown,
+}
+
+fn println(args: Any, ...) {
+    if printf(args with "\n", ...) < 0 {
+        return Err.LibcError(errno)
+    }
+}
+
+fn print(args: Any, ...) {
+    if printf(args, ...) < 0 {
+        return Err.LibcError(errno)
+    }
+}

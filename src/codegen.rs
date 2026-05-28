@@ -12,6 +12,40 @@ use pest::Parser;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+fn resolve_std_module_file(std_root: &std::path::Path, path_parts: &[String]) -> Option<std::path::PathBuf> {
+    let rel = path_parts.join("/");
+    let direct = std_root.join(format!("{rel}.kome"));
+    if direct.exists() {
+        return Some(direct);
+    }
+    let module = std_root.join(rel).join("module.kome");
+    if module.exists() {
+        return Some(module);
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_std_module_file;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolves_module_kome_when_direct_file_missing() {
+        let root = std::env::temp_dir().join("kome_std_resolve_test");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("std/io")).unwrap();
+        fs::write(root.join("std/io/module.kome"), "fn hello() {}").unwrap();
+
+        let parts = vec!["std".to_string(), "io".to_string()];
+        let resolved = resolve_std_module_file(&root, &parts).unwrap();
+        assert_eq!(resolved, PathBuf::from(root.join("std/io/module.kome")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
 /// ASTからLLVM IRを生成するコンテキスト
 pub struct CodegenContext<'a, 'ctx> {
     pub context: &'ctx Context,
@@ -139,13 +173,17 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     let std_root =
                         std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
-                    let relative_path = format!("{}.kome", path_parts.join("/"));
-                    let mut kome_file_path = std::path::PathBuf::from(std_root);
-                    kome_file_path.push(relative_path);
-
-                    if !kome_file_path.exists() {
-                        panic!("Standard library not found at: {:?}", kome_file_path);
-                    }
+                    let std_root = std::path::PathBuf::from(std_root);
+                    let kome_file_path = resolve_std_module_file(&std_root, path_parts)
+                        .unwrap_or_else(|| {
+                            // Keep a stable, actionable error message for users.
+                            let rel = path_parts.join("/");
+                            panic!(
+                                "Standard library not found at: {:?} or {:?}",
+                                std_root.join(format!("{rel}.kome")),
+                                std_root.join(rel).join("module.kome")
+                            );
+                        });
 
                     let source = std::fs::read_to_string(&kome_file_path).map_err(|_| {
                         format!("Failed to read standard library: {:?}", kome_file_path)
