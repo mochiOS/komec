@@ -1,10 +1,13 @@
 use libc.stdio
 use std.io.keyboard
+cinclude "printfv.h"
 
-fn print(args: Any, ...) {
-    printf(args, ...)
+/// 文字列をフォーマットし、標準出力に出力します。
+fn print(fmt: Any, xs: Int...) {
+    __kome_printf_i32v(fmt, xs_data, xs_len)
 }
 
-fn println(args: Any, ...) {
-    printf(args with "\n", ...)
+/// 文字列をフォーマットし、標準出力に出力した後、改行します。
+fn println(fmt: Any, xs: Int...) {
+    __kome_printf_i32v(fmt with "\n", xs_data, xs_len)
 }

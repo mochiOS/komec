@@ -1,9 +1,11 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <termios.h>
 #include <sys/select.h>
 #include <signal.h>
+#include <time.h>
 #include "bundle.h"
 
 extern void __kome_runtime_process_events(void);
@@ -14,6 +16,12 @@ static volatile sig_atomic_t g_keep_running = 1;
 static struct termios g_orig_termios;
 static int g_tc_ok = 0;
 
+static long long now_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (long long)ts.tv_sec * 1000LL + (long long)(ts.tv_nsec / 1000000LL);
+}
+
 /// スタンダードバンドルのメインループ
 ///
 /// 1. イベント処理を呼び出す（レシピ登録などの処理）
@@ -21,6 +29,13 @@ static int g_tc_ok = 0;
 /// 3. キー入力を検出したらruntimeのキーハンドラを呼ぶ
 static void *bundle_main_loop(void *arg) {
     (void)arg;
+
+    // CI や自動テスト用のキー入力シミュレーション
+    // `KOME_STD_SIMULATE_KEYS=1` の場合、約200ms間隔で 5 回「キーが押された」扱いにする。
+    const char *sim = getenv("KOME_STD_SIMULATE_KEYS");
+    int sim_enabled = (sim && sim[0] == '1');
+    int sim_remaining = sim_enabled ? 5 : 0;
+    long long sim_next_ms = sim_enabled ? (now_ms() + 200) : 0;
 
     /* Setup terminal raw mode if possible and store original settings globally so
      * signal handler can restore them. */
@@ -39,6 +54,15 @@ static void *bundle_main_loop(void *arg) {
     while (g_keep_running) {
         /* 呼び出し開始と定期イベント処理 */
         __kome_runtime_process_events();
+
+        if (sim_remaining > 0) {
+            long long t = now_ms();
+            if (t >= sim_next_ms) {
+                __kome_std_keyboard_onPress(NULL, NULL);
+                sim_remaining--;
+                sim_next_ms = t + 200;
+            }
+        }
 
         /* stdin をポーリングしてキー入力を検出 */
         fd_set rfds;

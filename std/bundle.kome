@@ -1,5 +1,6 @@
 use libc.bundle
 
+@default("bundle")  // bundleについてrun関数を定義するみたいな構文
 bundle.run() {
     __kome_runtime_start_loop()
 }

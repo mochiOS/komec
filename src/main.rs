@@ -3,49 +3,52 @@ use crate::library::LibraryManager;
 use env_logger;
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
+use std::os::raw::c_void;
 use log::*;
 use pest::Parser;
 use pest_derive::Parser;
 use std::env;
 use std::fs;
+use std::ffi::CString;
 
 // Declare the C runtime functions as extern so we can obtain their addresses
 // directly (without dlsym). These symbols are provided by the C sources
 // compiled into the crate by build.rs.
 unsafe extern "C" {
     unsafe fn __kome_runtime_start_loop();
-    unsafe fn __kome_runtime_subscribe(name: *const std::os::raw::c_char, cb: *const ());
+    unsafe fn __kome_runtime_subscribe(name: *const std::os::raw::c_char, cb: *mut c_void);
     unsafe fn __kome_runtime_process_events();
     unsafe fn __kome_runtime_emit(name: *const std::os::raw::c_char);
+    unsafe fn __kome_printf_i32v(fmt: *const std::os::raw::c_char, data: *const i32, len: i32) -> i32;
+    unsafe fn __kome_std_keyboard_onPress(any: *mut c_void, closure: *mut c_void);
+    unsafe fn __kome_std_keyboard_scan(any: *mut c_void, closure: *mut c_void);
 }
 
 mod ast;
 mod codegen;
 pub mod library;
 mod state;
+mod typecheck;
 
 #[derive(Parser)]
 #[grammar = "syntax/main.pest"]
 pub struct KomeParser;
 
 fn main() {
-    env_logger::init();
     let args: Vec<String> = env::args().collect();
-
-    unsafe {
-        env::set_var("RUST_LOG", "debug!");
-    }
 
     if args.len() == 1 {
         println!("Usage: {} <source_file>", args[0]);
         return;
     }
 
+    // -d が付いているときだけログを出す（普段は静かに）
     if args.len() > 2 && args[2] == "-d" {
         unsafe {
-            env::set_var("RUST_LOG", "debug!");
+            env::set_var("RUST_LOG", "debug");
         }
     }
+    env_logger::init();
 
     let source_file = args[1].clone();
     if let Err(e) = fs::read_to_string(&source_file) {
@@ -96,6 +99,11 @@ fn main() {
         debug!("{:?}", stmt);
     }
 
+    if let Err(e) = crate::typecheck::typecheck_program(&ast_state) {
+        eprintln!("Type Error: {e}");
+        return;
+    }
+
     let context = Context::create();
     let module = context.create_module("main");
     let builder = context.create_builder();
@@ -108,9 +116,8 @@ fn main() {
         current_dir: std::path::PathBuf::new(),
         current_module_prefix: None,
         allowed_externs: std::collections::HashSet::new(),
-        current_fn_is_variadic: false,
         register_fn: None,
-        vararg_forwarders: std::collections::HashMap::new(),
+        fn_params: std::collections::HashMap::new(),
     };
 
     for stmt in &ast_state {
@@ -135,11 +142,6 @@ fn main() {
 
     builder.position_at_end(entry_block);
 
-    // Call any registration functions (e.g., onPress) to set up subscriptions
-    if let Some(on_press_fn) = module.get_function("onPress") {
-        builder.build_call(on_press_fn, &[], "call_onpress").ok();
-    }
-
     for stmt in &ast_state {
         match stmt {
             ast::Stmt::Declaration { .. }
@@ -158,8 +160,10 @@ fn main() {
         .build_return(Some(&zero))
         .expect("Failed to build entry return");
 
-    // デバッグ用
-    module.print_to_stderr();
+    // デバッグ
+    if env::var("KOME_DEBUG_IR").ok().as_deref() == Some("1") {
+        module.print_to_stderr();
+    }
 
     let execution_engine = module
         .create_jit_execution_engine(OptimizationLevel::Aggressive)
@@ -167,7 +171,7 @@ fn main() {
 
     if let Some(fn_val) = module.get_function("__kome_runtime_start_loop") {
         let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_runtime_start_loop as usize);
+        execution_engine.add_global_mapping(&gv, __kome_runtime_start_loop as *const () as usize);
         debug!(
             "[jit-map] mapped __kome_runtime_start_loop -> {:p}",
             __kome_runtime_start_loop as *const ()
@@ -176,7 +180,7 @@ fn main() {
 
     if let Some(fn_val) = module.get_function("__kome_runtime_subscribe") {
         let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_runtime_subscribe as usize);
+        execution_engine.add_global_mapping(&gv, __kome_runtime_subscribe as *const () as usize);
         debug!(
             "[jit-map] mapped __kome_runtime_subscribe -> {:p}",
             __kome_runtime_subscribe as *const ()
@@ -185,7 +189,7 @@ fn main() {
 
     if let Some(fn_val) = module.get_function("__kome_runtime_process_events") {
         let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as usize);
+        execution_engine.add_global_mapping(&gv, __kome_runtime_process_events as *const () as usize);
         debug!(
             "[jit-map] mapped __kome_runtime_process_events -> {:p}",
             __kome_runtime_process_events as *const ()
@@ -194,10 +198,38 @@ fn main() {
 
     if let Some(fn_val) = module.get_function("__kome_runtime_emit") {
         let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_runtime_emit as usize);
+        execution_engine.add_global_mapping(&gv, __kome_runtime_emit as *const () as usize);
         debug!(
             "[jit-map] mapped __kome_runtime_emit -> {:p}",
             __kome_runtime_emit as *const ()
+        );
+    }
+
+    // std/io 側の C ヘルパ（print/println 用）
+    if let Some(fn_val) = module.get_function("__kome_printf_i32v") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_printf_i32v as *const () as usize);
+        debug!(
+            "[jit-map] mapped __kome_printf_i32v -> {:p}",
+            __kome_printf_i32v as *const ()
+        );
+    }
+
+    // std/io.keyboard 側の C 実装
+    if let Some(fn_val) = module.get_function("__kome_std_keyboard_onPress") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_std_keyboard_onPress as *const () as usize);
+        debug!(
+            "[jit-map] mapped __kome_std_keyboard_onPress -> {:p}",
+            __kome_std_keyboard_onPress as *const ()
+        );
+    }
+    if let Some(fn_val) = module.get_function("__kome_std_keyboard_scan") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_std_keyboard_scan as *const () as usize);
+        debug!(
+            "[jit-map] mapped __kome_std_keyboard_scan -> {:p}",
+            __kome_std_keyboard_scan as *const ()
         );
     }
 
@@ -214,6 +246,13 @@ fn main() {
     }
 
     // std/bundle などが生成した subscribe 登録を実行
+    // まずはランタイム関数が呼べるかの自己診断（JIT とは無関係）
+    if std::env::var("KOME_SELFTEST_SUBSCRIBE").ok().as_deref() == Some("1") {
+        let s = CString::new("selftest").unwrap();
+        unsafe {
+            __kome_runtime_subscribe(s.as_ptr(), std::ptr::null_mut());
+        }
+    }
     unsafe {
         if let Ok(register_fn) =
             execution_engine.get_function::<unsafe extern "C" fn()>("__kome_register")

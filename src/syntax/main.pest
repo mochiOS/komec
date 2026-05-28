@@ -34,12 +34,11 @@ kv_pair = { ident ~ ":" ~ expr }
 bundle_stmt = { "bundle" ~ ident ~ "{" ~ stmt* ~ "}" }
 
 // 関数定義 fn main() { ... }
-fn_decl = { "fn" ~ ident ~ "(" ~ (param_item ~ ("," ~ param_item)*)? ~ ")" ~ ("->" ~ type_spec)? ~ "{" ~ stmt* ~ "}" }
-param_item = { param | ellipsis }
+fn_decl = { "fn" ~ ident ~ "(" ~ (param ~ ("," ~ param)*)? ~ ")" ~ ("->" ~ type_spec)? ~ "{" ~ stmt* ~ "}" }
 ellipsis = { "..." }
 
 // 引数の定義（例: key: string）
-param = { ident ~ ":" ~ type_spec }
+param = { ident ~ ":" ~ type_spec ~ ellipsis? }
 
 // 型の定義（識別子、または path を許可）
 type_spec = { path | ident }
@@ -106,7 +105,7 @@ assign     = { "=" }
 sub_assign = { "-=" }
 add_assign = { "+=" }
 
-constant = { string | integer | boolean | none | ellipsis }
+constant = { string | integer | boolean | none }
 boolean = { "true" | "false" }
 none = { "None()" }
 integer = @{ ASCII_DIGIT+ }

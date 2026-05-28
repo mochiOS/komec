@@ -6,17 +6,12 @@ use inkwell::IntPredicate;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::types::BasicType;
 use inkwell::values::{BasicValue, PointerValue, ValueKind};
 use log::debug;
 use pest::Parser;
 use std::collections::HashMap;
 use std::collections::HashSet;
-
-#[derive(Clone, Debug)]
-pub struct VarArgForwarder {
-    target: String,
-    suffix: Option<String>,
-}
 
 fn resolve_std_module_file(std_root: &std::path::Path, path_parts: &[String]) -> Option<std::path::PathBuf> {
     let rel = path_parts.join("/");
@@ -62,9 +57,8 @@ pub struct CodegenContext<'a, 'ctx> {
     pub current_dir: std::path::PathBuf,
     pub current_module_prefix: Option<String>,
     pub allowed_externs: HashSet<String>,
-    pub current_fn_is_variadic: bool,
     pub register_fn: Option<inkwell::values::FunctionValue<'ctx>>,
-    pub vararg_forwarders: HashMap<String, VarArgForwarder>,
+    pub fn_params: HashMap<String, Vec<ast::FnParam>>,
 }
 
 /// 変数の情報
@@ -110,85 +104,41 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
         self.register_fn = Some(f);
         f
     }
-    fn try_register_vararg_forwarder(&mut self, llvm_name: &str, params: &[ast::FnParam], body: &[Stmt]) -> bool {
-        if body.len() != 1 {
-            return false;
-        }
-        let Stmt::ExprStmt(Expr::CallChain { head, tails }) = &body[0] else {
-            return false;
-        };
-        if head != "printf" {
-            return false;
-        }
-        let Some(ast::Accessor::Method(args, trailing)) = tails.first() else {
-            return false;
-        };
-        if trailing.is_some() {
-            return false;
-        }
-        if args.len() < 2 || !matches!(args.last(), Some(Expr::VarArgs)) {
-            return false;
-        }
-        // 最初の引数が `args`（第1引数）もしくは `args with "..."` の形かを見る
-        let Some(first_param) = params.first() else {
-            return false;
-        };
-        let suffix = match &args[0] {
-            Expr::Ident(name) if name == &first_param.name => None,
-            Expr::BinaryOp { left, op: Op::With, right } => {
-                if matches!(&**left, Expr::Ident(n) if n == &first_param.name) {
-                    if let Expr::String(s) = &**right {
-                        Some(s.clone())
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            _ => return false,
-        };
-
-        self.vararg_forwarders.insert(
-            llvm_name.to_string(),
-            VarArgForwarder {
-                target: "printf".to_string(),
-                suffix,
-            },
-        );
-        true
-    }
+    // ここでは「C の可変長引数への転送」は扱わない（Kome の可変長だけを正式機能にする方針）。
     /// 複数の文（Statements）を順番に LLVM 命令に変換する
     pub fn compile_statements(
         &mut self,
         statements: &[Stmt],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        eprintln!(
-            "DEBUG: compile_statements called with {} statements",
-            statements.len()
-        );
-        for (i, stmt) in statements.iter().enumerate() {
+        // デバッグ出力は環境変数で明示的に有効化する
+        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
             eprintln!(
-                "DEBUG:   stmt[{}] type: {}",
-                i,
-                match stmt {
-                    Stmt::CInclude(_) => "CInclude",
-                    Stmt::EnumDecl { .. } => "EnumDecl",
-                    Stmt::Declaration { .. } => "Declaration",
-                    Stmt::Assignment { .. } => "Assignment",
-                    Stmt::ExprStmt(_) => "ExprStmt",
-                    Stmt::FnDecl { .. } => "FnDecl",
-                    Stmt::Bundle { .. } => "Bundle",
-                    Stmt::Import { .. } => "Import",
-                    Stmt::Recipe { .. } => "Recipe",
-                    Stmt::If { .. } => "If",
-                    Stmt::While { .. } => "While",
-                    Stmt::For { .. } => "For",
-                    Stmt::Decorator { .. } => "Decorator",
-                    Stmt::Return(_) => "Return",
-                    Stmt::Block(_) => "Block",
-                }
+                "DEBUG: compile_statements called with {} statements",
+                statements.len()
             );
+            for (i, stmt) in statements.iter().enumerate() {
+                eprintln!(
+                    "DEBUG:   stmt[{}] type: {}",
+                    i,
+                    match stmt {
+                        Stmt::CInclude(_) => "CInclude",
+                        Stmt::EnumDecl { .. } => "EnumDecl",
+                        Stmt::Declaration { .. } => "Declaration",
+                        Stmt::Assignment { .. } => "Assignment",
+                        Stmt::ExprStmt(_) => "ExprStmt",
+                        Stmt::FnDecl { .. } => "FnDecl",
+                        Stmt::Bundle { .. } => "Bundle",
+                        Stmt::Import { .. } => "Import",
+                        Stmt::Recipe { .. } => "Recipe",
+                        Stmt::If { .. } => "If",
+                        Stmt::While { .. } => "While",
+                        Stmt::For { .. } => "For",
+                        Stmt::Decorator { .. } => "Decorator",
+                        Stmt::Return(_) => "Return",
+                        Stmt::Block(_) => "Block",
+                    }
+                );
+            }
         }
 
         let i32_type = self.context.i32_type();
@@ -345,17 +295,22 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     is_public: _,
                     name,
                     params,
-                    is_variadic,
+                    return_ty: _,
                     body,
                 } => {
-                    eprintln!(
-                        "DEBUG compile_statements: FnDecl '{}' with {} body statements",
-                        name,
-                        body.len()
-                    );
+                    if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                        eprintln!(
+                            "DEBUG compile_statements: FnDecl '{}' with {} body statements",
+                            name,
+                            body.len()
+                        );
+                    }
                     let previous_block = self.builder.get_insert_block();
-                    let prev_variadic = self.current_fn_is_variadic;
-                    self.current_fn_is_variadic = *is_variadic;
+                    let fn_is_variadic = params.iter().any(|p| p.is_variadic);
+
+                    // シグネチャ情報を保存（呼び出し側で variadic を pack するため）
+                    let llvm_name = name.replace('.', "_");
+                    self.fn_params.insert(llvm_name.clone(), params.clone());
 
                     let void_type = self.context.void_type();
                     let ptr_t = self.context.ptr_type(AddressSpace::from(0));
@@ -364,6 +319,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     let mut llvm_param_types = Vec::new();
                     let mut param_kinds = Vec::new();
                     for p in params {
+                        if p.is_variadic {
+                            // variadic param 自体は (ptr data, i32 len) に変換するため、ここでは追加しない
+                            continue;
+                        }
                         let ty = p.ty.as_str();
                         let (llvm_ty, kind) = match ty {
                             "Ptr" | "Any" | "String" => (ptr_t.into(), VariableKind::Ptr),
@@ -374,8 +333,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         param_kinds.push(kind);
                     }
 
-                    let llvm_name = name.replace('.', "_");
-
                     // 同じ std モジュールを複数回 import した場合など、同名関数を再定義しない。
                     if let Some(existing) = self.module.get_function(&llvm_name) {
                         if existing.count_basic_blocks() > 0 {
@@ -383,7 +340,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 "Codegen: skipping duplicate function definition '{}'",
                                 llvm_name
                             );
-                            self.current_fn_is_variadic = prev_variadic;
                             if previous_block.is_none() {
                                 self.builder.clear_insertion_position();
                             }
@@ -391,31 +347,73 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         }
                     }
 
-                    // `fn f(x: Any, ...) { printf(x, ...) }` のような「薄いラッパ」は
-                    // 呼び出し側へ展開してしまえば、LLVM 側で va_list を扱わずに済む。
-                    if *is_variadic && self.try_register_vararg_forwarder(&llvm_name, params, body)
-                    {
-                        debug!(
-                            "Codegen: registered variadic forwarder for function '{}'",
-                            llvm_name
-                        );
-                        // 関数本体は生成しない（呼び出し側で直接 target を呼ぶ）
-                        self.current_fn_is_variadic = prev_variadic;
-                        if previous_block.is_none() {
-                            self.builder.clear_insertion_position();
+                    // Kome の variadic は (ptr data, i32 len) として受け取る
+                    if fn_is_variadic {
+                        // variadic param は最後の1つだけ許可
+                        let last_is_variadic = params.last().is_some_and(|p| p.is_variadic);
+                        let variadic_count = params.iter().filter(|p| p.is_variadic).count();
+                        if variadic_count != 1 || !last_is_variadic {
+                            panic!("可変長引数は最後の1つだけ指定できます。");
                         }
-                        continue;
+                        // 追加で (ptr, i32) を受け取る
+                        llvm_param_types.push(ptr_t.into());
+                        llvm_param_types.push(i32_t.into());
                     }
 
-                    let fn_type = void_type.fn_type(&llvm_param_types, *is_variadic);
+                    let fn_type = void_type.fn_type(&llvm_param_types, false);
                     let function = self.module.add_function(&llvm_name, fn_type, None);
                     let entry_block = self.context.append_basic_block(function, "entry");
 
                     self.variables.retain(|_, v| v.is_state);
                     self.builder.position_at_end(entry_block);
 
-                    for (idx, p) in params.iter().enumerate() {
-                        let kind = param_kinds.get(idx).copied().unwrap_or(VariableKind::I32);
+                    let mut arg_index: u32 = 0;
+                    let mut kind_index: usize = 0;
+                    for p in params.iter() {
+                        if p.is_variadic {
+                            // 可変長引数: (ptr data, i32 len)
+                            let data_idx = arg_index;
+                            let len_idx = arg_index + 1;
+                            let data_alloca = self
+                                .builder
+                                .build_alloca(ptr_t, &format!("{}_data", p.name))
+                                .expect("alloca varargs data");
+                            let len_alloca = self
+                                .builder
+                                .build_alloca(i32_t, &format!("{}_len", p.name))
+                                .expect("alloca varargs len");
+                            let data_arg = function.get_nth_param(data_idx).expect("param");
+                            let len_arg = function.get_nth_param(len_idx).expect("param");
+                            self.builder
+                                .build_store(data_alloca, data_arg)
+                                .expect("store varargs data");
+                            self.builder
+                                .build_store(len_alloca, len_arg)
+                                .expect("store varargs len");
+                            self.variables.insert(
+                                format!("{}_data", p.name),
+                                VariableInfo {
+                                    ptr: data_alloca,
+                                    is_state: false,
+                                    kind: VariableKind::Ptr,
+                                },
+                            );
+                            self.variables.insert(
+                                format!("{}_len", p.name),
+                                VariableInfo {
+                                    ptr: len_alloca,
+                                    is_state: false,
+                                    kind: VariableKind::I32,
+                                },
+                            );
+                            arg_index += 2;
+                            continue;
+                        }
+
+                        let kind = param_kinds
+                            .get(kind_index)
+                            .copied()
+                            .unwrap_or(VariableKind::I32);
                         let alloca = match kind {
                             VariableKind::I32 => self
                                 .builder
@@ -426,7 +424,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 .build_alloca(ptr_t, &p.name)
                                 .expect("alloca ptr"),
                         };
-                        let arg = function.get_nth_param(idx as u32).expect("param");
+                        let arg = function.get_nth_param(arg_index).expect("param");
                         self.builder.build_store(alloca, arg).expect("store param");
                         self.variables.insert(
                             p.name.clone(),
@@ -436,10 +434,11 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 kind,
                             },
                         );
+                        arg_index += 1;
+                        kind_index += 1;
                     }
 
                     self.compile_statements(body)?;
-                    self.current_fn_is_variadic = prev_variadic;
 
                     if self
                         .builder
@@ -1101,13 +1100,15 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             }
             Expr::CallChain { head, tails } => {
                 /* Handle bundle.method() calls (e.g., App.run()) */
-                eprintln!(
-                    "DEBUG: compile_expr CallChain head={}, tails.len={}",
-                    head,
-                    tails.len()
-                );
-                for (i, tail) in tails.iter().enumerate() {
-                    eprintln!("DEBUG:   tail[{}] = {:?}", i, tail);
+                if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "DEBUG: compile_expr CallChain head={}, tails.len={}",
+                        head,
+                        tails.len()
+                    );
+                    for (i, tail) in tails.iter().enumerate() {
+                        eprintln!("DEBUG:   tail[{}] = {:?}", i, tail);
+                    }
                 }
 
                 // ここでは `print` や `io.print` のような特別扱い（ハードコード）はしない。
@@ -1115,83 +1116,29 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 // `printf(fmt, ...)` を `vprintf(fmt, va_list)` へ lower する形で実装する。
 
                 if tails.len() >= 2 {
-                    eprintln!("DEBUG: Found CallChain with {} tails", tails.len());
+                    if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG: Found CallChain with {} tails", tails.len());
+                    }
                     if let (
                         ast::Accessor::Property(method_name),
                         ast::Accessor::Method(args, trailing_closure),
                     ) = (&tails[0], &tails[1])
                     {
-                        eprintln!("DEBUG: Property + Method found: {}.{}()", head, method_name);
+                        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                            eprintln!(
+                                "DEBUG: Property + Method found: {}.{}()",
+                                head, method_name
+                            );
+                        }
                         let bundle_name = head;
                         let fn_name = format!("{}_{}", bundle_name, method_name);
-                        eprintln!("DEBUG: Looking for function: {}", fn_name);
-                        // 変数長引数ラッパ（例: `io_println`）は、呼び出し側で target（例: `printf`）へ展開する
-                        if let Some(fwd) = self.vararg_forwarders.get(&fn_name).cloned() {
-                            let target_fn = self
-                                .module
-                                .get_function(&fwd.target)
-                                .unwrap_or_else(|| {
-                                    let ptr_t = self.context.ptr_type(AddressSpace::from(0));
-                                    let fn_ty =
-                                        self.context.i32_type().fn_type(&[ptr_t.into()], true);
-                                    self.module.add_function(&fwd.target, fn_ty, None)
-                                });
-
-                            let mut lowered: Vec<
-                                inkwell::values::BasicMetadataValueEnum<'ctx>,
-                            > = Vec::new();
-
-                            if !args.is_empty() {
-                                if let Some(suf) = &fwd.suffix {
-                                    if let Expr::String(s) = &args[0] {
-                                        lowered.push(
-                                            self.compile_expr(&Expr::String(format!("{s}{suf}")))
-                                                .into(),
-                                        );
-                                    } else {
-                                        lowered.push(self.compile_expr(&args[0]).into());
-                                    }
-                                } else {
-                                    lowered.push(self.compile_expr(&args[0]).into());
-                                }
-                                for a in args.iter().skip(1) {
-                                    lowered.push(self.compile_expr(a).into());
-                                }
-                            }
-
-                            let call = self
-                                .builder
-                                .build_call(target_fn, &lowered, "call_forwarded")
-                                .expect("call forwarder target");
-
-                            if let Some(suf) = &fwd.suffix {
-                                if !matches!(args.get(0), Some(Expr::String(_))) {
-                                    let suf_val = self.compile_expr(&Expr::String(suf.clone()));
-                                    let _ = self
-                                        .builder
-                                        .build_call(
-                                            target_fn,
-                                            &[inkwell::values::BasicMetadataValueEnum::from(
-                                                suf_val,
-                                            )],
-                                            "call_suffix",
-                                        )
-                                        .ok();
-                                }
-                            }
-
-                            return match call.try_as_basic_value() {
-                                ValueKind::Basic(val) => val,
-                                ValueKind::Instruction(_) => self
-                                    .context
-                                    .i32_type()
-                                    .const_int(0, false)
-                                    .as_basic_value_enum(),
-                            };
+                        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                            eprintln!("DEBUG: Looking for function: {}", fn_name);
                         }
-
                         if let Some(function) = self.module.get_function(&fn_name) {
-                            eprintln!("DEBUG: Found function: {}", fn_name);
+                            if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                                eprintln!("DEBUG: Found function: {}", fn_name);
+                            }
                             if function.count_basic_blocks() == 0 {
                                 if self.current_module_prefix.is_some()
                                     && !self.allowed_externs.contains(&fn_name)
@@ -1203,9 +1150,93 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 }
                             }
                             let mut llvm_args = Vec::new();
-                            for arg in args {
-                                let val = self.compile_expr(arg);
-                                llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(val));
+                            // Kome 関数の可変長引数（型付き）は、呼び出し側で (ptr data, len) に pack する
+                            if let Some(sig) = self.fn_params.get(&fn_name).cloned() {
+                                let variadic = sig.iter().position(|p| p.is_variadic);
+                                if let Some(var_pos) = variadic {
+                                    if var_pos + 1 != sig.len() {
+                                        panic!("可変長引数は最後の1つだけ指定できます。");
+                                    }
+                                    let fixed = var_pos;
+                                    if args.len() < fixed {
+                                        panic!("引数の数が足りません: {}", fn_name);
+                                    }
+                                    // 固定引数
+                                    for a in args.iter().take(fixed) {
+                                        let v = self.compile_expr(a);
+                                        llvm_args.push(v.into());
+                                    }
+                                    // 可変長部分を i32/ptr 配列としてスタックに確保
+                                    let var_param = &sig[var_pos];
+                                    let elem_kind = var_param.ty.as_str();
+                                    let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                                    let (elem_ty, elem_kind_enum) = match elem_kind {
+                                        "Ptr" | "Any" | "String" => (ptr_t.as_basic_type_enum(), VariableKind::Ptr),
+                                        "Int" | "i32" => (self.context.i32_type().as_basic_type_enum(), VariableKind::I32),
+                                        _ => (self.context.i32_type().as_basic_type_enum(), VariableKind::I32),
+                                    };
+                                    let var_vals = args.iter().skip(fixed).collect::<Vec<_>>();
+                                    let len = var_vals.len() as u64;
+                                    let arr_ty = elem_ty.array_type(var_vals.len() as u32);
+                                    let arr = self
+                                        .builder
+                                        .build_alloca(arr_ty, "varargs_arr")
+                                        .expect("alloca varargs arr");
+                                    for (i, a) in var_vals.into_iter().enumerate() {
+                                        let gep = unsafe {
+                                            self.builder.build_in_bounds_gep(
+                                                arr_ty,
+                                                arr,
+                                                &[
+                                                    self.context.i32_type().const_int(0, false),
+                                                    self.context.i32_type().const_int(i as u64, false),
+                                                ],
+                                                "vararg_gep",
+                                            )
+                                        }
+                                        .expect("gep vararg");
+                                        let val = self.compile_expr(a);
+                                        match elem_kind_enum {
+                                            VariableKind::I32 => {
+                                                self.builder.build_store(gep, val.into_int_value()).ok();
+                                            }
+                                            VariableKind::Ptr => {
+                                                self.builder.build_store(gep, val.into_pointer_value()).ok();
+                                            }
+                                        }
+                                    }
+                                    // 先頭要素ポインタ
+                                    let data_ptr = unsafe {
+                                        self.builder.build_in_bounds_gep(
+                                            arr_ty,
+                                            arr,
+                                            &[
+                                                self.context.i32_type().const_int(0, false),
+                                                self.context.i32_type().const_int(0, false),
+                                            ],
+                                            "varargs_data",
+                                        )
+                                    }
+                                    .expect("gep varargs data");
+                                    llvm_args.push(data_ptr.into());
+                                    llvm_args.push(
+                                        self.context
+                                            .i32_type()
+                                            .const_int(len, false)
+                                            .as_basic_value_enum()
+                                            .into(),
+                                    );
+                                } else {
+                                    for arg in args {
+                                        let val = self.compile_expr(arg);
+                                        llvm_args.push(val.into());
+                                    }
+                                }
+                            } else {
+                                for arg in args {
+                                    let val = self.compile_expr(arg);
+                                    llvm_args.push(val.into());
+                                }
                             }
 
                             // If there is a trailing closure, compile it and add closure pointer as argument
@@ -1267,10 +1298,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 }
 
                 if let Some(ast::Accessor::Method(args, trailing_closure)) = tails.first() {
-                    if args.last().is_some_and(|e| matches!(e, Expr::VarArgs)) {
-                        panic!("`...` の転送は現在サポートしていません。");
-                    }
-
                     let mut fn_name = head.clone();
                     let lookup_name = fn_name.replace('.', "_");
 
@@ -1289,67 +1316,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         fn_name = lookup_name;
                     }
 
-                    // 変数長引数ラッパ（例: `io_println`）は、呼び出し側で target（例: `printf`）へ展開する
-                    if let Some(fwd) = self.vararg_forwarders.get(&fn_name).cloned() {
-                        let target_fn = self
-                            .module
-                            .get_function(&fwd.target)
-                            .unwrap_or_else(|| {
-                                let ptr_t = self.context.ptr_type(AddressSpace::from(0));
-                                let fn_ty = self.context.i32_type().fn_type(&[ptr_t.into()], true);
-                                self.module.add_function(&fwd.target, fn_ty, None)
-                            });
-
-                        let mut lowered: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-                            Vec::new();
-
-                        if !args.is_empty() {
-                            if let Some(suf) = &fwd.suffix {
-                                if let Expr::String(s) = &args[0] {
-                                    lowered.push(
-                                        self.compile_expr(&Expr::String(format!("{s}{suf}")))
-                                            .into(),
-                                    );
-                                } else {
-                                    lowered.push(self.compile_expr(&args[0]).into());
-                                }
-                            } else {
-                                lowered.push(self.compile_expr(&args[0]).into());
-                            }
-                            for a in args.iter().skip(1) {
-                                lowered.push(self.compile_expr(a).into());
-                            }
-                        }
-
-                        let call = self
-                            .builder
-                            .build_call(target_fn, &lowered, "call_forwarded")
-                            .expect("call forwarder target");
-
-                        if let Some(suf) = &fwd.suffix {
-                            if !matches!(args.get(0), Some(Expr::String(_))) {
-                                let suf_val = self.compile_expr(&Expr::String(suf.clone()));
-                                let _ = self
-                                    .builder
-                                    .build_call(
-                                        target_fn,
-                                        &[inkwell::values::BasicMetadataValueEnum::from(suf_val)],
-                                        "call_suffix",
-                                    )
-                                    .ok();
-                            }
-                        }
-
-                        return match call.try_as_basic_value() {
-                            ValueKind::Basic(val) => val,
-                            ValueKind::Instruction(_) => self
-                                .context
-                                .i32_type()
-                                .const_int(0, false)
-                                .as_basic_value_enum(),
-                        };
-                    }
-
                     let function = self
                         .module
                         .get_function(&fn_name)
@@ -1366,10 +1332,93 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
 
                     let mut llvm_args = Vec::new();
-
-                    for arg in args {
-                        let val = self.compile_expr(arg);
-                        llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(val));
+                    if let Some(sig) = self.fn_params.get(&fn_name).cloned() {
+                        let variadic = sig.iter().position(|p| p.is_variadic);
+                        if let Some(var_pos) = variadic {
+                            if var_pos + 1 != sig.len() {
+                                panic!("可変長引数は最後の1つだけ指定できます。");
+                            }
+                            let fixed = var_pos;
+                            if args.len() < fixed {
+                                panic!("引数の数が足りません: {}", fn_name);
+                            }
+                            for a in args.iter().take(fixed) {
+                                let v = self.compile_expr(a);
+                                llvm_args.push(v.into());
+                            }
+                            let var_param = &sig[var_pos];
+                            let elem_kind = var_param.ty.as_str();
+                            let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                            let (elem_ty, elem_kind_enum) = match elem_kind {
+                                "Ptr" | "Any" | "String" => {
+                                    (ptr_t.as_basic_type_enum(), VariableKind::Ptr)
+                                }
+                                "Int" | "i32" => {
+                                    (self.context.i32_type().as_basic_type_enum(), VariableKind::I32)
+                                }
+                                _ => (self.context.i32_type().as_basic_type_enum(), VariableKind::I32),
+                            };
+                            let var_vals = args.iter().skip(fixed).collect::<Vec<_>>();
+                            let len = var_vals.len() as u64;
+                            let arr_ty = elem_ty.array_type(var_vals.len() as u32);
+                            let arr = self
+                                .builder
+                                .build_alloca(arr_ty, "varargs_arr")
+                                .expect("alloca varargs arr");
+                            for (i, a) in var_vals.into_iter().enumerate() {
+                                let gep = unsafe {
+                                    self.builder.build_in_bounds_gep(
+                                        arr_ty,
+                                        arr,
+                                        &[
+                                            self.context.i32_type().const_int(0, false),
+                                            self.context.i32_type().const_int(i as u64, false),
+                                        ],
+                                        "vararg_gep",
+                                    )
+                                }
+                                .expect("gep vararg");
+                                let val = self.compile_expr(a);
+                                match elem_kind_enum {
+                                    VariableKind::I32 => {
+                                        self.builder.build_store(gep, val.into_int_value()).ok();
+                                    }
+                                    VariableKind::Ptr => {
+                                        self.builder.build_store(gep, val.into_pointer_value()).ok();
+                                    }
+                                }
+                            }
+                            let data_ptr = unsafe {
+                                self.builder.build_in_bounds_gep(
+                                    arr_ty,
+                                    arr,
+                                    &[
+                                        self.context.i32_type().const_int(0, false),
+                                        self.context.i32_type().const_int(0, false),
+                                    ],
+                                    "varargs_data",
+                                )
+                            }
+                            .expect("gep varargs data");
+                            llvm_args.push(data_ptr.into());
+                            llvm_args.push(
+                                self.context
+                                    .i32_type()
+                                    .const_int(len, false)
+                                    .as_basic_value_enum()
+                                    .into(),
+                            );
+                        } else {
+                            for arg in args {
+                                let val = self.compile_expr(arg);
+                                llvm_args.push(val.into());
+                            }
+                        }
+                    } else {
+                        for arg in args {
+                            let val = self.compile_expr(arg);
+                            llvm_args.push(val.into());
+                        }
                     }
 
                     if let Some(block_stmts) = trailing_closure {
@@ -1418,16 +1467,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .as_basic_value_enum(),
                     }
                 } else {
-                    // 未定義の関数は panic させず、警告を出して 0 を返す。
-                    eprintln!(
-                        "Codegen: Undefined function when resolving callchain: {}. Returning 0.",
-                        head
-                    );
-                    return self
-                        .context
-                        .i32_type()
-                        .const_int(0, false)
-                        .as_basic_value_enum();
+                    // 未定義の関数を 0 扱いすると後段で LLVM IR が壊れてセグフォになりやすいので、
+                    // 早めに落として原因が分かるようにする。
+                    panic!("Undefined function when resolving callchain head: '{head}'");
                 }
             }
 
@@ -1440,14 +1482,6 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                 global_str_ptr.as_basic_value_enum()
             } // TODO: 文字列などはまた実装
-            Expr::VarArgs => {
-                // 可変長引数（`...`）の「転送」は未実装だが、stdlib をパース/コンパイルできるよう
-                // AST としては受け付ける。値としてはダミーを返す。
-                self.context
-                    .i32_type()
-                    .const_int(0, false)
-                    .as_basic_value_enum()
-            }
         }
     }
 
