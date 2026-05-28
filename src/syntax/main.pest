@@ -3,6 +3,7 @@ program = { SOI ~ (stmt)* ~ EOI }
 stmt = {
     cinclude_stmt
     | import_stmt
+    | enum_stmt
     | fn_decl
     | bundle_stmt
     | declaration
@@ -12,6 +13,7 @@ stmt = {
     | if_stmt
     | while_stmt
     | for_stmt
+    | return_stmt
     | expr_stmt
 }
 
@@ -32,7 +34,9 @@ kv_pair = { ident ~ ":" ~ expr }
 bundle_stmt = { "bundle" ~ ident ~ "{" ~ stmt* ~ "}" }
 
 // 関数定義 fn main() { ... }
-fn_decl = { "fn" ~ ident ~ "(" ~ (param ~ ("," ~ param)*)? ~ ")" ~ ("->" ~ type_spec)? ~ "{" ~ stmt* ~ "}" }
+fn_decl = { "fn" ~ ident ~ "(" ~ (param_item ~ ("," ~ param_item)*)? ~ ")" ~ ("->" ~ type_spec)? ~ "{" ~ stmt* ~ "}" }
+param_item = { param | ellipsis }
+ellipsis = { "..." }
 
 // 引数の定義（例: key: string）
 param = { ident ~ ":" ~ type_spec }
@@ -62,7 +66,7 @@ property_access = { "." ~ ident }
 child_access = { "with" ~ ident ~ "(" ~ (kv_pair ~ ("," ~ kv_pair)*)? ~ ")" }
 
 // 演算子
-infix_op = _{ add | sub | mul | div | pipe | question | in_op | or | and | eq | neq | lt | gt | le | ge }
+infix_op = _{ add | sub | mul | div | pipe | question | in_op | or | and | eq | neq | lt | gt | le | ge | with_op }
 add = { "+" }
 sub = { "-" }
 mul = { "*" }
@@ -78,6 +82,7 @@ lt = { "<" }
 gt = { ">" }
 le = { "<=" }
 ge = { ">=" }
+with_op = { "with" }
 
 // if
 if_stmt = { "if" ~ expr ~ then_block ~ ("else" ~ else_block)? }
@@ -107,6 +112,13 @@ none = { "None()" }
 integer = @{ ASCII_DIGIT+ }
 string = ${ "\"" ~ inner_str ~ "\"" }
 inner_str = @{ (!"\"" ~ ANY)* }
+
+// enum
+enum_stmt = { "enum" ~ ident ~ "{" ~ (enum_variant ~ ("," ~ enum_variant)* ~ ","?)? ~ "}" }
+enum_variant = { ident ~ ("(" ~ (type_spec ~ ("," ~ type_spec)*)? ~ ")")? }
+
+// return
+return_stmt = { "return" ~ expr? }
 
 ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 expr_stmt = { expr ~ ("," ~ expr)* }
