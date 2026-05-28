@@ -11,10 +11,7 @@ lazy_static! {
         Mutex::new(HashMap::new());
 }
 
-// NOTE: subscription is implemented in the C runtime (std/runtime.c).
-// The Rust-side registry was removed to avoid duplicate symbol when linking
-// the C runtime. If you want Rust to own the registry instead, remove the
-// C implementation in `std/runtime.c` and reintroduce the function below.
+// subscriptionはCランタイム（std/runtime.c）側で実装
 
 /// stateへの代入命令の直後に呼び出される通知関数
 ///

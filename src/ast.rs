@@ -8,6 +8,10 @@ use std::fmt::Debug;
 pub enum Stmt {
     Import(Vec<String>),
     CInclude(String),
+    EnumDecl {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
     Decorator {
         name: String,
         target: String,
@@ -30,6 +34,7 @@ pub enum Stmt {
         is_public: bool,
         name: String,
         params: Vec<FnParam>,
+        is_variadic: bool,
         body: Vec<Stmt>,
     },
     If {
@@ -58,7 +63,15 @@ pub enum Stmt {
         name: String,
         value: Expr,
     },
+    Return(Option<Expr>),
     Block(Vec<Stmt>),
+}
+
+#[derive(Debug, Clone)]
+#[allow(unused)]
+pub struct EnumVariant {
+    pub name: String,
+    pub payload_tys: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +95,7 @@ pub enum Expr {
     Ident(String),
     Integer(i32),
     String(String),
+    VarArgs,
     BinaryOp {
         left: Box<Expr>,
         op: Op,
@@ -118,6 +132,7 @@ pub enum Op {
     Gt,
     Le,
     Ge,
+    With,
 }
 
 /// `pest` のパース結果から単一の文を解析してASTの `Stmt` へ変換する
@@ -200,6 +215,32 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let inner = s.into_inner().next().unwrap().as_str().to_string();
             Stmt::CInclude(inner)
         }
+        Rule::enum_stmt => {
+            let mut inner = pair.into_inner();
+            let name = inner.next().unwrap().as_str().to_string();
+            let mut variants: Vec<EnumVariant> = Vec::new();
+            for p in inner {
+                if p.as_rule() != Rule::enum_variant {
+                    continue;
+                }
+                let mut vi = p.into_inner();
+                let vname = vi.next().unwrap().as_str().to_string();
+                let mut payload_tys: Vec<String> = Vec::new();
+                for ty in vi {
+                    match ty.as_rule() {
+                        Rule::type_spec | Rule::path | Rule::ident => {
+                            payload_tys.push(ty.as_str().to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                variants.push(EnumVariant {
+                    name: vname,
+                    payload_tys,
+                });
+            }
+            Stmt::EnumDecl { name, variants }
+        }
         Rule::expr_stmt => {
             let in_expr = pair.into_inner().next().unwrap(); // expr_stmtの中にある実際の式
             let expr = parse_expr(in_expr); // parse_exprを呼び出してExpr型に変換
@@ -218,6 +259,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let name = first.as_str().to_string();
             let mut params: Vec<FnParam> = Vec::new();
             let mut body = Vec::new();
+            let mut is_variadic = false;
 
             // Parse all remaining items which could be params, return type, or statements
             for sub_pair in inner {
@@ -232,18 +274,31 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                             }
                         }
                     }
-                    Rule::param => {
-                        let mut p = sub_pair.into_inner();
-                        let pname = p.next().map(|x| x.as_str().to_string()).unwrap_or_default();
-                        let pty = p
-                            .next()
-                            .map(|x| x.as_str().to_string())
-                            .unwrap_or_else(|| "Int".to_string());
-                        if !pname.is_empty() {
-                            params.push(FnParam {
-                                name: pname,
-                                ty: pty,
-                            });
+                    Rule::param_item => {
+                        for inner_item in sub_pair.into_inner() {
+                            match inner_item.as_rule() {
+                                Rule::param => {
+                                    let mut p = inner_item.into_inner();
+                                    let pname = p
+                                        .next()
+                                        .map(|x| x.as_str().to_string())
+                                        .unwrap_or_default();
+                                    let pty = p
+                                        .next()
+                                        .map(|x| x.as_str().to_string())
+                                        .unwrap_or_else(|| "Int".to_string());
+                                    if !pname.is_empty() {
+                                        params.push(FnParam {
+                                            name: pname,
+                                            ty: pty,
+                                        });
+                                    }
+                                }
+                                Rule::ellipsis => {
+                                    is_variadic = true;
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     // Skip parameters and type specifications
@@ -256,6 +311,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 is_public,
                 name,
                 params,
+                is_variadic,
                 body,
             }
         }
@@ -357,6 +413,11 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 name,
                 value: final_value,
             }
+        }
+
+        Rule::return_stmt => {
+            let expr = pair.into_inner().next().map(parse_expr);
+            Stmt::Return(expr)
         }
 
         Rule::for_stmt => {
@@ -515,6 +576,7 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                     ">" => Op::Gt,
                     "<=" => Op::Le,
                     ">=" => Op::Ge,
+                    "with" => Op::With,
                     _ => todo!("Undefined op: {}", op_pair.as_str()),
                 };
                 let right_term = parse_expr(inner.next().unwrap());
@@ -605,6 +667,7 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
         }
         Rule::integer => Expr::Integer(pair.as_str().parse().unwrap()),
         Rule::string => Expr::String(pair.into_inner().next().unwrap().as_str().to_string()),
+        Rule::ellipsis => Expr::VarArgs,
         Rule::ident => Expr::Ident(pair.as_str().to_string()),
         _ => {
             panic!("parse_expr: Undefined rule: {:?}", pair.as_rule());

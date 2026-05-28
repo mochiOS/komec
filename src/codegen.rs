@@ -12,6 +12,12 @@ use pest::Parser;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+#[derive(Clone, Debug)]
+pub struct VarArgForwarder {
+    target: String,
+    suffix: Option<String>,
+}
+
 fn resolve_std_module_file(std_root: &std::path::Path, path_parts: &[String]) -> Option<std::path::PathBuf> {
     let rel = path_parts.join("/");
     let direct = std_root.join(format!("{rel}.kome"));
@@ -56,6 +62,9 @@ pub struct CodegenContext<'a, 'ctx> {
     pub current_dir: std::path::PathBuf,
     pub current_module_prefix: Option<String>,
     pub allowed_externs: HashSet<String>,
+    pub current_fn_is_variadic: bool,
+    pub register_fn: Option<inkwell::values::FunctionValue<'ctx>>,
+    pub vararg_forwarders: HashMap<String, VarArgForwarder>,
 }
 
 /// 変数の情報
@@ -74,6 +83,81 @@ pub enum VariableKind {
 }
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
+    fn ensure_register_fn(&mut self) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(f) = self.register_fn {
+            return f;
+        }
+        if let Some(existing) = self.module.get_function("__kome_register") {
+            self.register_fn = Some(existing);
+            return existing;
+        }
+
+        let void_t = self.context.void_type();
+        let fn_ty = void_t.fn_type(&[], false);
+        let f = self.module.add_function("__kome_register", fn_ty, None);
+        let entry = self.context.append_basic_block(f, "entry");
+
+        // 何も登録しない場合も正しく終了できるように ret を置く
+        let prev = self.builder.get_insert_block();
+        self.builder.position_at_end(entry);
+        self.builder.build_return(None).ok();
+        if let Some(prev) = prev {
+            self.builder.position_at_end(prev);
+        } else {
+            self.builder.clear_insertion_position();
+        }
+
+        self.register_fn = Some(f);
+        f
+    }
+    fn try_register_vararg_forwarder(&mut self, llvm_name: &str, params: &[ast::FnParam], body: &[Stmt]) -> bool {
+        if body.len() != 1 {
+            return false;
+        }
+        let Stmt::ExprStmt(Expr::CallChain { head, tails }) = &body[0] else {
+            return false;
+        };
+        if head != "printf" {
+            return false;
+        }
+        let Some(ast::Accessor::Method(args, trailing)) = tails.first() else {
+            return false;
+        };
+        if trailing.is_some() {
+            return false;
+        }
+        if args.len() < 2 || !matches!(args.last(), Some(Expr::VarArgs)) {
+            return false;
+        }
+        // 最初の引数が `args`（第1引数）もしくは `args with "..."` の形かを見る
+        let Some(first_param) = params.first() else {
+            return false;
+        };
+        let suffix = match &args[0] {
+            Expr::Ident(name) if name == &first_param.name => None,
+            Expr::BinaryOp { left, op: Op::With, right } => {
+                if matches!(&**left, Expr::Ident(n) if n == &first_param.name) {
+                    if let Expr::String(s) = &**right {
+                        Some(s.clone())
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        };
+
+        self.vararg_forwarders.insert(
+            llvm_name.to_string(),
+            VarArgForwarder {
+                target: "printf".to_string(),
+                suffix,
+            },
+        );
+        true
+    }
     /// 複数の文（Statements）を順番に LLVM 命令に変換する
     pub fn compile_statements(
         &mut self,
@@ -89,6 +173,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 i,
                 match stmt {
                     Stmt::CInclude(_) => "CInclude",
+                    Stmt::EnumDecl { .. } => "EnumDecl",
                     Stmt::Declaration { .. } => "Declaration",
                     Stmt::Assignment { .. } => "Assignment",
                     Stmt::ExprStmt(_) => "ExprStmt",
@@ -100,6 +185,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     Stmt::While { .. } => "While",
                     Stmt::For { .. } => "For",
                     Stmt::Decorator { .. } => "Decorator",
+                    Stmt::Return(_) => "Return",
                     Stmt::Block(_) => "Block",
                 }
             );
@@ -150,6 +236,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             }
                         }
                     }
+                }
+                Stmt::EnumDecl { .. } => {
+                    // TODO
                 }
                 #[allow(unused)]
                 Stmt::Import(path_parts) => {
@@ -256,6 +345,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     is_public: _,
                     name,
                     params,
+                    is_variadic,
                     body,
                 } => {
                     eprintln!(
@@ -264,6 +354,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         body.len()
                     );
                     let previous_block = self.builder.get_insert_block();
+                    let prev_variadic = self.current_fn_is_variadic;
+                    self.current_fn_is_variadic = *is_variadic;
 
                     let void_type = self.context.void_type();
                     let ptr_t = self.context.ptr_type(AddressSpace::from(0));
@@ -282,8 +374,40 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         param_kinds.push(kind);
                     }
 
-                    let fn_type = void_type.fn_type(&llvm_param_types, false);
                     let llvm_name = name.replace('.', "_");
+
+                    // 同じ std モジュールを複数回 import した場合など、同名関数を再定義しない。
+                    if let Some(existing) = self.module.get_function(&llvm_name) {
+                        if existing.count_basic_blocks() > 0 {
+                            debug!(
+                                "Codegen: skipping duplicate function definition '{}'",
+                                llvm_name
+                            );
+                            self.current_fn_is_variadic = prev_variadic;
+                            if previous_block.is_none() {
+                                self.builder.clear_insertion_position();
+                            }
+                            continue;
+                        }
+                    }
+
+                    // `fn f(x: Any, ...) { printf(x, ...) }` のような「薄いラッパ」は
+                    // 呼び出し側へ展開してしまえば、LLVM 側で va_list を扱わずに済む。
+                    if *is_variadic && self.try_register_vararg_forwarder(&llvm_name, params, body)
+                    {
+                        debug!(
+                            "Codegen: registered variadic forwarder for function '{}'",
+                            llvm_name
+                        );
+                        // 関数本体は生成しない（呼び出し側で直接 target を呼ぶ）
+                        self.current_fn_is_variadic = prev_variadic;
+                        if previous_block.is_none() {
+                            self.builder.clear_insertion_position();
+                        }
+                        continue;
+                    }
+
+                    let fn_type = void_type.fn_type(&llvm_param_types, *is_variadic);
                     let function = self.module.add_function(&llvm_name, fn_type, None);
                     let entry_block = self.context.append_basic_block(function, "entry");
 
@@ -315,8 +439,14 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
 
                     self.compile_statements(body)?;
+                    self.current_fn_is_variadic = prev_variadic;
 
-                    if entry_block.get_terminator().is_none() {
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_terminator())
+                        .is_none()
+                    {
                         self.builder
                             .build_return(None)
                             .expect("Failed to build void return");
@@ -329,11 +459,26 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             "Codegen: No previous block to return to after compiling function '{}'",
                             name
                         );
+                        // トップレベル（挿入先ブロック無し）から関数を生成した場合、
+                        // ここで挿入位置をクリアしておかないと以降のコード生成が
+                        // 直前に生成した関数の末尾へ誤って挿入されてしまう。
+                        self.builder.clear_insertion_position();
                     }
                 }
 
                 Stmt::ExprStmt(expr) => {
                     self.compile_expr(expr);
+                }
+                Stmt::Return(ret_expr) => {
+                    if let Some(bb) = self.builder.get_insert_block() {
+                        if bb.get_terminator().is_some() {
+                            return Ok(());
+                        }
+                    }
+                    if let Some(e) = ret_expr {
+                        let _ = self.compile_expr(e);
+                    }
+                    self.builder.build_return(None).ok();
                 }
 
                 Stmt::If {
@@ -369,9 +514,16 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .expect("Failed to compile then block statements");
                     }
 
-                    self.builder
-                        .build_unconditional_branch(merge_bb)
-                        .expect("Failed to build unconditional branch");
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_terminator())
+                        .is_none()
+                    {
+                        self.builder
+                            .build_unconditional_branch(merge_bb)
+                            .expect("Failed to build unconditional branch");
+                    }
 
                     // elseブロックの構築
                     self.builder.position_at_end(else_bb);
@@ -385,9 +537,16 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         }
                     }
 
-                    self.builder
-                        .build_unconditional_branch(merge_bb)
-                        .expect("Failed to build unconditional branch");
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_terminator())
+                        .is_none()
+                    {
+                        self.builder
+                            .build_unconditional_branch(merge_bb)
+                            .expect("Failed to build unconditional branch");
+                    }
 
                     // 合流
                     self.builder.position_at_end(merge_bb);
@@ -441,6 +600,12 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         name, state_deps
                     );
 
+                    // レシピ登録（subscribe）は実行時に必要なので、トップレベルでも安全に
+                    // コード生成できるよう `__kome_register` 関数へ集約する。
+                    let register_fn = self.ensure_register_fn();
+                    let register_entry = register_fn
+                        .get_first_basic_block()
+                        .expect("__kome_register entry");
                     let previous_block = self.builder.get_insert_block();
 
                     self.variables.retain(|_, v| v.is_state);
@@ -469,64 +634,56 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     if let Some(prev) = previous_block {
                         self.builder.position_at_end(prev);
 
-                        // すでにret等がある場合は、その直前に挿入ポイントを戻す
-                        if let Some(terminator) = prev.get_terminator() {
-                            self.builder.position_before(&terminator);
+                        // 元の挿入位置は一旦戻す（後で復元）
+                    } else {
+                        // トップレベルから呼ばれている場合は挿入位置が無いので後で復元しない
+                    }
+
+                    // __kome_register の末尾（ret の直前）に subscribe 呼び出しを挿入する
+                    self.builder.position_at_end(register_entry);
+                    if let Some(term) = register_entry.get_terminator() {
+                        self.builder.position_before(&term);
+                    }
+
+                    let subscribe_fn = match self.module.get_function("__kome_runtime_subscribe") {
+                        Some(f) => f,
+                        None => {
+                            let address_space = inkwell::AddressSpace::from(0);
+                            let generic_ptr_type = self.context.ptr_type(address_space);
+                            let sub_fn_type =
+                                void_type.fn_type(&[generic_ptr_type.into(), generic_ptr_type.into()], false);
+                            self.module
+                                .add_function("__kome_runtime_subscribe", sub_fn_type, None)
                         }
+                    };
 
-                        let subscribe_fn =
-                            match self.module.get_function("__kome_runtime_subscribe") {
-                                Some(f) => f,
-                                None => {
-                                    let address_space = inkwell::AddressSpace::from(0);
-                                    let generic_ptr_type = self.context.ptr_type(address_space);
+                    for dep_var in state_deps {
+                        let dep_var_global = self
+                            .builder
+                            .build_global_string_ptr(dep_var, "dep_var_name")
+                            .expect("Failed to generate global string ptr");
+                        let recipe_fn_ptr = recipe_function.as_global_value().as_pointer_value();
+                        self.builder
+                            .build_call(
+                                subscribe_fn,
+                                &[
+                                    dep_var_global.as_pointer_value().into(),
+                                    recipe_fn_ptr.into(),
+                                ],
+                                "subscribe_call",
+                            )
+                            .expect("Failed to build runtime subscribe call");
+                        debug!(
+                            "Codegen: Registered '{}' to look at state '{}'",
+                            recipe_fn_name, dep_var
+                        );
+                    }
 
-                                    let sub_fn_type = void_type.fn_type(
-                                        &[generic_ptr_type.into(), generic_ptr_type.into()],
-                                        false,
-                                    );
-                                    self.module.add_function(
-                                        "__kome_runtime_subscribe",
-                                        sub_fn_type,
-                                        None,
-                                    )
-                                }
-                            };
-
-                        // 依存している全てのstate変数に対して、このレシピ関数を登録する命令を生成
-                        for dep_var in state_deps {
-                            // 変数名文字列のグローバルポインタを作成
-                            let dep_var_global = self
-                                .builder
-                                .build_global_string_ptr(dep_var, "dep_var_name")
-                                .expect("Failed to generate global string ptr");
-
-                            // レシピ関数のポインタを取得
-                            let recipe_fn_ptr =
-                                recipe_function.as_global_value().as_pointer_value();
-
-                            self.builder
-                                .build_call(
-                                    subscribe_fn,
-                                    &[
-                                        dep_var_global.as_pointer_value().into(),
-                                        recipe_fn_ptr.into(),
-                                    ],
-                                    "subscribe_call",
-                                )
-                                .expect("Failed to build runtime subscribe call");
-
-                            debug!(
-                                "Codegen: Registered '{}' to look at state '{}'",
-                                recipe_fn_name, dep_var
-                            );
-                        }
-
+                    // もとの挿入位置に戻す
+                    if let Some(prev) = previous_block {
                         self.builder.position_at_end(prev);
                     } else {
-                        debug!(
-                            "Codegen: No parent block available to insert runtime subscribe call."
-                        );
+                        self.builder.clear_insertion_position();
                     }
                 }
 
@@ -927,6 +1084,11 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         // TODO: Null合体演算子実装
                         todo!("Codegen: '??' operator is not yet implemented.")
                     }
+                    Op::With => {
+                        // stdlib では `args with "\n"` のような「末尾付与」のために使っている。
+                        // 文字列の動的結合は未実装なので、現状は左辺をそのまま返す（no-op）。
+                        left_val
+                    }
                 }
             }
             Expr::Block(stmts) => {
@@ -947,6 +1109,11 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 for (i, tail) in tails.iter().enumerate() {
                     eprintln!("DEBUG:   tail[{}] = {:?}", i, tail);
                 }
+
+                // ここでは `print` や `io.print` のような特別扱い（ハードコード）はしない。
+                // 可変長引数の転送（`...`）は、通常の関数呼び出しとして処理できるように
+                // `printf(fmt, ...)` を `vprintf(fmt, va_list)` へ lower する形で実装する。
+
                 if tails.len() >= 2 {
                     eprintln!("DEBUG: Found CallChain with {} tails", tails.len());
                     if let (
@@ -958,6 +1125,71 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         let bundle_name = head;
                         let fn_name = format!("{}_{}", bundle_name, method_name);
                         eprintln!("DEBUG: Looking for function: {}", fn_name);
+                        // 変数長引数ラッパ（例: `io_println`）は、呼び出し側で target（例: `printf`）へ展開する
+                        if let Some(fwd) = self.vararg_forwarders.get(&fn_name).cloned() {
+                            let target_fn = self
+                                .module
+                                .get_function(&fwd.target)
+                                .unwrap_or_else(|| {
+                                    let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                                    let fn_ty =
+                                        self.context.i32_type().fn_type(&[ptr_t.into()], true);
+                                    self.module.add_function(&fwd.target, fn_ty, None)
+                                });
+
+                            let mut lowered: Vec<
+                                inkwell::values::BasicMetadataValueEnum<'ctx>,
+                            > = Vec::new();
+
+                            if !args.is_empty() {
+                                if let Some(suf) = &fwd.suffix {
+                                    if let Expr::String(s) = &args[0] {
+                                        lowered.push(
+                                            self.compile_expr(&Expr::String(format!("{s}{suf}")))
+                                                .into(),
+                                        );
+                                    } else {
+                                        lowered.push(self.compile_expr(&args[0]).into());
+                                    }
+                                } else {
+                                    lowered.push(self.compile_expr(&args[0]).into());
+                                }
+                                for a in args.iter().skip(1) {
+                                    lowered.push(self.compile_expr(a).into());
+                                }
+                            }
+
+                            let call = self
+                                .builder
+                                .build_call(target_fn, &lowered, "call_forwarded")
+                                .expect("call forwarder target");
+
+                            if let Some(suf) = &fwd.suffix {
+                                if !matches!(args.get(0), Some(Expr::String(_))) {
+                                    let suf_val = self.compile_expr(&Expr::String(suf.clone()));
+                                    let _ = self
+                                        .builder
+                                        .build_call(
+                                            target_fn,
+                                            &[inkwell::values::BasicMetadataValueEnum::from(
+                                                suf_val,
+                                            )],
+                                            "call_suffix",
+                                        )
+                                        .ok();
+                                }
+                            }
+
+                            return match call.try_as_basic_value() {
+                                ValueKind::Basic(val) => val,
+                                ValueKind::Instruction(_) => self
+                                    .context
+                                    .i32_type()
+                                    .const_int(0, false)
+                                    .as_basic_value_enum(),
+                            };
+                        }
+
                         if let Some(function) = self.module.get_function(&fn_name) {
                             eprintln!("DEBUG: Found function: {}", fn_name);
                             if function.count_basic_blocks() == 0 {
@@ -1035,6 +1267,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 }
 
                 if let Some(ast::Accessor::Method(args, trailing_closure)) = tails.first() {
+                    if args.last().is_some_and(|e| matches!(e, Expr::VarArgs)) {
+                        panic!("`...` の転送は現在サポートしていません。");
+                    }
+
                     let mut fn_name = head.clone();
                     let lookup_name = fn_name.replace('.', "_");
 
@@ -1051,6 +1287,67 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         }
                     } else {
                         fn_name = lookup_name;
+                    }
+
+                    // 変数長引数ラッパ（例: `io_println`）は、呼び出し側で target（例: `printf`）へ展開する
+                    if let Some(fwd) = self.vararg_forwarders.get(&fn_name).cloned() {
+                        let target_fn = self
+                            .module
+                            .get_function(&fwd.target)
+                            .unwrap_or_else(|| {
+                                let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                                let fn_ty = self.context.i32_type().fn_type(&[ptr_t.into()], true);
+                                self.module.add_function(&fwd.target, fn_ty, None)
+                            });
+
+                        let mut lowered: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                            Vec::new();
+
+                        if !args.is_empty() {
+                            if let Some(suf) = &fwd.suffix {
+                                if let Expr::String(s) = &args[0] {
+                                    lowered.push(
+                                        self.compile_expr(&Expr::String(format!("{s}{suf}")))
+                                            .into(),
+                                    );
+                                } else {
+                                    lowered.push(self.compile_expr(&args[0]).into());
+                                }
+                            } else {
+                                lowered.push(self.compile_expr(&args[0]).into());
+                            }
+                            for a in args.iter().skip(1) {
+                                lowered.push(self.compile_expr(a).into());
+                            }
+                        }
+
+                        let call = self
+                            .builder
+                            .build_call(target_fn, &lowered, "call_forwarded")
+                            .expect("call forwarder target");
+
+                        if let Some(suf) = &fwd.suffix {
+                            if !matches!(args.get(0), Some(Expr::String(_))) {
+                                let suf_val = self.compile_expr(&Expr::String(suf.clone()));
+                                let _ = self
+                                    .builder
+                                    .build_call(
+                                        target_fn,
+                                        &[inkwell::values::BasicMetadataValueEnum::from(suf_val)],
+                                        "call_suffix",
+                                    )
+                                    .ok();
+                            }
+                        }
+
+                        return match call.try_as_basic_value() {
+                            ValueKind::Basic(val) => val,
+                            ValueKind::Instruction(_) => self
+                                .context
+                                .i32_type()
+                                .const_int(0, false)
+                                .as_basic_value_enum(),
+                        };
                     }
 
                     let function = self
@@ -1143,6 +1440,14 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                 global_str_ptr.as_basic_value_enum()
             } // TODO: 文字列などはまた実装
+            Expr::VarArgs => {
+                // 可変長引数（`...`）の「転送」は未実装だが、stdlib をパース/コンパイルできるよう
+                // AST としては受け付ける。値としてはダミーを返す。
+                self.context
+                    .i32_type()
+                    .const_int(0, false)
+                    .as_basic_value_enum()
+            }
         }
     }
 

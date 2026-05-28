@@ -79,13 +79,37 @@ impl LibraryManager {
             if head_parts.len() < 2 {
                 continue;
             }
-            let name = head_parts.pop().unwrap();
-            let ret = head_parts.join(" ");
 
-            let ret_kind = match ret.as_str() {
-                "void" => None,
-                "int" => Some(i32_t.as_basic_type_enum()),
-                _ => Some(ptr_t.as_basic_type_enum()), // conservative fallback
+            let name = head_parts.pop().unwrap();
+            let ret_raw = head_parts.join(" ");
+            let ret_norm = ret_raw
+                .split_whitespace()
+                .filter(|t| {
+                    !matches!(
+                        *t,
+                        "extern"
+                            | "static"
+                            | "inline"
+                            | "__inline"
+                            | "__extern"
+                            | "__extension__"
+                            | "const"
+                            | "__const"
+                            | "restrict"
+                            | "__restrict"
+                            | "volatile"
+                            | "register"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let ret_kind = if ret_norm == "void" {
+                None
+            } else if ret_norm == "int" || ret_norm.ends_with(" int") || ret_norm.ends_with("int") {
+                Some(i32_t.as_basic_type_enum())
+            } else {
+                Some(ptr_t.as_basic_type_enum())
             };
 
             let mut arg_types: Vec<BasicTypeEnum<'a>> = Vec::new();

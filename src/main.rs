@@ -108,6 +108,9 @@ fn main() {
         current_dir: std::path::PathBuf::new(),
         current_module_prefix: None,
         allowed_externs: std::collections::HashSet::new(),
+        current_fn_is_variadic: false,
+        register_fn: None,
+        vararg_forwarders: std::collections::HashMap::new(),
     };
 
     for stmt in &ast_state {
@@ -207,6 +210,17 @@ fn main() {
             debug!("[runtime] returned from __kome_entry()");
         } else {
             println!("Runtime Error: Entry function is not defined.");
+        }
+    }
+
+    // std/bundle などが生成した subscribe 登録を実行
+    unsafe {
+        if let Ok(register_fn) =
+            execution_engine.get_function::<unsafe extern "C" fn()>("__kome_register")
+        {
+            debug!("[runtime] calling __kome_register()");
+            register_fn.call();
+            debug!("[runtime] returned from __kome_register()");
         }
     }
 

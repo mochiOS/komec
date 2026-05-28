@@ -1,12 +1,11 @@
 use std.io
-use std.io.keyboard
 use std.bundle
 
 bundle App {
     public state let mut Index = 0
 
     recipe button: Index = {
-        println("Button pressed: %d", Index)
+        io.println("Button pressed: %d", Index)
     }
 }
 
