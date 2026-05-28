@@ -16,12 +16,10 @@ impl LibraryManager {
     fn clang() -> &'static Clang {
         static CLANG: OnceLock<usize> = OnceLock::new();
         let addr = *CLANG.get_or_init(|| {
-            // Create Clang and leak it to avoid destructor ordering issues between libclang and LLVM
-            // (some environments crash in clang/LLVM destructor chains at program exit).
             let clang = Clang::new().expect("Failed to initialize clang");
             Box::into_raw(Box::new(clang)) as usize
         });
-        // Safety: `addr` is created from `Box::into_raw` and intentionally leaked for `'static`.
+
         unsafe { &*(addr as *const Clang) }
     }
 
@@ -43,11 +41,6 @@ impl LibraryManager {
         context: &'a inkwell::context::Context,
         module: &Module<'a>,
     ) -> Option<Vec<String>> {
-        // Only attempt for non-system headers (std/ or local headers).
-        if header_path.starts_with("/usr/include") {
-            return None;
-        }
-
         let source = match std::fs::read_to_string(header_path) {
             Ok(s) => s,
             Err(_) => return None,
@@ -242,79 +235,17 @@ impl LibraryManager {
             return None;
         }
 
-        // Prefer a tiny safe prototype loader for local/std headers to avoid libclang instability.
-        // If it can parse at least one function prototype, we're done.
         if let Some(names) = self.try_load_simple_header_collect(&header_path, context, module) {
             if !names.is_empty() {
                 return Some(names);
             }
         }
 
-        // 一部のよく使うヘッダについては libclang に頼らずプロトタイプを手で登録して
-        // libclang の TranslationUnit 破棄時の不安定性を回避する
-        if header_path.ends_with("stdio.h") || header_name.starts_with("libc.") {
-            // printf, puts, fflush, putchar, getchar, vprintf などを簡易登録
-            let i32_t = context.i32_type();
-            let _void_t = context.void_type();
-            let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
-
-            // int printf(const char *fmt, ...);
-            if module.get_function("printf").is_none() {
-                let fn_ty = i32_t.fn_type(&[ptr_t.into()], true);
-                module.add_function("printf", fn_ty, None);
-                debug!("LibraryManager: Added builtin prototype 'printf'");
-            }
-            if module.get_function("puts").is_none() {
-                let fn_ty = i32_t.fn_type(&[ptr_t.into()], false);
-                module.add_function("puts", fn_ty, None);
-                debug!("LibraryManager: Added builtin prototype 'puts'");
-            }
-            if module.get_function("fflush").is_none() {
-                let fn_ty = i32_t.fn_type(&[ptr_t.into()], false);
-                module.add_function("fflush", fn_ty, None);
-                debug!("LibraryManager: Added builtin prototype 'fflush'");
-            }
-            if module.get_function("putchar").is_none() {
-                let fn_ty = i32_t.fn_type(&[i32_t.into()], false);
-                module.add_function("putchar", fn_ty, None);
-                debug!("LibraryManager: Added builtin prototype 'putchar'");
-            }
-            if module.get_function("getchar").is_none() {
-                let fn_ty = i32_t.fn_type(&[], false);
-                module.add_function("getchar", fn_ty, None);
-                debug!("LibraryManager: Added builtin prototype 'getchar'");
-            }
-            if module.get_function("vprintf").is_none() {
-                let fn_ty = i32_t.fn_type(&[ptr_t.into()], true);
-                module.add_function("vprintf", fn_ty, None);
-                debug!("LibraryManager: Added builtin prototype 'vprintf'");
-            }
-
-            // 内部的な補助関数名（過去のログで出てきたもの）も追加しておく
-            if module.get_function("__uflow").is_none() {
-                let fn_ty = i32_t.fn_type(&[], false);
-                module.add_function("__uflow", fn_ty, None);
-            }
-            if module.get_function("__overflow").is_none() {
-                let fn_ty = i32_t.fn_type(&[], false);
-                module.add_function("__overflow", fn_ty, None);
-            }
-
-            return Some(vec![
-                "printf".to_string(),
-                "puts".to_string(),
-                "fflush".to_string(),
-                "putchar".to_string(),
-                "getchar".to_string(),
-                "vprintf".to_string(),
-                "__sputc".to_string(),
-                "__uflow".to_string(),
-                "__overflow".to_string(),
-            ]);
+        if header_path.starts_with("/usr/include/") {
+            return None;
         }
 
-        // デフォルトは既存の clang ベースのパーサを使うが、libclang が環境で不安定な場合は
-        // ここで失敗することがあるため安全に扱う必要がある。まずは試行して失敗したら false を返す。
+        // それ以外（std/ やローカルヘッダ）は clang ベースのパーサを試す。
         let index = Index::new(Self::clang(), false, false);
         let tu = match index.parser(&header_path).parse() {
             Ok(tu) => tu,
@@ -377,5 +308,30 @@ impl LibraryManager {
             }
         }
         Some(added)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LibraryManager;
+    use inkwell::context::Context;
+    use std::path::Path;
+
+    #[test]
+    fn libc_stdio_loads_printf_without_clang_fallback() {
+        if !Path::new("/usr/include/stdio.h").exists() {
+            return;
+        }
+
+        let context = Context::create();
+        let module = context.create_module("test");
+        let mgr = LibraryManager::new();
+
+        let names = mgr.load_c_header_collect("libc.stdio", &context, &module);
+        assert!(names.is_some(), "failed to load libc.stdio header");
+        assert!(
+            module.get_function("printf").is_some(),
+            "printf prototype was not registered"
+        );
     }
 }
