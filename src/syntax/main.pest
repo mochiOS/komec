@@ -106,7 +106,7 @@ assign     = { "=" }
 sub_assign = { "-=" }
 add_assign = { "+=" }
 
-constant = { string | integer | boolean | none }
+constant = { string | integer | boolean | none | ellipsis }
 boolean = { "true" | "false" }
 none = { "None()" }
 integer = @{ ASCII_DIGIT+ }
