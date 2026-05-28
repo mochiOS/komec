@@ -84,3 +84,4 @@ fn main() {
 さらに、`window.card.onClick`のようなイベントハンドラーを使用して、クリックイベントに応じて状態を更新することができます。
 `!default`は、条件が満たされない場合のデフォルトの値を指定するために使用されます。
 `clicked`が0のときは「Hello, world!」が表示され、1のときは「Clicked!」が表示されるようになっています。
+詳しいことは[bundle](./bundle.md)や[state](./state.md), [recipe](./recipe.md)などのドキュメントを参照してください。
