@@ -12,10 +12,10 @@ stmt = {
     | assignment
     | decorator
     | if_stmt
-    | while_stmt
-    | for_stmt
     | return_stmt
     | expr_stmt
+    | while_stmt
+    | for_stmt
 }
 
 visibility = { "public" }
@@ -46,7 +46,8 @@ ellipsis = { "..." }
 param = { ident ~ ":" ~ type_spec ~ ellipsis? }
 
 // 型の定義（識別子、または path を許可）
-type_spec = { path | ident }
+// `T?` の Optional を許可する
+type_spec = { (path | ident) ~ "?"? }
 // 変数宣言
 declaration = {
     visibility? ~ state_kw? ~ "let" ~ "mut"? ~ ident ~ "=" ~ expr ~ range_limit?
@@ -58,10 +59,14 @@ cycle_kw = { "cycle" }
 // 式（Expression）: メソッドチェーンや演算を扱えるようにする
 expr = { term ~ (infix_op ~ term)* }
 term = {
-    call_chain
+    if_expr
     | constant
+    | call_chain
     | "(" ~ expr ~ ")"
 }
+
+// if は式としても使える（式の場合は else 必須）
+if_expr = { "if" ~ expr ~ block ~ "else" ~ block }
 
 // メソッドチェーン viewKit.window.create().with(...)
 call_chain = { (ident | path) ~ (child_access | method_call | property_access)* }
@@ -75,7 +80,7 @@ add = { "+" }
 sub = { "-" }
 mul = { "*" }
 div = { "/" }
-pipe = { "|" }
+pipe = { "|" ~ ! "|" }
 question = { "??" }
 in_op = { "in" } // path生成用の 'in' 演算子（example: "about.toml" in app_dirで{app_dir}/about.toml）
 or = { "or" | "||" }
@@ -88,7 +93,7 @@ le = { "<=" }
 ge = { ">=" }
 with_op = { "with" }
 
-// if
+// if（文としての if。式 if（if_expr）は term 側に置く）
 if_stmt = { "if" ~ expr ~ then_block ~ ("else" ~ else_block)? }
 then_block = { "{" ~ stmt* ~ "}" }
 else_block = { "{" ~ stmt* ~ "}" }
@@ -112,7 +117,7 @@ add_assign = { "+=" }
 
 constant = { string | integer | boolean | none }
 boolean = { "true" | "false" }
-none = { "None()" }
+none = { "none" | "None()" }
 integer = @{ ASCII_DIGIT+ }
 string = ${ "\"" ~ inner_str ~ "\"" }
 inner_str = @{ (!"\"" ~ ANY)* }

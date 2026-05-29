@@ -1,21 +1,27 @@
 use crate::ast::{Expr, FnParam, Op, Stmt};
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Void,
     Int,
     Bool,
     Ptr,
+    Optional(Box<Type>),
+    NoneLit,
     Unknown,
 }
 
 fn parse_type(name: &str) -> Type {
-    match name {
-        "Void" => Type::Void,
-        "Int" | "i32" => Type::Int,
-        "Bool" => Type::Bool,
-        "Ptr" | "Any" | "String" => Type::Ptr,
+    let s = name.trim();
+    if let Some(inner) = s.strip_suffix('?') {
+        return Type::Optional(Box::new(parse_type(inner)));
+    }
+    match s {
+        "Void" | "none" | "None" => Type::Void,
+        "Int" | "i32" | "int" => Type::Int,
+        "Bool" | "bool" => Type::Bool,
+        "Ptr" | "Any" | "String" | "string" => Type::Ptr,
         _ => Type::Unknown,
     }
 }
@@ -24,7 +30,16 @@ fn type_of_expr(expr: &Expr, env: &HashMap<String, Type>) -> Type {
     match expr {
         Expr::Integer(_) => Type::Int,
         Expr::String(_) => Type::Ptr,
-        Expr::Ident(name) => *env.get(name).unwrap_or(&Type::Unknown),
+        Expr::Bool(_) => Type::Bool,
+        Expr::None => Type::NoneLit,
+        Expr::Ident(name) => {
+            // "_" は値を捨てるためのプレースホルダ
+            if name == "_" {
+                Type::Ptr
+            } else {
+                env.get(name).cloned().unwrap_or(Type::Unknown)
+            }
+        }
         Expr::BinaryOp { left, op, right } => {
             let lt = type_of_expr(left, env);
             let rt = type_of_expr(right, env);
@@ -51,11 +66,45 @@ fn type_of_expr(expr: &Expr, env: &HashMap<String, Type>) -> Type {
                     }
                 }
                 Op::With => lt,
+                Op::Question => {
+                    // ?? は `T? ?? T -> T`（none のときは右）
+                    match (&lt, &rt) {
+                        (Type::Optional(inner), t) if inner.as_ref() == t => (*t).clone(),
+                        (Type::Optional(inner), Type::NoneLit) => (*inner.as_ref()).clone(),
+                        (Type::NoneLit, t) => t.clone(),
+                        _ => Type::Unknown,
+                    }
+                }
                 _ => Type::Unknown,
+            }
+        }
+        Expr::IfExpr {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            let ct = type_of_expr(condition, env);
+            if ct != Type::Unknown && ct != Type::Bool {
+                return Type::Unknown;
+            }
+            let tt = type_of_block(then_body, env);
+            let et = type_of_block(else_body, env);
+            if tt == et {
+                tt
+            } else {
+                Type::Unknown
             }
         }
         Expr::Block(_) => Type::Void,
         Expr::CallChain { .. } => Type::Unknown,
+    }
+}
+
+fn type_of_block(stmts: &[Stmt], env: &HashMap<String, Type>) -> Type {
+    // 仕様: ブロック式の値は「最後の式」
+    match stmts.last() {
+        Some(Stmt::ExprStmt(e)) => type_of_expr(e, env),
+        _ => Type::Void,
     }
 }
 
@@ -108,6 +157,78 @@ fn check_variadic_params(params: &[FnParam]) -> Result<(), String> {
     Ok(())
 }
 
+fn inferred_return_from_last_expr(body: &[Stmt], env: &HashMap<String, Type>) -> Type {
+    match body.last() {
+        Some(Stmt::ExprStmt(e)) => type_of_expr(e, env),
+        Some(Stmt::If { then_body, else_body, .. }) => {
+            let Some(else_body) = else_body else {
+                return Type::Void;
+            };
+            let then_stmts = match &**then_body {
+                Stmt::Bundle { body, .. } => body.as_slice(),
+                Stmt::Block(body) => body.as_slice(),
+                other => std::slice::from_ref(other),
+            };
+            let else_stmts = match &**else_body {
+                Stmt::Bundle { body, .. } => body.as_slice(),
+                Stmt::Block(body) => body.as_slice(),
+                other => std::slice::from_ref(other),
+            };
+            let tt = type_of_block(then_stmts, env);
+            let et = type_of_block(else_stmts, env);
+            if tt == et { tt } else { Type::Unknown }
+        }
+        _ => Type::Void,
+    }
+}
+
+fn stmt_can_fallthrough(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return(_) => false,
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            // else が無い if は必ず fallthrough しうる
+            let Some(else_body) = else_body else {
+                return true;
+            };
+
+            let then_stmts = match &**then_body {
+                Stmt::Bundle { body, .. } => body.as_slice(),
+                Stmt::Block(body) => body.as_slice(),
+                other => std::slice::from_ref(other),
+            };
+            let else_stmts = match &**else_body {
+                Stmt::Bundle { body, .. } => body.as_slice(),
+                Stmt::Block(body) => body.as_slice(),
+                other => std::slice::from_ref(other),
+            };
+
+            let then_can = block_can_fallthrough(then_stmts);
+            let else_can = block_can_fallthrough(else_stmts);
+            then_can || else_can
+        }
+        Stmt::While { .. } | Stmt::For { .. } => {
+            // ループは「実行されない」可能性があるので fallthrough するとみなす
+            true
+        }
+        Stmt::Bundle { body, .. } | Stmt::Block(body) => block_can_fallthrough(body),
+        Stmt::FnDecl { .. } => true,
+        _ => true,
+    }
+}
+
+fn block_can_fallthrough(stmts: &[Stmt]) -> bool {
+    for s in stmts {
+        if !stmt_can_fallthrough(s) {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn typecheck_program(stmts: &[Stmt]) -> Result<(), String> {
     for s in stmts {
         if let Stmt::FnDecl {
@@ -139,7 +260,7 @@ pub fn typecheck_program(stmts: &[Stmt]) -> Result<(), String> {
             collect_returns(body, &mut returns);
 
             for r in returns.iter() {
-                match (ret, r) {
+                match (ret.clone(), r) {
                     (Type::Void, None) => {}
                     (Type::Void, Some(_)) => {
                         return Err(format!("fn {name}: Void 関数で値を return しています。"));
@@ -157,8 +278,43 @@ pub fn typecheck_program(stmts: &[Stmt]) -> Result<(), String> {
                     }
                 }
             }
+
+            // 仕様: `return` は任意で、最後の式が戻り値になる
+            if ret != Type::Void {
+                let has_implicit = matches!(body.last(), Some(Stmt::ExprStmt(_)));
+                let has_implicit_if = matches!(
+                    body.last(),
+                    Some(Stmt::If {
+                        else_body: Some(_),
+                        ..
+                    })
+                );
+                if has_implicit {
+                    let inferred = inferred_return_from_last_expr(body, &env);
+                    if inferred != Type::Unknown && inferred != ret {
+                        return Err(format!(
+                            "fn {name}: 最後の式の型が戻り値と一致しません: expected={ret:?}, got={inferred:?}"
+                        ));
+                    }
+                }
+                if !has_implicit && has_implicit_if {
+                    let inferred = inferred_return_from_last_expr(body, &env);
+                    if inferred != Type::Unknown && inferred != ret {
+                        return Err(format!(
+                            "fn {name}: 最後の if の型が戻り値と一致しません: expected={ret:?}, got={inferred:?}"
+                        ));
+                    }
+                }
+                if !has_implicit && !has_implicit_if {
+                    // 末尾が式でない場合、明示 return が全パスで必要
+                    if block_can_fallthrough(body) {
+                        return Err(format!(
+                            "fn {name}: `{ret:?}` 戻り値の関数は全てのコードパスで return が必要です。"
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(())
 }
-

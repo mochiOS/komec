@@ -22,6 +22,7 @@ unsafe extern "C" {
     unsafe fn __kome_printf_i32v(fmt: *const std::os::raw::c_char, data: *const i32, len: i32) -> i32;
     unsafe fn __kome_std_keyboard_onPress(any: *mut c_void, closure: *mut c_void);
     unsafe fn __kome_std_keyboard_scan(any: *mut c_void, closure: *mut c_void);
+    unsafe fn __kome_str_concat(a: *const std::os::raw::c_char, b: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
 }
 
 mod ast;
@@ -39,7 +40,10 @@ fn main() {
 
     if args.len() == 1 {
         println!("Usage: {} <source_file>", args[0]);
-        return;
+        unsafe {
+            libc::fflush(std::ptr::null_mut());
+            libc::_exit(1);
+        }
     }
 
     // -d が付いているときだけログを出す（普段は静かに）
@@ -53,7 +57,10 @@ fn main() {
     let source_file = args[1].clone();
     if let Err(e) = fs::read_to_string(&source_file) {
         println!("Error reading file {}: {}", source_file, e);
-        return;
+        unsafe {
+            libc::fflush(std::ptr::null_mut());
+            libc::_exit(1);
+        }
     }
 
     // パース前の生ソース
@@ -61,7 +68,10 @@ fn main() {
         Ok(content) => content,
         Err(_) => {
             println!("Error reading file: {}", source_file);
-            return;
+            unsafe {
+                libc::fflush(std::ptr::null_mut());
+                libc::_exit(1);
+            }
         }
     };
 
@@ -70,7 +80,10 @@ fn main() {
         Ok(parse) => parse,
         Err(e) => {
             println!("Parse error:\n{}", e);
-            return;
+            unsafe {
+                libc::fflush(std::ptr::null_mut());
+                libc::_exit(1);
+            }
         }
     };
 
@@ -101,7 +114,10 @@ fn main() {
 
     if let Err(e) = crate::typecheck::typecheck_program(&ast_state) {
         eprintln!("Type Error: {e}");
-        return;
+        unsafe {
+            libc::fflush(std::ptr::null_mut());
+            libc::_exit(1);
+        }
     }
 
     let context = Context::create();
@@ -118,6 +134,7 @@ fn main() {
         allowed_externs: std::collections::HashSet::new(),
         register_fn: None,
         fn_params: std::collections::HashMap::new(),
+        current_return: None,
     };
 
     for stmt in &ast_state {
@@ -163,6 +180,15 @@ fn main() {
     // デバッグ
     if env::var("KOME_DEBUG_IR").ok().as_deref() == Some("1") {
         module.print_to_stderr();
+    }
+
+    // IR が壊れていると JIT が SIGTRAP で落ちることがあるので、ここで検証する
+    if let Err(e) = module.verify() {
+        eprintln!("IR Verify Error: {e}");
+        unsafe {
+            libc::fflush(std::ptr::null_mut());
+            libc::_exit(1);
+        }
     }
 
     let execution_engine = module
@@ -233,6 +259,16 @@ fn main() {
         );
     }
 
+    // std/string 側の C 実装
+    if let Some(fn_val) = module.get_function("__kome_str_concat") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_str_concat as *const () as usize);
+        debug!(
+            "[jit-map] mapped __kome_str_concat -> {:p}",
+            __kome_str_concat as *const ()
+        );
+    }
+
     unsafe {
         if let Ok(entry_fn) =
             execution_engine.get_function::<unsafe extern "C" fn() -> i32>("__kome_entry")
@@ -286,6 +322,8 @@ fn main() {
     }
 
     unsafe {
+        // _exit は stdio を flush しないので、出力が消えることがある
+        libc::fflush(std::ptr::null_mut());
         libc::_exit(0);
     }
 }

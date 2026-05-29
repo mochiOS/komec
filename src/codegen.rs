@@ -59,6 +59,7 @@ pub struct CodegenContext<'a, 'ctx> {
     pub allowed_externs: HashSet<String>,
     pub register_fn: Option<inkwell::values::FunctionValue<'ctx>>,
     pub fn_params: HashMap<String, Vec<ast::FnParam>>,
+    pub current_return: Option<ReturnKind>,
 }
 
 /// 変数の情報
@@ -74,9 +75,38 @@ pub struct VariableInfo<'ctx> {
 pub enum VariableKind {
     I32,
     Ptr,
+    Bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnKind {
+    Void,
+    I32,
+    Ptr,
+    Bool,
+    OptI32,
+    OptPtr,
 }
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
+    fn parse_return_kind(name: Option<&str>) -> ReturnKind {
+        let s = name.unwrap_or("none").trim();
+        if let Some(inner) = s.strip_suffix('?') {
+            return match inner.trim() {
+                "Int" | "i32" | "int" => ReturnKind::OptI32,
+                "Ptr" | "Any" | "String" | "string" => ReturnKind::OptPtr,
+                _ => ReturnKind::Void,
+            };
+        }
+        match s {
+            "none" | "None" | "Void" => ReturnKind::Void,
+            "Int" | "i32" | "int" => ReturnKind::I32,
+            "Ptr" | "Any" | "String" | "string" => ReturnKind::Ptr,
+            "Bool" | "bool" => ReturnKind::Bool,
+            _ => ReturnKind::Void,
+        }
+    }
+
     fn ensure_register_fn(&mut self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(f) = self.register_fn {
             return f;
@@ -190,6 +220,105 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 Stmt::EnumDecl { .. } => {
                     // TODO
                 }
+                Stmt::Declaration {
+                    is_public: _,
+                    is_state,
+                    is_mut: _,
+                    name,
+                    value,
+                    range: _,
+                } => {
+                    // state はグローバル、通常の let はローカル変数として扱う
+                    if *is_state {
+                        let i32_t = self.context.i32_type();
+                        let global = match self.module.get_global(name) {
+                            Some(g) => g,
+                            None => {
+                                let g = self.module.add_global(i32_t, None, name);
+                                g.set_initializer(&i32_t.const_int(0, false));
+                                g
+                            }
+                        };
+                        self.variables.insert(
+                            name.clone(),
+                            VariableInfo {
+                                ptr: global.as_pointer_value(),
+                                is_state: true,
+                                kind: VariableKind::I32,
+                            },
+                        );
+
+                        // 初期値が整数リテラルなら initializer に反映
+                        if let Expr::Integer(v) = value {
+                            global.set_initializer(&i32_t.const_int(*v as u64, false));
+                        } else if self.builder.get_insert_block().is_some() {
+                            // 実行時に代入する（式の評価が必要）
+                            let rhs = self.compile_expr(value).into_int_value();
+                            self.builder
+                                .build_store(global.as_pointer_value(), rhs)
+                                .expect("store state init");
+                        }
+                    } else {
+                        // ローカル変数: 現在の挿入ブロックが必要
+                        let Some(_) = self.builder.get_insert_block() else {
+                            panic!("ローカル変数 '{}' は関数の中で宣言してください。", name);
+                        };
+
+                        let init = self.compile_expr(value);
+                        match init {
+                            inkwell::values::BasicValueEnum::IntValue(iv) => {
+                                if iv.get_type().get_bit_width() == 1 {
+                                    let alloca = self
+                                        .builder
+                                        .build_alloca(self.context.bool_type(), name)
+                                        .expect("alloca local bool");
+                                    self.builder.build_store(alloca, iv).expect("store local");
+                                    self.variables.insert(
+                                        name.clone(),
+                                        VariableInfo {
+                                            ptr: alloca,
+                                            is_state: false,
+                                            kind: VariableKind::Bool,
+                                        },
+                                    );
+                                    continue;
+                                }
+                                let alloca = self
+                                    .builder
+                                    .build_alloca(self.context.i32_type(), name)
+                                    .expect("alloca local i32");
+                                self.builder.build_store(alloca, iv).expect("store local");
+                                self.variables.insert(
+                                    name.clone(),
+                                    VariableInfo {
+                                        ptr: alloca,
+                                        is_state: false,
+                                        kind: VariableKind::I32,
+                                    },
+                                );
+                            }
+                            inkwell::values::BasicValueEnum::PointerValue(pv) => {
+                                let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                                let alloca = self
+                                    .builder
+                                    .build_alloca(ptr_t, name)
+                                    .expect("alloca local ptr");
+                                self.builder.build_store(alloca, pv).expect("store local");
+                                self.variables.insert(
+                                    name.clone(),
+                                    VariableInfo {
+                                        ptr: alloca,
+                                        is_state: false,
+                                        kind: VariableKind::Ptr,
+                                    },
+                                );
+                            }
+                            _ => {
+                                panic!("未対応の初期化式です: {}", name);
+                            }
+                        }
+                    }
+                }
                 #[allow(unused)]
                 Stmt::Import(path_parts) => {
                     let full_path = path_parts.join(".");
@@ -295,7 +424,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     is_public: _,
                     name,
                     params,
-                    return_ty: _,
+                    return_ty,
                     body,
                 } => {
                     if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
@@ -315,6 +444,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     let void_type = self.context.void_type();
                     let ptr_t = self.context.ptr_type(AddressSpace::from(0));
                     let i32_t = self.context.i32_type();
+                    let i1_t = self.context.bool_type();
+                    let i64_t = self.context.i64_type();
+                    let ret_kind = Self::parse_return_kind(return_ty.as_deref());
 
                     let mut llvm_param_types = Vec::new();
                     let mut param_kinds = Vec::new();
@@ -327,6 +459,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         let (llvm_ty, kind) = match ty {
                             "Ptr" | "Any" | "String" => (ptr_t.into(), VariableKind::Ptr),
                             "Int" | "i32" => (i32_t.into(), VariableKind::I32),
+                            "Bool" | "bool" => (self.context.bool_type().into(), VariableKind::Bool),
                             _ => (i32_t.into(), VariableKind::I32),
                         };
                         llvm_param_types.push(llvm_ty);
@@ -360,12 +493,21 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         llvm_param_types.push(i32_t.into());
                     }
 
-                    let fn_type = void_type.fn_type(&llvm_param_types, false);
+                    let fn_type = match ret_kind {
+                        ReturnKind::Void => void_type.fn_type(&llvm_param_types, false),
+                        ReturnKind::I32 => i32_t.fn_type(&llvm_param_types, false),
+                        ReturnKind::Ptr => ptr_t.fn_type(&llvm_param_types, false),
+                        ReturnKind::Bool => i1_t.fn_type(&llvm_param_types, false),
+                        ReturnKind::OptI32 => i64_t.fn_type(&llvm_param_types, false),
+                        ReturnKind::OptPtr => ptr_t.fn_type(&llvm_param_types, false),
+                    };
                     let function = self.module.add_function(&llvm_name, fn_type, None);
                     let entry_block = self.context.append_basic_block(function, "entry");
 
                     self.variables.retain(|_, v| v.is_state);
                     self.builder.position_at_end(entry_block);
+                    let prev_ret = self.current_return;
+                    self.current_return = Some(ret_kind);
 
                     let mut arg_index: u32 = 0;
                     let mut kind_index: usize = 0;
@@ -423,6 +565,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 .builder
                                 .build_alloca(ptr_t, &p.name)
                                 .expect("alloca ptr"),
+                            VariableKind::Bool => self
+                                .builder
+                                .build_alloca(self.context.bool_type(), &p.name)
+                                .expect("alloca bool"),
                         };
                         let arg = function.get_nth_param(arg_index).expect("param");
                         self.builder.build_store(alloca, arg).expect("store param");
@@ -438,7 +584,17 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         kind_index += 1;
                     }
 
-                    self.compile_statements(body)?;
+                    // 戻り値がある場合、末尾の式は暗黙 return 側で評価する（短絡/SSA崩れ防止）
+                    let (body_prefix, body_last) = if ret_kind != ReturnKind::Void {
+                        match body.split_last() {
+                            Some((last, prefix)) => (prefix, Some(last)),
+                            None => (body.as_slice(), None),
+                        }
+                    } else {
+                        (body.as_slice(), None)
+                    };
+
+                    self.compile_statements(body_prefix)?;
 
                     if self
                         .builder
@@ -446,11 +602,74 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         .and_then(|bb| bb.get_terminator())
                         .is_none()
                     {
-                        self.builder
-                            .build_return(None)
-                            .expect("Failed to build void return");
+                        match ret_kind {
+                            ReturnKind::Void => {
+                                self.builder
+                                    .build_return(None)
+                                    .expect("Failed to build void return");
+                            }
+                            ReturnKind::I32 | ReturnKind::Ptr => {
+                                // 仕様: `return` は任意で、最後の式が戻り値になる
+                                // 最後の文が ExprStmt のときだけ暗黙 return する
+                                match body_last {
+                                    Some(Stmt::ExprStmt(e)) => {
+                                        let v = self.compile_expr(e);
+                                        self.builder.build_return(Some(&v)).expect("return");
+                                    }
+                                    Some(Stmt::If { condition, then_body, else_body }) => {
+                                        let v = self.compile_if_stmt_expr(condition, then_body, else_body);
+                                        self.builder.build_return(Some(&v)).expect("return");
+                                    }
+                                    _ => {
+                                        panic!(
+                                            "戻り値のある関数 '{}' は最後の式か return が必要です。",
+                                            name
+                                        );
+                                    }
+                                }
+                            }
+                            ReturnKind::Bool => {
+                                match body_last {
+                                    Some(Stmt::ExprStmt(e)) => {
+                                        let tmp = self.compile_expr(e);
+                                        let v = self.to_bool(tmp);
+                                        self.builder
+                                            .build_return(Some(&v))
+                                            .expect("Failed to build implicit return");
+                                    }
+                                    _ => {
+                                        panic!(
+                                            "戻り値のある関数 '{}' は最後の式か return が必要です。",
+                                            name
+                                        );
+                                    }
+                                }
+                            }
+                            ReturnKind::OptI32 | ReturnKind::OptPtr => {
+                                match body_last {
+                                    Some(Stmt::ExprStmt(e)) => {
+                                        let v = self.compile_expr(e);
+                                        let out = match ret_kind {
+                                            ReturnKind::OptI32 => self.encode_opt_i32(v),
+                                            ReturnKind::OptPtr => self.encode_opt_ptr(v),
+                                            _ => v,
+                                        };
+                                        self.builder
+                                            .build_return(Some(&out))
+                                            .expect("Failed to build implicit return");
+                                    }
+                                    _ => {
+                                        panic!(
+                                            "戻り値のある関数 '{}' は最後の式か return が必要です。",
+                                            name
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
 
+                    self.current_return = prev_ret;
                     if let Some(prev) = previous_block {
                         self.builder.position_at_end(prev);
                     } else {
@@ -474,10 +693,42 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             return Ok(());
                         }
                     }
-                    if let Some(e) = ret_expr {
-                        let _ = self.compile_expr(e);
+                    let kind = self.current_return.unwrap_or(ReturnKind::Void);
+                    match (kind, ret_expr) {
+                        (ReturnKind::Void, None) => {
+                            self.builder.build_return(None).ok();
+                        }
+                        (ReturnKind::Void, Some(_)) => {
+                            panic!("Void 関数で値を return しています。");
+                        }
+                        (ReturnKind::I32, Some(e)) | (ReturnKind::Ptr, Some(e)) => {
+                            let v = self.compile_expr(e);
+                            self.builder.build_return(Some(&v)).ok();
+                        }
+                        (ReturnKind::Bool, Some(e)) => {
+                            let tmp = self.compile_expr(e);
+                            let v = self.to_bool(tmp);
+                            self.builder.build_return(Some(&v)).ok();
+                        }
+                        (ReturnKind::I32, None) | (ReturnKind::Ptr, None) => {
+                            panic!("戻り値のある関数で return の値がありません。");
+                        }
+                        (ReturnKind::Bool, None) => {
+                            panic!("戻り値のある関数で return の値がありません。");
+                        }
+                        (ReturnKind::OptI32, Some(e)) | (ReturnKind::OptPtr, Some(e)) => {
+                            let v = self.compile_expr(e);
+                            let out = match kind {
+                                ReturnKind::OptI32 => self.encode_opt_i32(v),
+                                ReturnKind::OptPtr => self.encode_opt_ptr(v),
+                                _ => v,
+                            };
+                            self.builder.build_return(Some(&out)).ok();
+                        }
+                        (ReturnKind::OptI32, None) | (ReturnKind::OptPtr, None) => {
+                            panic!("戻り値のある関数で return の値がありません。");
+                        }
                     }
-                    self.builder.build_return(None).ok();
                 }
 
                 Stmt::If {
@@ -896,29 +1147,39 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 let i32_type = self.context.i32_type();
                 i32_type.const_int(*val as u64, false).as_basic_value_enum()
             }
+            Expr::Bool(v) => {
+                let i1_t = self.context.bool_type();
+                i1_t.const_int(if *v { 1 } else { 0 }, false)
+                    .as_basic_value_enum()
+            }
+            Expr::None => {
+                // none は null 相当（今は Ptr 専用の ?? のため）
+                let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                ptr_t.const_null().as_basic_value_enum()
+            }
             Expr::Ident(name) => {
-                // Special case: "any" is a placeholder for event handlers
-                if name == "any" {
+                // Special case: "any" / "_" はイベントハンドラ用のプレースホルダ
+                if name == "any" || name == "_" {
                     let ptr_t = self.context.ptr_type(AddressSpace::from(0));
                     return ptr_t.const_null().as_basic_value_enum();
                 }
 
-                let ptr = if let Some(var_info) = self.variables.get(name) {
-                    var_info.ptr
-                } else if let Some(global_var) = self.module.get_global(name) {
-                    global_var.as_pointer_value()
-                } else if let Some(short_name) = name.split('.').last() {
-                    if let Some(global_var) = self.module.get_global(short_name) {
+                    let ptr = if let Some(var_info) = self.variables.get(name) {
+                        var_info.ptr
+                    } else if let Some(global_var) = self.module.get_global(name) {
                         global_var.as_pointer_value()
+                    } else if let Some(short_name) = name.split('.').last() {
+                        if let Some(global_var) = self.module.get_global(short_name) {
+                            global_var.as_pointer_value()
+                        } else {
+                            panic!(
+                                "Undefined variable: {} (tried short name: {})",
+                                name, short_name
+                            );
+                        }
                     } else {
-                        panic!(
-                            "Undefined variable: {} (tried short name: {})",
-                            name, short_name
-                        );
-                    }
-                } else {
-                    panic!("Undefined variable: {}", name);
-                };
+                        panic!("Undefined variable: {}", name);
+                    };
 
                 if let Some(var_info) = self.variables.get(name) {
                     match var_info.kind {
@@ -932,6 +1193,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 .build_load(ptr_t, ptr, name)
                                 .expect("Failed to load ptr variable")
                         }
+                        VariableKind::Bool => self
+                            .builder
+                            .build_load(self.context.bool_type(), ptr, name)
+                            .expect("Failed to load bool variable"),
                     }
                 } else {
                     self.builder
@@ -942,14 +1207,13 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             Expr::BinaryOp { left, op, right } => {
                 // 左辺と右辺をそれぞれLLVM IRにする
                 let left_val = self.compile_expr(left);
-                let right_val = self.compile_expr(right);
 
                 match op {
                     Op::Add => self
                         .builder
                         .build_int_add(
                             left_val.into_int_value(),
-                            right_val.into_int_value(),
+                            self.compile_expr(right).into_int_value(),
                             "addtmp",
                         )
                         .expect("Failed to build add instruction")
@@ -958,7 +1222,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         .builder
                         .build_int_sub(
                             left_val.into_int_value(),
-                            right_val.into_int_value(),
+                            self.compile_expr(right).into_int_value(),
                             "subtmp",
                         )
                         .expect("Failed to build sub instruction")
@@ -967,7 +1231,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         .builder
                         .build_int_mul(
                             left_val.into_int_value(),
-                            right_val.into_int_value(),
+                            self.compile_expr(right).into_int_value(),
                             "multmp",
                         )
                         .expect("Failed to build mul instruction")
@@ -976,13 +1240,14 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         .builder
                         .build_int_signed_div(
                             left_val.into_int_value(),
-                            right_val.into_int_value(),
+                            self.compile_expr(right).into_int_value(),
                             "divtmp",
                         )
                         .expect("Failed to build div instruction")
                         .as_basic_value_enum(),
                     Op::Eq => {
                         // ==
+                        let right_val = self.compile_expr(right);
                         self.builder
                             .build_int_compare(
                                 IntPredicate::EQ,
@@ -995,6 +1260,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                     Op::Neq => {
                         // !=
+                        let right_val = self.compile_expr(right);
                         self.builder
                             .build_int_compare(
                                 IntPredicate::NE,
@@ -1007,6 +1273,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                     Op::Lt => {
                         // <
+                        let right_val = self.compile_expr(right);
                         self.builder
                             .build_int_compare(
                                 IntPredicate::SLT,
@@ -1019,6 +1286,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                     Op::Gt => {
                         // >
+                        let right_val = self.compile_expr(right);
                         self.builder
                             .build_int_compare(
                                 IntPredicate::SGT,
@@ -1031,6 +1299,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                     Op::Le => {
                         // <=
+                        let right_val = self.compile_expr(right);
                         self.builder
                             .build_int_compare(
                                 IntPredicate::SLE,
@@ -1043,6 +1312,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                     Op::Ge => {
                         // >=
+                        let right_val = self.compile_expr(right);
                         self.builder
                             .build_int_compare(
                                 IntPredicate::SGE,
@@ -1054,50 +1324,386 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .as_basic_value_enum()
                     }
                     Op::And => {
-                        // &&
+                        // &&（短絡評価）
+                        let left_bb = self
+                            .builder
+                            .get_insert_block()
+                            .expect("and requires insert block");
+                        let left_i1 = self.to_bool(left_val);
+
+                        let parent_func = self
+                            .builder
+                            .get_insert_block()
+                            .expect("and requires insert block")
+                            .get_parent()
+                            .expect("and requires parent func");
+
+                        let rhs_bb = self.context.append_basic_block(parent_func, "and_rhs");
+                        let merge_bb = self.context.append_basic_block(parent_func, "and_merge");
+
+                        // left が true のときだけ rhs を評価する
                         self.builder
-                            .build_and(
-                                left_val.into_int_value(),
-                                right_val.into_int_value(),
-                                "andtmp",
-                            )
-                            .expect("Failed to build logical and instruction")
-                            .as_basic_value_enum()
+                            .build_conditional_branch(left_i1, rhs_bb, merge_bb)
+                            .expect("and branch");
+
+                        // rhs
+                        self.builder.position_at_end(rhs_bb);
+                        let rhs_tmp = self.compile_expr(right);
+                        let rhs_v = self.to_bool(rhs_tmp);
+                        let rhs_end = self.builder.get_insert_block().expect("rhs end");
+                        if rhs_end.get_terminator().is_none() {
+                            self.builder
+                                .build_unconditional_branch(merge_bb)
+                                .expect("rhs br merge");
+                        }
+
+                        // merge
+                        self.builder.position_at_end(merge_bb);
+                        let phi = self
+                            .builder
+                            .build_phi(left_i1.get_type(), "andtmp")
+                            .expect("phi and");
+                        let false_v = left_i1.get_type().const_int(0, false);
+                        phi.add_incoming(&[(&false_v, left_bb), (&rhs_v, rhs_end)]);
+                        phi.as_basic_value()
                     }
                     Op::Or => {
-                        // ||
+                        // ||（短絡評価）
+                        let left_bb = self
+                            .builder
+                            .get_insert_block()
+                            .expect("or requires insert block");
+                        let left_i1 = self.to_bool(left_val);
+
+                        let parent_func = self
+                            .builder
+                            .get_insert_block()
+                            .expect("or requires insert block")
+                            .get_parent()
+                            .expect("or requires parent func");
+
+                        let rhs_bb = self.context.append_basic_block(parent_func, "or_rhs");
+                        let merge_bb = self.context.append_basic_block(parent_func, "or_merge");
+
+                        // left が false のときだけ rhs を評価する
                         self.builder
-                            .build_or(
-                                left_val.into_int_value(),
-                                right_val.into_int_value(),
-                                "ortmp",
-                            )
-                            .expect("Failed to build logical or instruction")
-                            .as_basic_value_enum()
+                            .build_conditional_branch(left_i1, merge_bb, rhs_bb)
+                            .expect("or branch");
+
+                        // rhs
+                        self.builder.position_at_end(rhs_bb);
+                        let rhs_tmp = self.compile_expr(right);
+                        let rhs_v = self.to_bool(rhs_tmp);
+                        let rhs_end = self.builder.get_insert_block().expect("rhs end");
+                        if rhs_end.get_terminator().is_none() {
+                            self.builder
+                                .build_unconditional_branch(merge_bb)
+                                .expect("rhs br merge");
+                        }
+
+                        // merge
+                        self.builder.position_at_end(merge_bb);
+                        let phi = self
+                            .builder
+                            .build_phi(left_i1.get_type(), "ortmp")
+                            .expect("phi or");
+                        let true_v = left_i1.get_type().const_int(1, false);
+                        phi.add_incoming(&[(&true_v, left_bb), (&rhs_v, rhs_end)]);
+                        phi.as_basic_value()
                     }
                     Op::In => {
                         // TODO: 実装
                         todo!("Codegen: 'in' operator is not yet implemented.")
                     }
                     Op::Question => {
-                        // TODO: Null合体演算子実装
-                        todo!("Codegen: '??' operator is not yet implemented.")
+                        // ??（null/none 合体）
+                        // - ptr? は null を none として扱う
+                        // - int? は i64 の 0=none, (x+1)=some(x) として扱う
+
+                        // `none ?? rhs` は rhs を返す（左は評価不要）
+                        if matches!(&**left, Expr::None) {
+                            return self.compile_expr(right);
+                        }
+
+                        let left_bb = self
+                            .builder
+                            .get_insert_block()
+                            .expect("?? requires insert block");
+                        let parent_func = left_bb.get_parent().expect("parent func");
+                        let rhs_bb = self.context.append_basic_block(parent_func, "coalesce_rhs");
+                        let merge_bb = self.context.append_basic_block(parent_func, "coalesce_merge");
+
+                        if left_val.is_pointer_value() {
+                            // ptr?
+                            let left_p = left_val.into_pointer_value();
+                            let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                            let is_nonnull = self
+                                .builder
+                                .build_is_not_null(left_p, "nonnull")
+                                .expect("isnotnull");
+
+                            self.builder
+                                .build_conditional_branch(is_nonnull, merge_bb, rhs_bb)
+                                .expect("coalesce branch");
+
+                            // rhs
+                            self.builder.position_at_end(rhs_bb);
+                            let rhs_v = self.compile_expr(right);
+                            if !rhs_v.is_pointer_value() {
+                                panic!("?? の右辺はポインタ型である必要があります。");
+                            }
+                            let rhs_p = rhs_v.into_pointer_value();
+                            let rhs_end = self.builder.get_insert_block().expect("rhs end");
+                            if rhs_end.get_terminator().is_none() {
+                                self.builder
+                                    .build_unconditional_branch(merge_bb)
+                                    .expect("rhs br merge");
+                            }
+
+                            // merge
+                            self.builder.position_at_end(merge_bb);
+                            if let Some(first) = merge_bb.get_first_instruction() {
+                                self.builder.position_before(&first);
+                            }
+                            let phi = self
+                                .builder
+                                .build_phi(ptr_t, "coalesce")
+                                .expect("phi ??");
+                            phi.add_incoming(&[(&left_p, left_bb), (&rhs_p, rhs_end)]);
+                            phi.as_basic_value()
+                        } else if left_val.is_int_value()
+                            && left_val.into_int_value().get_type().get_bit_width() == 64
+                        {
+                            // int?（i64 エンコード）
+                            let left_i64 = left_val.into_int_value();
+                            let i64_t = self.context.i64_type();
+                            let is_some = self
+                                .builder
+                                .build_int_compare(
+                                    IntPredicate::NE,
+                                    left_i64,
+                                    i64_t.const_int(0, false),
+                                    "hassome",
+                                )
+                                .expect("icmp hassome");
+
+                            let some_bb =
+                                self.context.append_basic_block(parent_func, "coalesce_some");
+
+                            self.builder
+                                .build_conditional_branch(is_some, some_bb, rhs_bb)
+                                .expect("coalesce branch");
+
+                            // some
+                            self.builder.position_at_end(some_bb);
+                            let decoded = self
+                                .builder
+                                .build_int_sub(left_i64, i64_t.const_int(1, false), "dec")
+                                .expect("decode");
+                            let decoded_i32 = self
+                                .builder
+                                .build_int_truncate(decoded, self.context.i32_type(), "dec32")
+                                .expect("trunc");
+                            let some_end = self.builder.get_insert_block().expect("some end");
+                            if some_end.get_terminator().is_none() {
+                                self.builder
+                                    .build_unconditional_branch(merge_bb)
+                                    .expect("some br merge");
+                            }
+
+                            // rhs
+                            self.builder.position_at_end(rhs_bb);
+                            let rhs_v = self.compile_expr(right).into_int_value();
+                            let rhs_end = self.builder.get_insert_block().expect("rhs end");
+                            if rhs_end.get_terminator().is_none() {
+                                self.builder
+                                    .build_unconditional_branch(merge_bb)
+                                    .expect("rhs br merge");
+                            }
+
+                            // merge
+                            self.builder.position_at_end(merge_bb);
+                            if let Some(first) = merge_bb.get_first_instruction() {
+                                self.builder.position_before(&first);
+                            }
+                            let phi = self
+                                .builder
+                                .build_phi(self.context.i32_type(), "coalesce_i32")
+                                .expect("phi ?? i32");
+                            phi.add_incoming(&[(&decoded_i32, some_end), (&rhs_v, rhs_end)]);
+                            phi.as_basic_value()
+                        } else {
+                            panic!("?? は ptr? か int? にだけ使えます。");
+                        }
                     }
                     Op::With => {
-                        // stdlib では `args with "\n"` のような「末尾付与」のために使っている。
-                        // 文字列の動的結合は未実装なので、現状は左辺をそのまま返す（no-op）。
-                        left_val
+                        // 文字列結合
+                        let right_val = self.compile_expr(right);
+                        if left_val.is_pointer_value() && right_val.is_pointer_value() {
+                            let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                            let fn_val = match self.module.get_function("__kome_str_concat") {
+                                Some(f) => f,
+                                None => {
+                                    let fn_ty = ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                                    self.module.add_function("__kome_str_concat", fn_ty, None)
+                                }
+                            };
+                            let call = self
+                                .builder
+                                .build_call(
+                                    fn_val,
+                                    &[
+                                        left_val.into_pointer_value().into(),
+                                        right_val.into_pointer_value().into(),
+                                    ],
+                                    "strconcat",
+                                )
+                                .expect("call __kome_str_concat");
+                            match call.try_as_basic_value() {
+                                ValueKind::Basic(v) => v,
+                                ValueKind::Instruction(_) => panic!("strconcat should return value"),
+                            }
+                        } else {
+                            panic!("with は文字列同士でのみ使えます。");
+                        }
                     }
                 }
             }
-            Expr::Block(stmts) => {
-                self.compile_statements(&*stmts.clone())
-                    .expect("Failed to compile block statements");
-                self.context
-                    .i32_type()
-                    .const_int(0, false)
-                    .as_basic_value_enum()
+            Expr::IfExpr {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                // if を式として扱う（両分岐の値を phi で合流）
+                let cond_tmp = self.compile_expr(condition);
+                let cond_i1 = self.to_bool(cond_tmp);
+
+                let parent_func = self
+                    .builder
+                    .get_insert_block()
+                    .expect("if expr requires insert block")
+                    .get_parent()
+                    .expect("if expr requires parent func");
+
+                let then_bb = self.context.append_basic_block(parent_func, "if_then");
+                let else_bb = self.context.append_basic_block(parent_func, "if_else");
+                let merge_bb = self.context.append_basic_block(parent_func, "if_merge");
+
+                self.builder
+                    .build_conditional_branch(cond_i1, then_bb, else_bb)
+                    .expect("build if branch");
+
+                // then
+                self.builder.position_at_end(then_bb);
+                let then_val = self.compile_block_expr(then_body);
+                let then_end = self.builder.get_insert_block().expect("then end block");
+                if then_end.get_terminator().is_none() {
+                    self.builder
+                        .build_unconditional_branch(merge_bb)
+                        .expect("then br merge");
+                }
+
+                // else
+                self.builder.position_at_end(else_bb);
+                let else_val = self.compile_block_expr(else_body);
+                let else_end = self.builder.get_insert_block().expect("else end block");
+                if else_end.get_terminator().is_none() {
+                    self.builder
+                        .build_unconditional_branch(merge_bb)
+                        .expect("else br merge");
+                }
+
+                // merge
+                self.builder.position_at_end(merge_bb);
+                match (then_val, else_val) {
+                    (
+                        inkwell::values::BasicValueEnum::IntValue(ti),
+                        inkwell::values::BasicValueEnum::IntValue(ei),
+                    ) => {
+                        let phi = self
+                            .builder
+                            .build_phi(ti.get_type(), "iftmp")
+                            .expect("phi");
+                        phi.add_incoming(&[(&ti, then_end), (&ei, else_end)]);
+                        phi.as_basic_value()
+                    }
+                    (
+                        inkwell::values::BasicValueEnum::PointerValue(tp),
+                        inkwell::values::BasicValueEnum::PointerValue(ep),
+                    ) => {
+                        let phi = self
+                            .builder
+                            .build_phi(tp.get_type(), "iftmp")
+                            .expect("phi");
+                        phi.add_incoming(&[(&tp, then_end), (&ep, else_end)]);
+                        phi.as_basic_value()
+                    }
+                    (
+                        inkwell::values::BasicValueEnum::PointerValue(_),
+                        inkwell::values::BasicValueEnum::IntValue(ei),
+                    ) => {
+                        // none / Int の組み合わせは Int? とみなす
+                        let i64_t = self.context.i64_type();
+                        // else 側で i64 を作ってから phi で合流する（merge で ei を直接使うと SSA が壊れる）
+                        if else_end.get_terminator().is_some() {
+                            // すでに merge へ br 済みなので、その直前に挿入する
+                            let term = else_end.get_terminator().unwrap();
+                            self.builder.position_before(&term);
+                        } else {
+                            self.builder.position_at_end(else_end);
+                        }
+                        let encoded_else = self
+                            .builder
+                            .build_int_s_extend(ei, i64_t, "opt_ext")
+                            .expect("sext");
+                        let encoded_else = self
+                            .builder
+                            .build_int_add(encoded_else, i64_t.const_int(1, false), "opt_enc")
+                            .expect("enc");
+                        let none_v = i64_t.const_int(0, false);
+
+                        self.builder.position_at_end(merge_bb);
+                        let phi = self
+                            .builder
+                            .build_phi(i64_t, "iftmp_opt")
+                            .expect("phi");
+                        phi.add_incoming(&[(&none_v, then_end), (&encoded_else, else_end)]);
+                        phi.as_basic_value()
+                    }
+                    (
+                        inkwell::values::BasicValueEnum::IntValue(ti),
+                        inkwell::values::BasicValueEnum::PointerValue(_),
+                    ) => {
+                        // Int / none の組み合わせは Int? とみなす
+                        let i64_t = self.context.i64_type();
+                        if then_end.get_terminator().is_some() {
+                            let term = then_end.get_terminator().unwrap();
+                            self.builder.position_before(&term);
+                        } else {
+                            self.builder.position_at_end(then_end);
+                        }
+                        let encoded_then = self
+                            .builder
+                            .build_int_s_extend(ti, i64_t, "opt_ext")
+                            .expect("sext");
+                        let encoded_then = self
+                            .builder
+                            .build_int_add(encoded_then, i64_t.const_int(1, false), "opt_enc")
+                            .expect("enc");
+                        let none_v = i64_t.const_int(0, false);
+
+                        self.builder.position_at_end(merge_bb);
+                        let phi = self
+                            .builder
+                            .build_phi(i64_t, "iftmp_opt")
+                            .expect("phi");
+                        phi.add_incoming(&[(&encoded_then, then_end), (&none_v, else_end)]);
+                        phi.as_basic_value()
+                    }
+                    _ => panic!("if 式の then/else の型が一致していません。"),
+                }
             }
+            Expr::Block(stmts) => self.compile_block_expr(stmts),
             Expr::CallChain { head, tails } => {
                 /* Handle bundle.method() calls (e.g., App.run()) */
                 if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
@@ -1203,6 +1809,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                             VariableKind::Ptr => {
                                                 self.builder.build_store(gep, val.into_pointer_value()).ok();
                                             }
+                                            VariableKind::Bool => unreachable!("variadic bool is not supported"),
                                         }
                                     }
                                     // 先頭要素ポインタ
@@ -1379,15 +1986,16 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 }
                                 .expect("gep vararg");
                                 let val = self.compile_expr(a);
-                                match elem_kind_enum {
-                                    VariableKind::I32 => {
-                                        self.builder.build_store(gep, val.into_int_value()).ok();
-                                    }
-                                    VariableKind::Ptr => {
-                                        self.builder.build_store(gep, val.into_pointer_value()).ok();
+                                    match elem_kind_enum {
+                                        VariableKind::I32 => {
+                                            self.builder.build_store(gep, val.into_int_value()).ok();
+                                        }
+                                        VariableKind::Ptr => {
+                                            self.builder.build_store(gep, val.into_pointer_value()).ok();
+                                        }
+                                        VariableKind::Bool => unreachable!("variadic bool is not supported"),
                                     }
                                 }
-                            }
                             let data_ptr = unsafe {
                                 self.builder.build_in_bounds_gep(
                                     arr_ty,
@@ -1482,6 +2090,176 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                 global_str_ptr.as_basic_value_enum()
             } // TODO: 文字列などはまた実装
+        }
+    }
+
+    fn to_bool(&self, v: inkwell::values::BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {
+        match v {
+            inkwell::values::BasicValueEnum::IntValue(iv) => {
+                if iv.get_type().get_bit_width() == 1 {
+                    iv
+                } else {
+                    self.builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            iv,
+                            iv.get_type().const_int(0, false),
+                            "tobool",
+                        )
+                        .expect("icmp to bool")
+                }
+            }
+            _ => panic!("bool へ変換できない値です。"),
+        }
+    }
+
+    fn encode_opt_i32(
+        &self,
+        v: inkwell::values::BasicValueEnum<'ctx>,
+    ) -> inkwell::values::BasicValueEnum<'ctx> {
+        // int? は i64 の 0=none, (x+1)=some(x)
+        if v.is_pointer_value() {
+            // none（ptr null）が来た場合は none 扱いにする
+            return self
+                .context
+                .i64_type()
+                .const_int(0, false)
+                .as_basic_value_enum();
+        }
+        let iv = v.into_int_value();
+        let i64_t = self.context.i64_type();
+        if iv.get_type().get_bit_width() == 64 {
+            return iv.as_basic_value_enum();
+        }
+        if iv.get_type().get_bit_width() == 1 {
+            // Bool は Optional<Int> にできない
+            panic!("int? に bool は入れられません。");
+        }
+        let ext = self
+            .builder
+            .build_int_s_extend(iv, i64_t, "opt_ext")
+            .expect("sext");
+        let enc = self
+            .builder
+            .build_int_add(ext, i64_t.const_int(1, false), "opt_enc")
+            .expect("enc");
+        enc.as_basic_value_enum()
+    }
+
+    fn encode_opt_ptr(
+        &self,
+        v: inkwell::values::BasicValueEnum<'ctx>,
+    ) -> inkwell::values::BasicValueEnum<'ctx> {
+        // ptr? は ptr の null=none
+        if v.is_pointer_value() {
+            return v;
+        }
+        panic!("ptr? の戻り値はポインタ型である必要があります。");
+    }
+
+    fn compile_block_expr(&mut self, stmts: &[Stmt]) -> inkwell::values::BasicValueEnum<'ctx> {
+        // 仕様: ブロック式の値は「最後の式」
+        if stmts.is_empty() {
+            return self
+                .context
+                .i32_type()
+                .const_int(0, false)
+                .as_basic_value_enum();
+        }
+
+        let last_index = stmts.len() - 1;
+        let (prefix, last) = stmts.split_at(last_index);
+        if !prefix.is_empty() {
+            self.compile_statements(prefix)
+                .expect("Failed to compile block prefix statements");
+        }
+
+        match &last[0] {
+            Stmt::ExprStmt(e) => self.compile_expr(e),
+            other => {
+                self.compile_statements(std::slice::from_ref(other))
+                    .expect("Failed to compile block last statement");
+                self.context
+                    .i32_type()
+                    .const_int(0, false)
+                    .as_basic_value_enum()
+            }
+        }
+    }
+
+    fn compile_if_stmt_expr(
+        &mut self,
+        condition: &Expr,
+        then_body: &Stmt,
+        else_body: &Option<Box<Stmt>>,
+    ) -> inkwell::values::BasicValueEnum<'ctx> {
+        let Some(else_body) = else_body else {
+            panic!("戻り値のある関数の末尾 if には else が必要です。");
+        };
+
+        let cond_tmp = self.compile_expr(condition);
+        let cond_i1 = self.to_bool(cond_tmp);
+
+        let parent_func = self
+            .builder
+            .get_insert_block()
+            .expect("if requires insert block")
+            .get_parent()
+            .expect("if requires parent func");
+
+        let then_bb = self.context.append_basic_block(parent_func, "if_then");
+        let else_bb = self.context.append_basic_block(parent_func, "if_else");
+        let merge_bb = self.context.append_basic_block(parent_func, "if_merge");
+
+        self.builder
+            .build_conditional_branch(cond_i1, then_bb, else_bb)
+            .expect("if branch");
+
+        self.builder.position_at_end(then_bb);
+        let then_stmts = match then_body {
+            Stmt::Bundle { body, .. } => body.as_slice(),
+            Stmt::Block(body) => body.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        let then_val = self.compile_block_expr(then_stmts);
+        let then_end = self.builder.get_insert_block().expect("then end");
+        if then_end.get_terminator().is_none() {
+            self.builder
+                .build_unconditional_branch(merge_bb)
+                .expect("then br merge");
+        }
+
+        self.builder.position_at_end(else_bb);
+        let else_stmts = match &**else_body {
+            Stmt::Bundle { body, .. } => body.as_slice(),
+            Stmt::Block(body) => body.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        let else_val = self.compile_block_expr(else_stmts);
+        let else_end = self.builder.get_insert_block().expect("else end");
+        if else_end.get_terminator().is_none() {
+            self.builder
+                .build_unconditional_branch(merge_bb)
+                .expect("else br merge");
+        }
+
+        self.builder.position_at_end(merge_bb);
+        if let Some(first) = merge_bb.get_first_instruction() {
+            self.builder.position_before(&first);
+        }
+
+        match (then_val, else_val) {
+            (inkwell::values::BasicValueEnum::IntValue(ti), inkwell::values::BasicValueEnum::IntValue(ei)) => {
+                let phi = self.builder.build_phi(ti.get_type(), "iftmp").expect("phi");
+                phi.add_incoming(&[(&ti, then_end), (&ei, else_end)]);
+                phi.as_basic_value()
+            }
+            (inkwell::values::BasicValueEnum::PointerValue(tp), inkwell::values::BasicValueEnum::PointerValue(ep)) => {
+                let phi = self.builder.build_phi(tp.get_type(), "iftmp").expect("phi");
+                phi.add_incoming(&[(&tp, then_end), (&ep, else_end)]);
+                phi.as_basic_value()
+            }
+            _ => panic!("末尾 if の then/else の型が一致していません。"),
         }
     }
 

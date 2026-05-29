@@ -9,8 +9,5 @@ fn print(fmt: Any, xs: Int...) {
 
 /// 文字列をフォーマットし、標準出力に出力した後、改行します。
 fn println(fmt: Any, xs: Int...) {
-    // 文字列結合（`with`）はまだコンパイラ側で未実装なので、
-    // 本体を出力してから改行だけ別で出す。
-    __kome_printf_i32v(fmt, xs_data, xs_len)
-    __kome_printf_i32v("\n", xs_data, 0)
+    __kome_printf_i32v(fmt with "\n", xs_data, xs_len)
 }

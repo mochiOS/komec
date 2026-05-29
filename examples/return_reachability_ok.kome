@@ -1,0 +1,15 @@
+use std.io
+
+fn f(x: Int) -> Int {
+    if x == 0 { 1 } else { 2 }
+}
+
+fn g(x: Int) -> Int {
+    // if を式として使う
+    if x == 0 { 1 } else { 2 }
+}
+
+fn main() {
+    io.println("f=%d", f(0))
+    io.println("g=%d", g(0))
+}

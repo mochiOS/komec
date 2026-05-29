@@ -96,10 +96,17 @@ pub enum Expr {
     Ident(String),
     Integer(i32),
     String(String),
+    Bool(bool),
+    None,
     BinaryOp {
         left: Box<Expr>,
         op: Op,
         right: Box<Expr>,
+    },
+    IfExpr {
+        condition: Box<Expr>,
+        then_body: Vec<Stmt>,
+        else_body: Vec<Stmt>,
     },
     CallChain {
         head: String,
@@ -728,8 +735,32 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
             }
             Expr::Block(body)
         }
+        Rule::if_expr => {
+            let mut inner = pair.into_inner();
+            let condition = parse_expr(inner.next().unwrap());
+            let then_block = inner.next().unwrap();
+            let else_block = inner.next().unwrap();
+
+            let mut then_body = Vec::new();
+            for stmt_pair in then_block.into_inner() {
+                then_body.push(parse_stmt(stmt_pair));
+            }
+
+            let mut else_body = Vec::new();
+            for stmt_pair in else_block.into_inner() {
+                else_body.push(parse_stmt(stmt_pair));
+            }
+
+            Expr::IfExpr {
+                condition: Box::new(condition),
+                then_body,
+                else_body,
+            }
+        }
         Rule::integer => Expr::Integer(pair.as_str().parse().unwrap()),
         Rule::string => Expr::String(pair.into_inner().next().unwrap().as_str().to_string()),
+        Rule::boolean => Expr::Bool(pair.as_str() == "true"),
+        Rule::none => Expr::None,
         Rule::ident => Expr::Ident(pair.as_str().to_string()),
         _ => {
             panic!("parse_expr: Undefined rule: {:?}", pair.as_rule());

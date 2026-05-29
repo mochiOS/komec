@@ -1,0 +1,7 @@
+use libc.stdio
+
+fn main() {
+    let mut s = none ?? "hello"
+    puts(s)
+}
+

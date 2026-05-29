@@ -1,0 +1,13 @@
+use std.io
+
+fn maybe(n: Int) -> Int? {
+    if n == 0 { none } else { n }
+}
+
+fn main() {
+    let mut x = maybe(0) ?? 42
+    let mut y = maybe(7) ?? 42
+    io.println("x=%d", x)
+    io.println("y=%d", y)
+}
+
