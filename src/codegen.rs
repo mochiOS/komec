@@ -166,6 +166,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         Stmt::Decorator { .. } => "Decorator",
                         Stmt::Return(_) => "Return",
                         Stmt::Block(_) => "Block",
+                        &Stmt::Match { .. } | &Stmt::Is { .. } => todo!(),
                     }
                 );
             }
@@ -799,6 +800,94 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
 
                     // 合流
+                    self.builder.position_at_end(merge_bb);
+                }
+                Stmt::Is { value, pat, body } => {
+                    // is は「一致したら body を実行する」だけの簡易分岐
+                    let parent_func = self
+                        .builder
+                        .get_insert_block()
+                        .expect("is requires insert block")
+                        .get_parent()
+                        .expect("is requires parent func");
+
+                    let then_bb = self.context.append_basic_block(parent_func, "is_then");
+                    let merge_bb = self.context.append_basic_block(parent_func, "is_merge");
+
+                    let v = self.compile_expr(value);
+                    let cond = self.build_match_pat_cond(v, pat);
+                    self.builder
+                        .build_conditional_branch(cond, then_bb, merge_bb)
+                        .expect("is branch");
+
+                    self.builder.position_at_end(then_bb);
+                    let tmp = body.as_ref().clone();
+                    self.compile_statements(std::slice::from_ref(&tmp))?;
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_terminator())
+                        .is_none()
+                    {
+                        self.builder
+                            .build_unconditional_branch(merge_bb)
+                            .expect("is br merge");
+                    }
+
+                    self.builder.position_at_end(merge_bb);
+                }
+                Stmt::Match { value, arms } => {
+                    // match は上から順に評価して最初に一致した arm を実行する
+                    let parent_func = self
+                        .builder
+                        .get_insert_block()
+                        .expect("match requires insert block")
+                        .get_parent()
+                        .expect("match requires parent func");
+
+                    let merge_bb = self.context.append_basic_block(parent_func, "match_merge");
+                    let mut next_bb = self
+                        .builder
+                        .get_insert_block()
+                        .expect("match insert block");
+
+                    let v = self.compile_expr(value);
+
+                    for (i, (pat, body)) in arms.iter().enumerate() {
+                        let arm_bb =
+                            self.context.append_basic_block(parent_func, &format!("match_arm_{i}"));
+                        let cont_bb =
+                            self.context.append_basic_block(parent_func, &format!("match_cont_{i}"));
+
+                        self.builder.position_at_end(next_bb);
+                        let cond = self.build_match_pat_cond(v, pat);
+                        self.builder
+                            .build_conditional_branch(cond, arm_bb, cont_bb)
+                            .expect("match branch");
+
+                        self.builder.position_at_end(arm_bb);
+                        let tmp = body.as_ref().clone();
+                        self.compile_statements(std::slice::from_ref(&tmp))?;
+                        if self
+                            .builder
+                            .get_insert_block()
+                            .and_then(|bb| bb.get_terminator())
+                            .is_none()
+                        {
+                            self.builder
+                                .build_unconditional_branch(merge_bb)
+                                .expect("arm br merge");
+                        }
+
+                        next_bb = cont_bb;
+                    }
+
+                    // どの arm にも一致しなかった場合
+                    self.builder.position_at_end(next_bb);
+                    self.builder
+                        .build_unconditional_branch(merge_bb)
+                        .expect("match default br");
+
                     self.builder.position_at_end(merge_bb);
                 }
 
@@ -2155,6 +2244,60 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             return v;
         }
         panic!("ptr? の戻り値はポインタ型である必要があります。");
+    }
+
+    fn build_match_pat_cond(
+        &self,
+        value: inkwell::values::BasicValueEnum<'ctx>,
+        pat: &ast::MatchPat,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let i1_t = self.context.bool_type();
+        match pat {
+            ast::MatchPat::Wildcard => i1_t.const_int(1, false),
+            ast::MatchPat::Integer(n) => {
+                let v = value.into_int_value();
+                self.builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        v,
+                        self.context.i32_type().const_int(*n as u64, false),
+                        "m_eq",
+                    )
+                    .expect("icmp")
+            }
+            ast::MatchPat::Bool(b) => {
+                let v = self.to_bool(value);
+                self.builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        v,
+                        i1_t.const_int(if *b { 1 } else { 0 }, false),
+                        "m_beq",
+                    )
+                    .expect("icmp")
+            }
+            ast::MatchPat::None => {
+                if !value.is_pointer_value() {
+                    panic!("none パターンは ptr にだけ使えます。");
+                }
+                self.builder
+                    .build_is_null(value.into_pointer_value(), "m_isnull")
+                    .expect("isnull")
+            }
+            ast::MatchPat::String(_s) => {
+                // 今は文字列比較は未実装なので、ポインタ一致のみ
+                if !value.is_pointer_value() {
+                    panic!("string パターンは ptr にだけ使えます。");
+                }
+                // string literal は global ptr なので、同一リテラル以外は一致しない
+                //（将来的には strcmp を std.string に置く）
+                i1_t.const_int(0, false)
+            }
+            ast::MatchPat::Variant(_name) => {
+                // enum の値表現が未実装
+                panic!("enum の match は未実装です。");
+            }
+        }
     }
 
     fn compile_block_expr(&mut self, stmts: &[Stmt]) -> inkwell::values::BasicValueEnum<'ctx> {

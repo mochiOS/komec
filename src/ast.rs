@@ -65,6 +65,26 @@ pub enum Stmt {
     },
     Return(Option<Expr>),
     Block(Vec<Stmt>),
+    Match {
+        value: Expr,
+        arms: Vec<(MatchPat, Box<Stmt>)>,
+    },
+    Is {
+        value: Expr,
+        pat: MatchPat,
+        body: Box<Stmt>,
+    },
+}
+
+#[derive(Debug, Clone)]
+#[allow(unused)]
+pub enum MatchPat {
+    Wildcard,
+    Variant(String),
+    Integer(i32),
+    String(String),
+    Bool(bool),
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -489,6 +509,36 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let expr = pair.into_inner().next().map(parse_expr);
             Stmt::Return(expr)
         }
+        Rule::match_stmt => {
+            let mut inner = pair.into_inner();
+            let value = parse_expr(inner.next().unwrap());
+            let mut arms: Vec<(MatchPat, Box<Stmt>)> = Vec::new();
+            for arm_pair in inner {
+                if arm_pair.as_rule() != Rule::match_arm {
+                    continue;
+                }
+                let mut arm_inner = arm_pair.into_inner();
+                let pat_pair = arm_inner.next().unwrap();
+                let body_pair = arm_inner.next().unwrap();
+                let pat = parse_match_pat(pat_pair);
+                let body = parse_match_arm_body(body_pair);
+                arms.push((pat, Box::new(body)));
+            }
+            Stmt::Match { value, arms }
+        }
+        Rule::is_stmt => {
+            let mut inner = pair.into_inner();
+            let value = parse_expr(inner.next().unwrap());
+            let pat_pair = inner.next().unwrap();
+            let body_pair = inner.next().unwrap();
+            let pat = parse_match_pat(pat_pair);
+            let body = parse_match_arm_body(body_pair);
+            Stmt::Is {
+                value,
+                pat,
+                body: Box::new(body),
+            }
+        }
 
         Rule::for_stmt => {
             let mut inner = pair.into_inner();
@@ -607,6 +657,71 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
         _ => {
             println!("Rule: {:?}, Text: '{}'", pair.as_rule(), pair.as_str());
             unreachable!("Undefined: {:?}", pair.as_rule())
+        }
+    }
+}
+
+fn parse_match_pat(pair: Pair<Rule>) -> MatchPat {
+    match pair.as_rule() {
+        Rule::match_pat => {
+            let s = pair.as_str().trim();
+            if s == "_" {
+                return MatchPat::Wildcard;
+            }
+            if s.starts_with('.') {
+                return MatchPat::Variant(s.trim_start_matches('.').to_string());
+            }
+            if let Some(inner) = pair.into_inner().next() {
+                return parse_match_pat(inner);
+            }
+            panic!("未知の match パターン: {s}");
+        }
+        Rule::integer => MatchPat::Integer(pair.as_str().parse().unwrap()),
+        Rule::string => MatchPat::String(pair.into_inner().next().unwrap().as_str().to_string()),
+        Rule::boolean => MatchPat::Bool(pair.as_str() == "true"),
+        Rule::none => MatchPat::None,
+        _ => {
+            let s = pair.as_str().trim();
+            if s == "_" {
+                MatchPat::Wildcard
+            } else if s.starts_with('.') {
+                MatchPat::Variant(s.trim_start_matches('.').to_string())
+            } else {
+                panic!("未知の match パターン: {:?}", pair.as_rule());
+            }
+        }
+    }
+}
+
+fn parse_match_arm_body(pair: Pair<Rule>) -> Stmt {
+    match pair.as_rule() {
+        Rule::match_body => {
+            let inner = pair.into_inner().next().unwrap();
+            parse_match_arm_body(inner)
+        }
+        Rule::block => {
+            let mut body = Vec::new();
+            for stmt_pair in pair.into_inner() {
+                body.push(parse_stmt(stmt_pair));
+            }
+            Stmt::Block(body)
+        }
+        Rule::stmt => parse_stmt(pair),
+        Rule::expr => Stmt::ExprStmt(parse_expr(pair)),
+        _ => {
+            // pest の展開によっては stmt/expr が直接来ることがある
+            match pair.as_rule() {
+                Rule::assignment
+                | Rule::declaration
+                | Rule::if_stmt
+                | Rule::match_stmt
+                | Rule::is_stmt
+                | Rule::while_stmt
+                | Rule::for_stmt
+                | Rule::return_stmt
+                | Rule::expr_stmt => parse_stmt(pair),
+                _ => Stmt::ExprStmt(parse_expr(pair)),
+            }
         }
     }
 }

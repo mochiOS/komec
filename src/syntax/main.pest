@@ -12,6 +12,8 @@ stmt = {
     | assignment
     | decorator
     | if_stmt
+    | match_stmt
+    | is_stmt
     | return_stmt
     | expr_stmt
     | while_stmt
@@ -129,8 +131,18 @@ enum_variant = { ident ~ ("(" ~ (type_spec ~ ("," ~ type_spec)*)? ~ ")")? }
 // return
 return_stmt = { "return" ~ expr? }
 
+// match
+match_stmt = { "match" ~ expr ~ "{" ~ (match_arm ~ (","? ~ match_arm)* ~ ","?)? ~ "}" }
+match_arm = { match_pat ~ "=>" ~ match_body }
+match_body = { block | assignment | return_stmt | expr_stmt | expr }
+match_pat = { "_" | ("." ~ ident) | integer | string | boolean | none }
+
+// is
+// `is <expr> <pat> => <body>`（body は block/stmt/expr）
+is_stmt = { "is" ~ expr ~ match_pat ~ "=>" ~ match_body }
+
 ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
-expr_stmt = { expr ~ ("," ~ expr)* }
+expr_stmt = { expr }
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 COMMENT = _{ "///" ~ (!"\n" ~ ANY)* | "//" ~ (!"\n" ~ ANY)* }

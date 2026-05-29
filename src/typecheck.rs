@@ -1,4 +1,4 @@
-use crate::ast::{Expr, FnParam, Op, Stmt};
+use crate::ast::{Expr, FnParam, MatchPat, Op, Stmt};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +105,60 @@ fn type_of_block(stmts: &[Stmt], env: &HashMap<String, Type>) -> Type {
     match stmts.last() {
         Some(Stmt::ExprStmt(e)) => type_of_expr(e, env),
         _ => Type::Void,
+    }
+}
+
+fn typecheck_stmt(stmt: &Stmt, env: &HashMap<String, Type>) -> Result<(), String> {
+    match stmt {
+        Stmt::Match { value, arms } => {
+            let vt = type_of_expr(value, env);
+            for (pat, _body) in arms {
+                match pat {
+                    MatchPat::Wildcard => {}
+                    MatchPat::Integer(_) => {
+                        if vt != Type::Int && vt != Type::Unknown {
+                            return Err("match の値が int ではありません。".to_string());
+                        }
+                    }
+                    MatchPat::String(_) => {
+                        if vt != Type::Ptr && vt != Type::Unknown {
+                            return Err("match の値が string/ptr ではありません。".to_string());
+                        }
+                    }
+                    MatchPat::Bool(_) => {
+                        if vt != Type::Bool && vt != Type::Unknown {
+                            return Err("match の値が bool ではありません。".to_string());
+                        }
+                    }
+                    MatchPat::None => {}
+                    MatchPat::Variant(_) => {}
+                }
+            }
+            Ok(())
+        }
+        Stmt::Is { value, pat, .. } => {
+            let vt = type_of_expr(value, env);
+            match pat {
+                MatchPat::Integer(_) => {
+                    if vt != Type::Int && vt != Type::Unknown {
+                        return Err("is の値が int ではありません。".to_string());
+                    }
+                }
+                MatchPat::String(_) => {
+                    if vt != Type::Ptr && vt != Type::Unknown {
+                        return Err("is の値が string/ptr ではありません。".to_string());
+                    }
+                }
+                MatchPat::Bool(_) => {
+                    if vt != Type::Bool && vt != Type::Unknown {
+                        return Err("is の値が bool ではありません。".to_string());
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -258,6 +312,10 @@ pub fn typecheck_program(stmts: &[Stmt]) -> Result<(), String> {
 
             let mut returns: Vec<Option<Expr>> = Vec::new();
             collect_returns(body, &mut returns);
+
+            for st in body {
+                typecheck_stmt(st, &env).map_err(|e| format!("fn {name}: {e}"))?;
+            }
 
             for r in returns.iter() {
                 match (ret.clone(), r) {
