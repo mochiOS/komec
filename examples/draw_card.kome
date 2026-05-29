@@ -17,7 +17,7 @@ fn main() {
   )
 
   window.card.onClick {
-    !default clicked = 0;  // この条件でないときはこれになる
-    clicked = 1;           // クリックされたらclickedを1にする
+    !default App.clicked = 0;  // この条件でないときはこれになる
+    App.clicked = 1;           // クリックされたらclickedを1にする
   }
 }
