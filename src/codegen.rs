@@ -13,6 +13,17 @@ use pest::Parser;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+/// `!default` のためのスコープ情報
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DefaultScope<'ctx> {
+    /// default 値の一時置き場（`!default` 実行時に評価して格納する）
+    default_slots: HashMap<String, PointerValue<'ctx>>,
+    /// `!default` が実行されたか（分岐内でも成立させる）
+    active_flags: HashMap<String, PointerValue<'ctx>>,
+    /// 通常代入が発生したか（制御フローを跨ぐため i1 の alloca を使う）
+    assigned_flags: HashMap<String, PointerValue<'ctx>>,
+}
+
 fn resolve_std_module_file(std_root: &std::path::Path, path_parts: &[String]) -> Option<std::path::PathBuf> {
     let rel = path_parts.join("/");
     let direct = std_root.join(format!("{rel}.kome"));
@@ -60,6 +71,8 @@ pub struct CodegenContext<'a, 'ctx> {
     pub register_fn: Option<inkwell::values::FunctionValue<'ctx>>,
     pub fn_params: HashMap<String, Vec<ast::FnParam>>,
     pub current_return: Option<ReturnKind>,
+    /// `!default` の適用単位（関数/クロージャ）をスタックで管理
+    pub(crate) default_scopes: Vec<DefaultScope<'ctx>>,
 }
 
 /// 変数の情報
@@ -89,6 +102,275 @@ pub enum ReturnKind {
 }
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
+    fn push_default_scope(&mut self) {
+        self.default_scopes.push(DefaultScope::default());
+    }
+
+    fn pop_default_scope_apply(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(scope) = self.default_scopes.pop() else {
+            return Ok(());
+        };
+
+        // すでに return 等でブロックが閉じている場合、末尾到達しないので適用しない
+        let Some(bb) = self.builder.get_insert_block() else {
+            return Ok(());
+        };
+        if bb.get_terminator().is_some() {
+            return Ok(());
+        }
+
+        // スコープ末尾で「!default が実行され」「通常代入が無かった変数」にだけ default を適用する
+        for (name, slot_ptr) in scope.default_slots {
+            let Some(active_ptr) = scope.active_flags.get(&name).copied() else {
+                continue;
+            };
+            let Some(assigned_ptr) = scope.assigned_flags.get(&name).copied() else {
+                continue;
+            };
+
+            let active = self
+                .builder
+                .build_load(self.context.bool_type(), active_ptr, "default_active")
+                .expect("load default active")
+                .into_int_value();
+            let assigned = self
+                .builder
+                .build_load(self.context.bool_type(), assigned_ptr, "default_assigned")
+                .expect("load default assigned")
+                .into_int_value();
+            let not_assigned = self
+                .builder
+                .build_not(assigned, "default_not_assigned")
+                .expect("not assigned");
+            let should_apply = self
+                .builder
+                .build_and(active, not_assigned, "default_should_apply")
+                .expect("and default");
+
+            let parent = self
+                .builder
+                .get_insert_block()
+                .expect("default apply requires insert block")
+                .get_parent()
+                .expect("default apply requires parent func");
+
+            let then_bb = self.context.append_basic_block(parent, "default_apply");
+            let cont_bb = self.context.append_basic_block(parent, "default_cont");
+
+            self.builder
+                .build_conditional_branch(should_apply, then_bb, cont_bb)
+                .expect("default br");
+
+            self.builder.position_at_end(then_bb);
+            // 型に合わせた load を行うため、専用ヘルパーに任せる
+            self.codegen_assignment_store_from_slot(&name, slot_ptr)?;
+            if self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_terminator())
+                .is_none()
+            {
+                self.builder
+                    .build_unconditional_branch(cont_bb)
+                    .expect("default br cont");
+            }
+
+            self.builder.position_at_end(cont_bb);
+        }
+
+        Ok(())
+    }
+
+    /// 変数名を「代入が解決される名前」に正規化する（短縮名フォールバックを含む）
+    fn canonical_var_name(&self, name: &str) -> String {
+        if self.variables.contains_key(name) || self.module.get_global(name).is_some() {
+            return name.to_string();
+        }
+        let short = name.split('.').last().unwrap_or(name);
+        if self.variables.contains_key(short) || self.module.get_global(short).is_some() {
+            return short.to_string();
+        }
+        // 解決不能でも、エラーメッセージを分かりやすくするため原文を返す
+        name.to_string()
+    }
+
+    /// エントリブロックに alloca を作る（分岐内で作ると後で支配関係で詰む）
+    fn build_alloca_in_entry<T: BasicType<'ctx>>(
+        &self,
+        ty: T,
+        name: &str,
+    ) -> PointerValue<'ctx> {
+        let entry = self
+            .builder
+            .get_insert_block()
+            .expect("alloca requires insert block")
+            .get_parent()
+            .expect("alloca requires parent func")
+            .get_first_basic_block()
+            .expect("function has entry");
+
+        let tmp = self.context.create_builder();
+        match entry.get_first_instruction() {
+            Some(inst) => tmp.position_before(&inst),
+            None => tmp.position_at_end(entry),
+        }
+        tmp.build_alloca(ty, name).expect("alloca in entry")
+    }
+
+    fn build_bool_alloca_in_entry(&self, name: &str, init: bool) -> PointerValue<'ctx> {
+        let p = self.build_alloca_in_entry(self.context.bool_type(), name);
+        let entry = self
+            .builder
+            .get_insert_block()
+            .expect("init requires insert block")
+            .get_parent()
+            .expect("init requires parent func")
+            .get_first_basic_block()
+            .expect("function has entry");
+        let tmp = self.context.create_builder();
+        tmp.position_at_end(entry);
+        if let Some(term) = entry.get_terminator() {
+            tmp.position_before(&term);
+        }
+        let v = self
+            .context
+            .bool_type()
+            .const_int(if init { 1 } else { 0 }, false);
+        tmp.build_store(p, v).expect("init bool flag");
+        p
+    }
+
+    fn resolve_assignment_target(
+        &self,
+        name: &str,
+    ) -> (PointerValue<'ctx>, bool, VariableKind, String) {
+        let short_name = name.split('.').last().unwrap_or(name).to_string();
+
+        if let Some(info) = self.variables.get(name) {
+            return (info.ptr, info.is_state, info.kind, short_name);
+        }
+        if let Some(info) = self.variables.get(&short_name) {
+            return (info.ptr, info.is_state, info.kind, short_name);
+        }
+        if let Some(g) = self.module.get_global(name).or_else(|| self.module.get_global(&short_name)) {
+            return (g.as_pointer_value(), false, VariableKind::I32, short_name);
+        }
+
+        panic!("Undefined variable for assignment: {} (short: {})", name, short_name);
+    }
+
+    fn normalize_value_for_kind(
+        &self,
+        kind: VariableKind,
+        v: inkwell::values::BasicValueEnum<'ctx>,
+    ) -> inkwell::values::BasicValueEnum<'ctx> {
+        match kind {
+            VariableKind::I32 => {
+                let iv = v.into_int_value();
+                if iv.get_type().get_bit_width() == 1 {
+                    let z = self
+                        .builder
+                        .build_int_z_extend(iv, self.context.i32_type(), "bool_to_i32")
+                        .expect("zext");
+                    z.as_basic_value_enum()
+                } else {
+                    iv.as_basic_value_enum()
+                }
+            }
+            VariableKind::Bool => self.to_bool(v).as_basic_value_enum(),
+            VariableKind::Ptr => v.into_pointer_value().as_basic_value_enum(),
+        }
+    }
+
+    fn codegen_assignment_store_value(
+        &mut self,
+        canonical_name: &str,
+        value: inkwell::values::BasicValueEnum<'ctx>,
+        mark_assigned: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (ptr, is_state_target, kind, short_name) = self.resolve_assignment_target(canonical_name);
+        let v = self.normalize_value_for_kind(kind, value);
+
+        match kind {
+            VariableKind::I32 | VariableKind::Bool => {
+                self.builder
+                    .build_store(ptr, v.into_int_value())
+                    .expect("store assignment");
+            }
+            VariableKind::Ptr => {
+                self.builder
+                    .build_store(ptr, v.into_pointer_value())
+                    .expect("store assignment");
+            }
+        }
+
+        if mark_assigned {
+            if let Some(scope) = self.default_scopes.last() {
+                if let Some(flag_ptr) = scope.assigned_flags.get(canonical_name).copied() {
+                    self.builder
+                        .build_store(flag_ptr, self.context.bool_type().const_int(1, false))
+                        .expect("mark default assigned");
+                }
+            }
+        }
+
+        if is_state_target {
+            let void_t = self.context.void_type();
+            let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+            let emit_fn = match self.module.get_function("__kome_runtime_emit") {
+                Some(f) => f,
+                None => {
+                    let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
+                    self.module.add_function("__kome_runtime_emit", fn_ty, None)
+                }
+            };
+
+            let var_name = self
+                .builder
+                .build_global_string_ptr(&short_name, "state_name")
+                .expect("state name");
+            self.builder
+                .build_call(
+                    emit_fn,
+                    &[var_name.as_pointer_value().into()],
+                    "emit_state_change",
+                )
+                .expect("emit");
+        }
+
+        Ok(())
+    }
+
+    fn codegen_assignment_store_from_slot(
+        &mut self,
+        canonical_name: &str,
+        slot_ptr: PointerValue<'ctx>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, _, kind, _) = self.resolve_assignment_target(canonical_name);
+        let loaded = match kind {
+            VariableKind::I32 => self
+                .builder
+                .build_load(self.context.i32_type(), slot_ptr, "default_load_i32")
+                .expect("load default i32")
+                .as_basic_value_enum(),
+            VariableKind::Bool => self
+                .builder
+                .build_load(self.context.bool_type(), slot_ptr, "default_load_bool")
+                .expect("load default bool")
+                .as_basic_value_enum(),
+            VariableKind::Ptr => self
+                .builder
+                .build_load(
+                    self.context.ptr_type(AddressSpace::from(0)),
+                    slot_ptr,
+                    "default_load_ptr",
+                )
+                .expect("load default ptr")
+                .as_basic_value_enum(),
+        };
+        self.codegen_assignment_store_value(canonical_name, loaded, false)
+    }
+
     fn parse_return_kind(name: Option<&str>) -> ReturnKind {
         let s = name.unwrap_or("none").trim();
         if let Some(inner) = s.strip_suffix('?') {
@@ -166,7 +448,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         Stmt::Decorator { .. } => "Decorator",
                         Stmt::Return(_) => "Return",
                         Stmt::Block(_) => "Block",
-                        &Stmt::Match { .. } | &Stmt::Is { .. } => todo!(),
+                        Stmt::Match { .. } => "Match",
+                        Stmt::Is { .. } => "Is",
                     }
                 );
             }
@@ -415,7 +698,13 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     self.current_module_prefix = Some(module_prefix.clone());
                     self.allowed_externs = HashSet::new();
 
+                    if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG: compiling std module {:?}", kome_file_path);
+                    }
                     self.compile_statements(&std_ast)?;
+                    if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                        eprintln!("DEBUG: finished std module {:?}", kome_file_path);
+                    }
 
                     self.current_module_prefix = prev_prefix;
                     self.allowed_externs = prev_allowed;
@@ -595,7 +884,11 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         (body.as_slice(), None)
                     };
 
+                    // `!default` は「この関数の末尾で条件適用」なので、関数ボディ単位で管理する
+                    self.push_default_scope();
                     self.compile_statements(body_prefix)?;
+                    // 暗黙 return の評価前に default を確定させる（最後の式が state を読むため）
+                    self.pop_default_scope_apply()?;
 
                     if self
                         .builder
@@ -964,7 +1257,14 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     let recipe_stmts: Vec<Stmt> = vec![Stmt::ExprStmt(body.clone())];
                     self.compile_statements(&recipe_stmts)?;
 
-                    if recipe_entry_bb.get_terminator().is_none() {
+                    // entry ブロックは最初の分岐で終端していることがあるので、
+                    // 「現在の挿入ブロック」が終端しているかで判定する。
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .and_then(|bb| bb.get_terminator())
+                        .is_none()
+                    {
                         self.builder
                             .build_return(None)
                             .expect("Failed to build return for recipe function");
@@ -1027,56 +1327,70 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 }
 
                 Stmt::Assignment {
-                    is_default: _,
+                    is_default,
                     name,
                     value,
                 } => {
-                    let short_name = name.split('.').last().unwrap().to_string();
+                    let canonical = self.canonical_var_name(name);
 
-                    let (ptr, is_state_target) = if let Some(var_info) = self.variables.get(name) {
-                        (var_info.ptr, var_info.is_state)
-                    } else if let Some(var_info) = self.variables.get(&short_name) {
-                        (var_info.ptr, var_info.is_state)
-                    } else if let Some(global_var) = self
-                        .module
-                        .get_global(name)
-                        .or_else(|| self.module.get_global(&short_name))
-                    {
-                        (global_var.as_pointer_value(), false)
-                    } else {
-                        panic!(
-                            "Undefined variable for assignment: {} (short: {})",
-                            name, short_name
-                        );
-                    };
+                    if *is_default {
+                        // 先に必要な情報を確定（`last_mut()` と self メソッド呼び出しの同時借用を避ける）
+                        let (_, _, kind, _) = self.resolve_assignment_target(&canonical);
+                        let new_slot_ptr = match kind {
+                            VariableKind::I32 => self
+                                .build_alloca_in_entry(self.context.i32_type(), "default_slot_i32"),
+                            VariableKind::Bool => self
+                                .build_alloca_in_entry(self.context.bool_type(), "default_slot_bool"),
+                            VariableKind::Ptr => self.build_alloca_in_entry(
+                                self.context.ptr_type(AddressSpace::from(0)),
+                                "default_slot_ptr",
+                            ),
+                        };
+                        let new_active_ptr =
+                            self.build_bool_alloca_in_entry("default_active", false);
+                        let new_assigned_ptr =
+                            self.build_bool_alloca_in_entry("default_assigned", false);
 
-                    let rhs_val = self.compile_expr(value).into_int_value();
-                    self.builder
-                        .build_store(ptr, rhs_val)
-                        .expect("Failed to store");
-
-                    if is_state_target {
-                        let void_t = self.context.void_type();
-                        let ptr_t = self.context.ptr_type(AddressSpace::from(0));
-                        let emit_fn = match self.module.get_function("__kome_runtime_emit") {
-                            Some(f) => f,
-                            None => {
-                                let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
-                                self.module.add_function("__kome_runtime_emit", fn_ty, None)
-                            }
+                        let Some(scope) = self.default_scopes.last_mut() else {
+                            panic!("!default は関数/クロージャ内で使用してください。");
                         };
 
-                        let var_name = self
-                            .builder
-                            .build_global_string_ptr(&short_name, "state_name")
-                            .expect("state name");
+                        // 変数型に合わせた slot / flag を用意
+                        let slot_ptr = if let Some(p) = scope.default_slots.get(&canonical).copied() {
+                            p
+                        } else {
+                            scope.default_slots.insert(canonical.clone(), new_slot_ptr);
+                            new_slot_ptr
+                        };
+
+                        let active_ptr = if let Some(p) = scope.active_flags.get(&canonical).copied() {
+                            p
+                        } else {
+                            scope.active_flags.insert(canonical.clone(), new_active_ptr);
+                            new_active_ptr
+                        };
+
+                        if !scope.assigned_flags.contains_key(&canonical) {
+                            scope.assigned_flags.insert(canonical.clone(), new_assigned_ptr);
+                        }
+
+                        // `!default` 実行時に評価して slot に保存（分岐内でも正しく動く）
+                        let rhs = self.compile_expr(value);
+                        let rhs = self.normalize_value_for_kind(kind, rhs);
+                        match kind {
+                            VariableKind::I32 | VariableKind::Bool => {
+                                self.builder.build_store(slot_ptr, rhs.into_int_value()).expect("store default slot");
+                            }
+                            VariableKind::Ptr => {
+                                self.builder.build_store(slot_ptr, rhs.into_pointer_value()).expect("store default slot");
+                            }
+                        }
                         self.builder
-                            .build_call(
-                                emit_fn,
-                                &[var_name.as_pointer_value().into()],
-                                "emit_state_change",
-                            )
-                            .expect("emit");
+                            .build_store(active_ptr, self.context.bool_type().const_int(1, false))
+                            .expect("activate default");
+                    } else {
+                        let rhs = self.compile_expr(value);
+                        self.codegen_assignment_store_value(&canonical, rhs, true)?;
                     }
                 }
 
@@ -1957,8 +2271,11 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 let current_bb = self.builder.get_insert_block().unwrap();
                                 self.builder.position_at_end(entry_bb);
 
+                                self.push_default_scope();
                                 self.compile_statements(block_stmts)
                                     .expect("Failed to compile trailing closure body");
+                                self.pop_default_scope_apply()
+                                    .expect("Failed to apply trailing closure defaults");
 
                                 self.builder
                                     .build_return(None)
@@ -2118,10 +2435,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         }
                     }
 
-                    if let Some(block_stmts) = trailing_closure {
-                        let mut i = 0;
-                        let closure_name = loop {
-                            let name = format!("__kome_anon_closure_{}", i);
+                        if let Some(block_stmts) = trailing_closure {
+                            let mut i = 0;
+                            let closure_name = loop {
+                                let name = format!("__kome_anon_closure_{}", i);
                             if self.module.get_function(&name).is_none() {
                                 break name;
                             }
@@ -2134,17 +2451,20 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             self.module
                                 .add_function(&closure_name, closure_fn_type, None);
 
-                        let entry_bb = self.context.append_basic_block(closure_function, "entry");
-                        let current_bb = self.builder.get_insert_block().unwrap();
-                        self.builder.position_at_end(entry_bb);
+                            let entry_bb = self.context.append_basic_block(closure_function, "entry");
+                            let current_bb = self.builder.get_insert_block().unwrap();
+                            self.builder.position_at_end(entry_bb);
 
-                        self.compile_statements(block_stmts)
-                            .expect("Failed to compile trailing closure body");
+                            self.push_default_scope();
+                            self.compile_statements(block_stmts)
+                                .expect("Failed to compile trailing closure body");
+                            self.pop_default_scope_apply()
+                                .expect("Failed to apply trailing closure defaults");
 
-                        self.builder
-                            .build_return(None)
-                            .expect("Failed to build return for closure");
-                        self.builder.position_at_end(current_bb);
+                            self.builder
+                                .build_return(None)
+                                .expect("Failed to build return for closure");
+                            self.builder.position_at_end(current_bb);
 
                         let closure_ptr = closure_function.as_global_value().as_pointer_value();
                         llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(closure_ptr));

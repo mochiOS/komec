@@ -123,18 +123,20 @@ fn main() {
     let context = Context::create();
     let module = context.create_module("main");
     let builder = context.create_builder();
+    let library_manager = LibraryManager::new();
     let mut codegen = CodegenContext {
         context: &context,
         builder: &builder,
         module: &module,
         variables: std::collections::HashMap::new(),
-        library_manager: &LibraryManager::new(),
+        library_manager: &library_manager,
         current_dir: std::path::PathBuf::new(),
         current_module_prefix: None,
         allowed_externs: std::collections::HashSet::new(),
         register_fn: None,
         fn_params: std::collections::HashMap::new(),
         current_return: None,
+        default_scopes: Vec::new(),
     };
 
     for stmt in &ast_state {

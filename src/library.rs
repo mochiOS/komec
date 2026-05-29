@@ -260,9 +260,9 @@ impl LibraryManager {
         }
 
         if let Some(names) = self.try_load_simple_header_collect(&header_path, context, module) {
-            if !names.is_empty() {
-                return Some(names);
-            }
+            // 既に同名関数が登録済みで `added` が空になることがある。
+            // その場合でも「解析自体は成功」なので clang フォールバックには進まない。
+            return Some(names);
         }
 
         if header_path.starts_with("/usr/include/") {

@@ -109,7 +109,7 @@ for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "~" ~ expr ~ block }
 // recipe
 recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ block }
 
-assignment = { ("!default")? ~ call_chain ~ assignment_op ~ expr }
+assignment = { ("@default")? ~ call_chain ~ assignment_op ~ expr }
 
 // 代入演算子
 assignment_op = _{ assign | sub_assign | add_assign }
