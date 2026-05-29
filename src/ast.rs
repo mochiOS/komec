@@ -315,6 +315,69 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 body,
             }
         }
+        Rule::extend_decl => {
+            // `extend bundle.run() { ... }` のような拡張メソッド定義。
+            // AST 上は通常の `FnDecl` と同じ形にして、名前だけ `bundle.run` のような path 文字列にする。
+            let mut inner = pair.into_inner();
+            let name_pair = inner.next().unwrap(); // path
+            let name = name_pair.as_str().to_string();
+
+            let mut params: Vec<FnParam> = Vec::new();
+            let mut body = Vec::new();
+            let mut return_ty: Option<String> = None;
+
+            for sub_pair in inner {
+                match sub_pair.as_rule() {
+                    Rule::stmt => {
+                        body.push(parse_stmt(sub_pair));
+                    }
+                    Rule::block => {
+                        for stmt_pair in sub_pair.into_inner() {
+                            if stmt_pair.as_rule() == Rule::stmt {
+                                body.push(parse_stmt(stmt_pair));
+                            }
+                        }
+                    }
+                    Rule::param => {
+                        let mut p = sub_pair.into_inner();
+                        let pname = p
+                            .next()
+                            .map(|x| x.as_str().to_string())
+                            .unwrap_or_default();
+                        let pty = p
+                            .next()
+                            .map(|x| x.as_str().to_string())
+                            .unwrap_or_else(|| "Int".to_string());
+                        let mut is_variadic = false;
+                        for rest in p {
+                            if rest.as_rule() == Rule::ellipsis {
+                                is_variadic = true;
+                            }
+                        }
+                        if !pname.is_empty() {
+                            params.push(FnParam {
+                                name: pname,
+                                ty: pty,
+                                is_variadic,
+                            });
+                        }
+                    }
+                    Rule::type_spec => {
+                        return_ty = Some(sub_pair.as_str().to_string());
+                    }
+                    Rule::path | Rule::ident => {}
+                    _ => {}
+                }
+            }
+
+            Stmt::FnDecl {
+                is_public: false,
+                name,
+                params,
+                return_ty,
+                body,
+            }
+        }
 
         Rule::if_stmt => {
             let mut inner = pair.into_inner();

@@ -5,6 +5,7 @@ stmt = {
     | import_stmt
     | enum_stmt
     | fn_decl
+    | extend_decl
     | bundle_stmt
     | declaration
     | recipe_stmt
@@ -35,6 +36,10 @@ bundle_stmt = { "bundle" ~ ident ~ "{" ~ stmt* ~ "}" }
 
 // 関数定義 fn main() { ... }
 fn_decl = { "fn" ~ ident ~ "(" ~ (param ~ ("," ~ param)*)? ~ ")" ~ ("->" ~ type_spec)? ~ "{" ~ stmt* ~ "}" }
+
+// 拡張メソッド定義 extend bundle.run() { ... }
+// - `bundle.run` のように path を名前として取る（`bundle` 構文に対するメソッド実装を表現する）
+extend_decl = { "extend" ~ path ~ "(" ~ (param ~ ("," ~ param)*)? ~ ")" ~ ("->" ~ type_spec)? ~ "{" ~ stmt* ~ "}" }
 ellipsis = { "..." }
 
 // 引数の定義（例: key: string）

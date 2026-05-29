@@ -62,6 +62,10 @@ static void *bundle_main_loop(void *arg) {
                 sim_remaining--;
                 sim_next_ms = t + 200;
             }
+            // シミュレーションが終わったらループを抜ける（テスト用途）
+            if (sim_remaining == 0) {
+                g_keep_running = 0;
+            }
         }
 
         /* stdin をポーリングしてキー入力を検出 */
