@@ -1,0 +1,23 @@
+use std.io
+use std.io.keyboard
+use std.bundle
+
+bundle App {
+  public state let mut clicked = 0;
+
+  // stateで定義された変数が指定されていたら変更されたら再評価される
+  // recipe レシピ名: 参照する状態
+  recipe app: clicked = {
+     is clicked 0 => println("Hello, world!")
+     is clicked 1 => println("Clicked!")
+  }
+}
+
+fn main() {
+    keyboard.scan(_) {
+        !default App.clicked = 0;  // この条件でないときはこれになる
+        App.clicked = 1;           // キーが押されたらclickedを1にする
+    }
+
+    App.run()
+}

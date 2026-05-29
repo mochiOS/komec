@@ -10,7 +10,7 @@ bundle App {
 }
 
 fn main() {
-    keyboard.scan(any) {
+    keyboard.scan(_) {
         App.Index += 1          // キーが押されるたびにIndexをインクリメント
     }
 
