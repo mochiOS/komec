@@ -820,6 +820,35 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
 
                         for sub_item in inner_method {
                             match sub_item.as_rule() {
+                                Rule::call_arg => {
+                                    let inner = sub_item.into_inner().next().unwrap();
+                                    match inner.as_rule() {
+                                        Rule::expr => {
+                                            args.push(parse_expr(inner));
+                                        }
+                                        Rule::is_stmt => {
+                                            let is_stmt = parse_stmt(inner);
+                                            let Stmt::Is { value, pat, body } = is_stmt else {
+                                                unreachable!("is_stmt should parse into Stmt::Is");
+                                            };
+                                            // is 式として扱う（then は式のみ対応）
+                                            let then_expr = match *body {
+                                                Stmt::ExprStmt(e) => e,
+                                                Stmt::Block(stmts) => Expr::Block(stmts),
+                                                other => {
+                                                    // 仕様を単純化: ここは式だけ許可
+                                                    panic!("is 引数は式にしてください: {:?}", other);
+                                                }
+                                            };
+                                            args.push(Expr::IsExpr {
+                                                value: Box::new(value),
+                                                pat,
+                                                then_expr: Box::new(then_expr),
+                                            });
+                                        }
+                                        _ => unreachable!("call_arg inner should be expr or is_stmt"),
+                                    }
+                                }
                                 Rule::expr => {
                                     args.push(parse_expr(sub_item));
                                 }

@@ -5,10 +5,11 @@ fn component(name: String) -> String {
     __kome_viewkit_json_component(name, none, 0)
 }
 
-// children は全コンポーネントで共通
 fn children(base: String, xs: String...) -> String {
     __kome_viewkit_json_children(base, xs_data, xs_len)
 }
+
+// TODO: image content
 
 fn text(value: String) -> String {
     __kome_viewkit_json_text(value)

@@ -647,6 +647,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     if path_parts.len() >= 2 && path_parts[0] == "viewKit" && path_parts[1] == "window" {
                         module_prefix = "viewKit_window".to_string();
                     }
+                    if path_parts.len() >= 2 && path_parts[0] == "viewKit" && path_parts[1] == "handler" {
+                        module_prefix = "viewKit_handler".to_string();
+                    }
 
                     if full_path.starts_with("libc.") {
                         if let Some(names) = self.library_manager.load_c_header_collect(
@@ -2457,8 +2460,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
                         eprintln!("DEBUG: Found CallChain with {} tails", tails.len());
                     }
-                    if let (ast::Accessor::Method(args, trailing_closure), ast::Accessor::Property(method_name)) =
-                        (&tails[tails.len() - 1], &tails[tails.len() - 2])
+                    if let (
+                        ast::Accessor::Method(args, trailing_closure),
+                        ast::Accessor::Property(method_name),
+                    ) = (&tails[tails.len() - 1], &tails[tails.len() - 2])
                     {
                         if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
                             eprintln!(
@@ -2466,6 +2471,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 head, method_name
                             );
                         }
+
                         // head + 途中の Property を '_' で連結して関数名にする
                         // - 途中に Method がある場合はフォールバックへ回す
                         let mut fn_name = head.clone();
@@ -2482,6 +2488,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             // フォールバック: 旧仕様（bundle_name + method_name）
                             fn_name = format!("{}_{}", head, method_name);
                         }
+
                         if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
                             eprintln!("DEBUG: Looking for function: {}", fn_name);
                         }
@@ -2499,6 +2506,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                     );
                                 }
                             }
+
                             let mut llvm_args = Vec::new();
                             // Kome 関数の可変長引数（型付き）は、呼び出し側で (ptr data, len) に pack する
                             if let Some(sig) = self.fn_params.get(&fn_name).cloned() {
@@ -2521,9 +2529,17 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                     let elem_kind = var_param.ty.as_str();
                                     let ptr_t = self.context.ptr_type(AddressSpace::from(0));
                                     let (elem_ty, elem_kind_enum) = match elem_kind {
-                                        "Ptr" | "Any" | "String" => (ptr_t.as_basic_type_enum(), VariableKind::Ptr),
-                                        "Int" | "i32" => (self.context.i32_type().as_basic_type_enum(), VariableKind::I32),
-                                        _ => (self.context.i32_type().as_basic_type_enum(), VariableKind::I32),
+                                        "Ptr" | "Any" | "String" => {
+                                            (ptr_t.as_basic_type_enum(), VariableKind::Ptr)
+                                        }
+                                        "Int" | "i32" => (
+                                            self.context.i32_type().as_basic_type_enum(),
+                                            VariableKind::I32,
+                                        ),
+                                        _ => (
+                                            self.context.i32_type().as_basic_type_enum(),
+                                            VariableKind::I32,
+                                        ),
                                     };
                                     let var_vals = args.iter().skip(fixed).collect::<Vec<_>>();
                                     let len = var_vals.len() as u64;
@@ -2539,7 +2555,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                                 arr,
                                                 &[
                                                     self.context.i32_type().const_int(0, false),
-                                                    self.context.i32_type().const_int(i as u64, false),
+                                                    self.context
+                                                        .i32_type()
+                                                        .const_int(i as u64, false),
                                                 ],
                                                 "vararg_gep",
                                             )
@@ -2548,12 +2566,18 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                         let val = self.compile_expr(a);
                                         match elem_kind_enum {
                                             VariableKind::I32 => {
-                                                self.builder.build_store(gep, val.into_int_value()).ok();
+                                                self.builder
+                                                    .build_store(gep, val.into_int_value())
+                                                    .ok();
                                             }
                                             VariableKind::Ptr => {
-                                                self.builder.build_store(gep, val.into_pointer_value()).ok();
+                                                self.builder
+                                                    .build_store(gep, val.into_pointer_value())
+                                                    .ok();
                                             }
-                                            VariableKind::Bool => unreachable!("variadic bool is not supported"),
+                                            VariableKind::Bool => {
+                                                unreachable!("variadic bool is not supported")
+                                            }
                                         }
                                     }
                                     // 先頭要素ポインタ
@@ -2636,9 +2660,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 .expect("Codegen: Failed to build function call");
 
                             match call.try_as_basic_value() {
-                                ValueKind::Basic(val) => {
-                                    return val;
-                                }
+                                ValueKind::Basic(val) => return val,
                                 ValueKind::Instruction(_) => {
                                     return self
                                         .context
@@ -2648,6 +2670,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 }
                             }
                         }
+
+                        // NOTE: 受け手付きメソッドの自動変換はまだ行わない（仕様確定後に実装する）
                     }
                 }
 

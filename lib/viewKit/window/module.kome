@@ -1,12 +1,21 @@
 use viewKit
 
-fn create(config: Any) -> Ptr {
-    // TODO: config から title/size/decoration を読む
-    let unused = config
-    window_create()
+fn create(w: Int, h: Int, title: String) -> Ptr {
+    let app = kome_viewkit_app_create()
+    if app != none {
+        kome_viewkit_window_create(app, w, h, title, 0)
+        kome_viewkit_app_run_async(app)
+    } else {
+        errWindow("Critcal Error: Failed to create window (ViewKit Err)".to_string())
+    }
+    app
 }
 
+
 fn errWindow(message: String) -> Ptr {
-    // TODO: ViewKit 側で専用UIを作る
-    window_errWindow(message)
+    let app = window_create()
+    if app != none {
+        kome_viewkit_update_ui_tree(app, components.text(message))
+    }
+    app
 }

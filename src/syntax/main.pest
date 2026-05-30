@@ -74,7 +74,9 @@ if_expr = { "if" ~ expr ~ block ~ "else" ~ block }
 call_chain = { (ident | path) ~ (child_access | method_call | property_closure_call | property_access)* }
 // 呼び出し引数は通常 `expr` のカンマ区切りだが、
 // `children( is ... => ... )` のような「改行区切り」の is 群も許可する。
-method_call = { "(" ~ ( (is_stmt ~ (","? ~ is_stmt)*) | (expr ~ ("," ~ expr)*) )? ~ ")" ~ block? }
+// さらに `children(base, is ... => ...)` のような混在も許可する（components.children 用）
+method_call = { "(" ~ (call_arg ~ (","? ~ call_arg)*)? ~ ")" ~ block? }
+call_arg = { is_stmt | expr }
 // `.onClick { ... }` のように、引数なし + ブロックだけの呼び出しを許可する
 property_closure_call = { "." ~ ident ~ block }
 property_access = { "." ~ ident }

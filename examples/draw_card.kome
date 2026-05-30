@@ -1,4 +1,5 @@
 use viewKit
+use viewKit.components
 
 bundle App {
   public state let mut clicked = 0

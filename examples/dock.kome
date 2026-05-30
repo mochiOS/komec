@@ -11,35 +11,35 @@ use toml
 }
 
 bundle App {
+    // アプリリストを取得（/applicationsディレクトリから.appで終わるディレクトリを取得）
+    let app_list = fs.list("/applications").filter {
+        it.name.hasSuffix(".app") and it.isDir()
+    }
+
+    // アプリリストをループして各アプリの情報を構造化する
+    let apps = app_list.map { as app_dir:
+        let manifest_path = "about.toml" in app_dir
+
+        let manifest = toml.parse(fs.read(manifest_path))
+            .err(panic, viewKit.window.errWindow("Read application manifest failed"))
+
+        return {
+            name: app_dir.name.trimSuffix(".app"),
+            path: app_dir,
+            entry: manifest.entry,
+            icon: manifest.icon ?? none,
+        }
+    }
+
     // stateはリアクティブな変数を定義でき、この値が変更されると依存してるrecipe（ここだとdock）が更新される
     // X within Y ~ ZでYからZの範囲の変数を定義できる。あとXは初期値
     // clampだったら端で止まるけどcycleは反対側に回る
+    // あと安全性のためにapps.lenが0の場合は特別な処理して結果をnoneにする（つまりこの文法において0 ~ 0はnoneになる）
     state let mut index = 0 within 0 ~ apps.len cycle
-
-    // アプリリストを取得（/applicationsディレクトリから.appで終わるディレクトリを取得）
-    let app_list = fs.list("/applications").filter { it.hasSuffix(".app").isDir() }
-
-    // アプリリストをループして各アプリの情報を構造化する
-    let apps = app_list.map { as apps_dir:
-        // in演算子を使ってディレクトリ内のabout.tomlへのフルパスを生成（ここだとapps_dir/about.tomlになる）
-        let manifest_path = "about.toml" in apps_dir
-
-        // about.tomlを読み込んでTOMLとしてパースする。読み込みとかパースに失敗した場合はviewKitのerrWindow使ってエラー表示する
-        let manifest = toml.parse(fs.read(manifest_path))
-                        .err(panic, viewKit.window.errWindow("Read application manifest failed"))
-
-        // mapの戻り値としてアプリ情報を返す
-        return (
-            name: app_dir.trimSuffix(".app"),   /// アプリ名
-            path: app_dir,                      /// アプリのルートディレクトリ
-            entry: manifest.entry,              /// アプリエントリ（about.tomlのentry）
-            icon: manifest.icon ?? None()       /// iconのパスかなければNone
-        )
-    }
 
     // recipe構文は状態を監視して変更があれば自動でUIを再構築する動的なコンポーネント定義（ただの都合いい構文で実装できるかはわからない...）
     // ここだとDock全体の構造を定義している
-    recipe dock: AppState = dock().children(
+    recipe main: index, apps = dock().children(
         // 収集したアプリ情報の配列（apps）をループで回して、一つずつアイコンのパスを取得
         apps.map { as info, i:
             // 各アプリのアイコンコンポーネントを生成
@@ -56,24 +56,28 @@ bundle App {
 fn main() {
     let config: windowConfig = {
         title: "Dock",
-        decoration: "false",
+        decoration: false,
     }
 
     let mut window = viewKit.window.create(config) with children(
-        dock: App.dock,
+        dock: App.main,
     )
 
     // イベントループ
     window.onKeyTap { as key:
         match key {
-            .right  => App.state.index += 1,    // 右矢印で+1
-            .left   => App.state.index -= 1,    // 左矢印で-1（u32なのでマイナスの値になってもそれ以上は下がらない）
-            .enter  => {                        // Enterで実行
-                let app = App.apps[App.state.index]
+            .right  => App.index += 1,          // 右矢印で+1
+            .left   => App.index -= 1,          // 左矢印で-1（u32なのでマイナスの値になってもそれ以上は下がらない）
+            .enter  => {                        // Enterで実行（コンパイラ側でApp.indexがnoneの場合は何もしないようにする）
+                let app = App.apps[App.index]
                 process.exec(app.entry in app.path)
             },
-            .esc    => process.exit(0)
-            _       => { _ }
+            .esc    => process.exit(0),
+            _       => { }
         }
     }
 }
+
+// none はプロパティアクセス・配列アクセス・関数引数で伝搬する。
+// ただし算術演算では伝搬しない。
+// none + 1 のような可能性がある式はコンパイルエラーにする。
