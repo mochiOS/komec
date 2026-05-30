@@ -1,7 +1,7 @@
 use viewKit
 
 bundle App {
-  public state let mut clicked = 0;
+  public state let mut clicked = 0
 
   // stateで定義された変数が指定されていたら変更されたら再評価される
   // recipe レシピ名: 参照する常態みたいに
@@ -17,7 +17,7 @@ fn main() {
   )
 
   window.card.onClick {
-    !default App.clicked = 0;  // この条件でないときはこれになる
-    App.clicked = 1;           // クリックされたらclickedを1にする
+    !default App.clicked = 0   // この条件でないときはこれになる
+    App.clicked = 1            // クリックされたらclickedを1にする
   }
 }
