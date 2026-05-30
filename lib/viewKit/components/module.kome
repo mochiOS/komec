@@ -1,0 +1,20 @@
+cinclude "components.h"
+
+// TODO: 将来的には自動で生成する
+fn component(name: String) -> String {
+    __kome_viewkit_json_component(name, none, 0)
+}
+
+// children は全コンポーネントで共通
+fn children(base: String, xs: String...) -> String {
+    __kome_viewkit_json_children(base, xs_data, xs_len)
+}
+
+fn text(value: String) -> String {
+    __kome_viewkit_json_text(value)
+}
+
+fn card() -> String {
+    // children は後から `.children(...)` で付ける
+    __kome_viewkit_json_component("card", none, 0)
+}

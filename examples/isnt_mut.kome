@@ -1,0 +1,14 @@
+use std.io
+
+fn main() {
+    let mut x = 5
+    let y = 3
+
+    io.println("%d", x)
+    x += 5
+    io.println("%d", x)
+
+    io.println("%d", y)
+    y += 2
+    io.println("%d", y)
+}

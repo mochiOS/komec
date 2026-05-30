@@ -50,7 +50,9 @@ impl LibraryManager {
         let i32_t = context.i32_type();
         let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
 
-        let mut added: Vec<String> = Vec::new();
+        // allowlist 用に「ヘッダ内で見つけた関数名」を返す。
+        // 既にLLVMモジュールへ登録済みでも、呼び出し許可としては必要。
+        let mut seen: Vec<String> = Vec::new();
 
         for raw_line in source.lines() {
             let line = raw_line.split("//").next().unwrap_or("").trim();
@@ -137,25 +139,28 @@ impl LibraryManager {
                 }
             }
 
-            if module.get_function(name).is_some() {
-                continue;
+            // 既に登録済みでも allowlist には入れたいので、ここで記録する。
+            if !seen.iter().any(|v| v == name) {
+                seen.push(name.to_string());
             }
 
-            let fn_ty = match ret_kind {
-                None => void_t.fn_type(
-                    &arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(),
-                    is_variadic,
-                ),
-                Some(rt) => rt.fn_type(
-                    &arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(),
-                    is_variadic,
-                ),
-            };
-            module.add_function(name, fn_ty, None);
-            added.push(name.to_string());
+            // LLVMモジュールに未登録ならプロトタイプを追加する。
+            if module.get_function(name).is_none() {
+                let fn_ty = match ret_kind {
+                    None => void_t.fn_type(
+                        &arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(),
+                        is_variadic,
+                    ),
+                    Some(rt) => rt.fn_type(
+                        &arg_types.iter().map(|t| (*t).into()).collect::<Vec<_>>(),
+                        is_variadic,
+                    ),
+                };
+                module.add_function(name, fn_ty, None);
+            }
         }
 
-        Some(added)
+        Some(seen)
     }
 
     /// libcのヘッダーを読み込む
@@ -280,7 +285,8 @@ impl LibraryManager {
         let entity = tu.get_entity();
 
         // ヘッダ内の全ての定義を走査
-        let mut added: Vec<String> = Vec::new();
+        // allowlist 用に「見つけた関数名」を返す（登録済みでも含める）。
+        let mut seen: Vec<String> = Vec::new();
         for child in entity.get_children() {
             // 関数宣言だけをピックアップ
             if child.get_kind() == EntityKind::FunctionDecl {
@@ -322,16 +328,18 @@ impl LibraryManager {
                                 context.i32_type().fn_type(&llvm_args, is_variadic)
                             }
                         };
+                        if !seen.iter().any(|v| v == &func_name) {
+                            seen.push(func_name.clone());
+                        }
                         if module.get_function(&func_name).is_none() {
                             module.add_function(&func_name, fn_type, None);
                             debug!("LibraryManager: Loaded function '{}'", func_name);
-                            added.push(func_name);
                         }
                     }
                 }
             }
         }
-        Some(added)
+        Some(seen)
     }
 }
 

@@ -1,11 +1,22 @@
 use crate::backend::{ComponentRenderer, PropertyValue, RawOSEvent, ViewKitBackend, WindowBackend};
-use image::{ImageBuffer, RgbaImage};
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashMap;
+use std::io::Write;
+#[cfg(feature = "wayland")]
+use std::os::unix::io::AsFd;
 use tiny_skia::{Color, Paint, Pixmap, Transform};
 #[cfg(feature = "wayland")]
-use wayland_client::Connection;
+use wayland_client::{
+    delegate_noop,
+    protocol::{
+        wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+        wl_surface,
+    },
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum,
+};
+#[cfg(feature = "wayland")]
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 /// シンプルなコンポーネントテンプレートのキャッシュ構造
 #[allow(unused)]
@@ -22,11 +33,7 @@ pub struct BackendImpl {
     // （ARGB as u32）
     pixels: Vec<u32>,
     #[cfg(feature = "wayland")]
-    wayland_enabled: bool,
-    #[cfg(feature = "wayland")]
-    shm_tmp: Option<tempfile::NamedTempFile>,
-    #[cfg(feature = "wayland")]
-    conn: Option<Connection>,
+    wayland: Option<WaylandContext>,
 }
 
 impl BackendImpl {
@@ -38,34 +45,22 @@ impl BackendImpl {
             "ViewKit: Backend initialized (Wayland connection will be established when available)"
         );
 
+        #[cfg(feature = "wayland")]
+        let wayland = match WaylandContext::new() {
+            Ok(ctx) => Some(ctx),
+            Err(e) => {
+                eprintln!("ViewKit: Wayland disabled: {}", e);
+                None
+            }
+        };
+
         Ok(Self {
             width: 800,
             height: 600,
             templates: HashMap::new(),
             pixels: vec![0u32; (800 * 600) as usize],
             #[cfg(feature = "wayland")]
-            wayland_enabled: {
-                // try to connect to Wayland display; if fails, keep false
-                match Connection::connect_to_env() {
-                    Ok(conn) => {
-                        println!("ViewKit: connected to Wayland (feature=wayland)");
-                        // store connection for future event handling
-                        // we will set conn below using a separate field initialization
-                        true
-                    }
-                    Err(e) => {
-                        eprintln!("ViewKit: failed to connect to Wayland: {}", e);
-                        false
-                    }
-                }
-            },
-            #[cfg(feature = "wayland")]
-            shm_tmp: None,
-            #[cfg(feature = "wayland")]
-            conn: match Connection::connect_to_env() {
-                Ok(c) => Some(c),
-                Err(_) => None,
-            },
+            wayland,
         })
     }
 
@@ -79,6 +74,330 @@ impl BackendImpl {
     }
 
     // (helper functions follow)
+}
+
+#[cfg(feature = "wayland")]
+struct WaylandState {
+    running: bool,
+    base_surface: Option<wl_surface::WlSurface>,
+    buffer: Option<wl_buffer::WlBuffer>,
+    shm_pool: Option<wl_shm_pool::WlShmPool>,
+    shm: Option<wl_shm::WlShm>,
+    wm_base: Option<xdg_wm_base::XdgWmBase>,
+    xdg_surface: Option<(xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel)>,
+    configured: bool,
+    // swap_buffers から更新される
+    file: Option<std::fs::File>,
+    file_size: usize,
+    mmap: Option<memmap2::MmapMut>,
+    width: u32,
+    height: u32,
+    pending_keys: Vec<u32>,
+    quit_requested: bool,
+}
+
+#[cfg(feature = "wayland")]
+impl WaylandState {
+    fn init_xdg_surface(&mut self, qh: &QueueHandle<WaylandState>, title: &str) {
+        let wm_base = self.wm_base.as_ref().unwrap();
+        let base_surface = self.base_surface.as_ref().unwrap();
+
+        let xdg_surface = wm_base.get_xdg_surface(base_surface, qh, ());
+        let toplevel = xdg_surface.get_toplevel(qh, ());
+        toplevel.set_title(title.into());
+        base_surface.commit();
+        self.xdg_surface = Some((xdg_surface, toplevel));
+    }
+
+    fn ensure_shm_buffer(&mut self, qh: &QueueHandle<WaylandState>, w: u32, h: u32) {
+        let Some(shm) = self.shm.as_ref() else { return };
+        let Some(surface) = self.base_surface.as_ref() else { return };
+
+        let stride = (w * 4) as usize;
+        let size = stride.saturating_mul(h as usize);
+        if size == 0 {
+            return;
+        }
+
+        let need_recreate = self.buffer.is_none() || self.width != w || self.height != h;
+        if !need_recreate {
+            return;
+        }
+
+        // 新しいバッファを作る
+        let mut file = tempfile::tempfile().expect("tempfile");
+        file.set_len(size as u64).expect("set_len");
+        file.flush().ok();
+
+        let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
+        let buffer = pool.create_buffer(
+            0,
+            w as i32,
+            h as i32,
+            (w * 4) as i32,
+            wl_shm::Format::Argb8888,
+            qh,
+            (),
+        );
+
+        self.shm_pool = Some(pool);
+        self.buffer = Some(buffer.clone());
+        self.file = Some(file);
+        self.file_size = size;
+        self.mmap = None;
+        self.width = w;
+        self.height = h;
+
+        // 初回は commit して map するまで待たない
+        if self.configured {
+            surface.attach(Some(&buffer), 0, 0);
+            // wl_surface.damage_buffer は version 4 以降。互換のため damage を使う。
+            surface.damage(0, 0, w as i32, h as i32);
+            surface.commit();
+        }
+    }
+
+    fn write_pixels(&mut self, pixels_argb: &[u32]) {
+        let Some(file) = self.file.as_ref() else { return };
+        if self.file_size == 0 {
+            return;
+        }
+
+        if self.mmap.is_none() {
+            if let Ok(m) = unsafe { memmap2::MmapOptions::new().len(self.file_size).map_mut(file) } {
+                self.mmap = Some(m);
+            } else {
+                return;
+            }
+        }
+
+        let Some(mmap) = self.mmap.as_mut() else { return };
+        let needed_px = (self.width * self.height) as usize;
+        if pixels_argb.len() < needed_px {
+            return;
+        }
+
+        for (i, px) in pixels_argb.iter().take(needed_px).enumerate() {
+            let a = ((px >> 24) & 0xFF) as u8;
+            let r = ((px >> 16) & 0xFF) as u8;
+            let g = ((px >> 8) & 0xFF) as u8;
+            let b = (px & 0xFF) as u8;
+            let off = i * 4;
+            if off + 3 < mmap.len() {
+                // wl_shm::Format::Argb8888 は BGRA(LE) として書くのが安全
+                mmap[off] = b;
+                mmap[off + 1] = g;
+                mmap[off + 2] = r;
+                mmap[off + 3] = a;
+            }
+        }
+        let _ = mmap.flush();
+    }
+}
+
+#[cfg(feature = "wayland")]
+impl Dispatch<wl_registry::WlRegistry, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global { name, interface, .. } = event {
+            match &interface[..] {
+                "wl_compositor" => {
+                    let compositor =
+                        registry.bind::<wl_compositor::WlCompositor, _, _>(name, 1, qh, ());
+                    let surface = compositor.create_surface(qh, ());
+                    state.base_surface = Some(surface);
+                    if state.wm_base.is_some() && state.xdg_surface.is_none() {
+                        state.init_xdg_surface(qh, "Kome");
+                    }
+                }
+                "wl_shm" => {
+                    let shm = registry.bind::<wl_shm::WlShm, _, _>(name, 1, qh, ());
+                    state.shm = Some(shm);
+                    // buffer は swap_buffers でサイズが確定してから作る
+                }
+                "wl_seat" => {
+                    registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
+                }
+                "xdg_wm_base" => {
+                    let wm_base = registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 1, qh, ());
+                    state.wm_base = Some(wm_base);
+                    if state.base_surface.is_some() && state.xdg_surface.is_none() {
+                        state.init_xdg_surface(qh, "Kome");
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(feature = "wayland")]
+delegate_noop!(WaylandState: ignore wl_compositor::WlCompositor);
+#[cfg(feature = "wayland")]
+delegate_noop!(WaylandState: ignore wl_surface::WlSurface);
+#[cfg(feature = "wayland")]
+delegate_noop!(WaylandState: ignore wl_shm::WlShm);
+#[cfg(feature = "wayland")]
+delegate_noop!(WaylandState: ignore wl_shm_pool::WlShmPool);
+#[cfg(feature = "wayland")]
+delegate_noop!(WaylandState: ignore wl_buffer::WlBuffer);
+
+#[cfg(feature = "wayland")]
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        wm_base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+#[cfg(feature = "wayland")]
+impl Dispatch<xdg_surface::XdgSurface, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        xdg_surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial, .. } = event {
+            xdg_surface.ack_configure(serial);
+            state.configured = true;
+            if let (Some(surface), Some(buffer)) = (state.base_surface.as_ref(), state.buffer.as_ref())
+            {
+                surface.attach(Some(buffer), 0, 0);
+                // wl_surface.damage_buffer は version 4 以降。互換のため damage を使う。
+                surface.damage(0, 0, state.width as i32, state.height as i32);
+                surface.commit();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "wayland")]
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_toplevel::Event::Close = event {
+            state.running = false;
+            state.quit_requested = true;
+        }
+    }
+}
+
+#[cfg(feature = "wayland")]
+impl Dispatch<wl_seat::WlSeat, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event {
+            if capabilities.contains(wl_seat::Capability::Keyboard) {
+                seat.get_keyboard(qh, ());
+            }
+        }
+    }
+}
+
+#[cfg(feature = "wayland")]
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Key { key, state: key_state, .. } = event {
+            // pressed のときだけ通知（ViewKitApp 側が pressed:true を見る）
+            if matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed)) {
+                state.pending_keys.push(key);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "wayland")]
+struct WaylandContext {
+    conn: Connection,
+    event_queue: EventQueue<WaylandState>,
+    qh: QueueHandle<WaylandState>,
+    state: WaylandState,
+}
+
+#[cfg(feature = "wayland")]
+impl WaylandContext {
+    fn new() -> Result<Self, String> {
+        let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
+        let mut event_queue = conn.new_event_queue();
+        let qh = event_queue.handle();
+        let display = conn.display();
+        display.get_registry(&qh, ());
+
+        let mut state = WaylandState {
+            running: true,
+            base_surface: None,
+            buffer: None,
+            shm_pool: None,
+            shm: None,
+            wm_base: None,
+            xdg_surface: None,
+            configured: false,
+            file: None,
+            file_size: 0,
+            mmap: None,
+            width: 0,
+            height: 0,
+            pending_keys: Vec::new(),
+            quit_requested: false,
+        };
+
+        // 初期化のため、registry と初回 configure を受け取る
+        let _ = event_queue.roundtrip(&mut state);
+        let _ = event_queue.roundtrip(&mut state);
+
+        Ok(Self {
+            conn,
+            event_queue,
+            qh,
+            state,
+        })
+    }
+
+    fn dispatch_pending(&mut self) {
+        // 非ブロッキングで Wayland ソケットを読む
+        let _ = self.conn.flush();
+        if let Some(guard) = self.conn.prepare_read() {
+            let _ = guard.read();
+        }
+        let _ = self.event_queue.dispatch_pending(&mut self.state);
+        let _ = self.conn.flush();
+    }
 }
 
 /// 簡易的な色文字列 (#RRGGBB) を ARGB(u32) に変換
@@ -204,103 +523,80 @@ impl WindowBackend for BackendImpl {
         self.width = width;
         self.height = height;
         self.ensure_buffer(width, height);
-        println!(
-            "ViewKit: (stub) create_window '{}' {}x{} deco:{}",
-            title, width, height, !no_decoration
-        );
-        // 本来はここで wl_surface, xdg_toplevel を作成する
-    }
-
-    fn swap_buffers(&mut self, buffer: &[u32], width: u32, height: u32) {
-        // If compiled with `--features wayland` and Wayland connection succeeded,
-        // here is where we would perform wl_shm buffer creation, attach -> damage -> commit.
-        // For now, if Wayland is enabled but not fully implemented, fall back to PNG and log intentions.
+        let _ = no_decoration;
 
         #[cfg(feature = "wayland")]
         {
-            if self.wayland_enabled {
-                // Attempt to create a memmap-backed tempfile and write RGBA data into it.
-                // This prepares an shm-backed file that can be used to create a wl_shm_pool.
-                match NamedTempFile::new() {
-                    Ok(mut tmp) => {
-                        let size = (width as usize)
-                            .saturating_mul(height as usize)
-                            .saturating_mul(4);
-                        if let Err(e) = tmp.as_file_mut().set_len(size as u64) {
-                            eprintln!("ViewKit: failed to set tmpfile len: {}", e);
-                        } else {
-                            match unsafe { MmapMut::map_mut(tmp.as_file()) } {
-                                Ok(mut mmap) => {
-                                    // copy ARGB(u32) -> RGBA bytes into mmap
-                                    for y in 0..height as usize {
-                                        for x in 0..width as usize {
-                                            let idx = y * width as usize + x;
-                                            let px = buffer[idx];
-                                            let a = ((px >> 24) & 0xFF) as u8;
-                                            let r = ((px >> 16) & 0xFF) as u8;
-                                            let g = ((px >> 8) & 0xFF) as u8;
-                                            let b = (px & 0xFF) as u8;
-                                            let off = (idx * 4) as usize;
-                                            mmap[off] = r;
-                                            mmap[off + 1] = g;
-                                            mmap[off + 2] = b;
-                                            mmap[off + 3] = a;
-                                        }
-                                    }
-                                    if let Err(e) = mmap.flush() {
-                                        eprintln!("ViewKit: failed to flush mmap: {}", e);
-                                    }
-                                    println!(
-                                        "ViewKit: prepared shm tempfile at {:?} ({} bytes)",
-                                        tmp.path(),
-                                        size
-                                    );
-                                    // Keep the tempfile alive by storing it in self.shm_tmp so it isn't deleted
-                                    #[cfg(feature = "wayland")]
-                                    {
-                                        self.shm_tmp = Some(tmp);
-                                    }
-                                }
-                                Err(e) => eprintln!("ViewKit: failed to mmap tmpfile: {}", e),
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!("ViewKit: failed to create tempfile for shm pool: {}", e),
+            if let Some(ctx) = self.wayland.as_mut() {
+                // registry の受信で surface/xdg が揃うまでイベントを回す
+                for _ in 0..4 {
+                    ctx.dispatch_pending();
                 }
-                // Fall through to PNG fallback for visibility
+                if let Some((_, toplevel)) = ctx.state.xdg_surface.as_ref() {
+                    toplevel.set_title(title.into());
+                }
+                if let Some(surface) = ctx.state.base_surface.as_ref() {
+                    surface.commit();
+                }
+                let _ = ctx.conn.flush();
+                println!("ViewKit: created Wayland window '{}' {}x{}", title, width, height);
+                return;
             }
         }
 
-        // PNG fallback: write out frame for debugging
+        // Wayland が使えない場合のフォールバック（主にテスト用）
+        println!("ViewKit: Wayland not available, window is headless");
+    }
+
+    fn swap_buffers(&mut self, buffer: &[u32], width: u32, height: u32) {
         self.ensure_buffer(width, height);
-        self.pixels.copy_from_slice(buffer);
 
-        // Convert ARGB u32 -> RGBA8 for image crate
-        let mut img: RgbaImage = ImageBuffer::new(width, height);
-        for y in 0..height {
-            for x in 0..width {
-                let idx = (y * width + x) as usize;
-                let px = self.pixels[idx];
-                let a = ((px >> 24) & 0xFF) as u8;
-                let r = ((px >> 16) & 0xFF) as u8;
-                let g = ((px >> 8) & 0xFF) as u8;
-                let b = (px & 0xFF) as u8;
-                img.put_pixel(x, y, image::Rgba([r, g, b, a]));
+        #[cfg(feature = "wayland")]
+        {
+            if let Some(ctx) = self.wayland.as_mut() {
+                ctx.dispatch_pending();
+                ctx.state.ensure_shm_buffer(&ctx.qh, width, height);
+                ctx.state.write_pixels(buffer);
+
+                if ctx.state.configured {
+                    if let (Some(surface), Some(wlbuf)) =
+                        (ctx.state.base_surface.as_ref(), ctx.state.buffer.as_ref())
+                    {
+                        surface.attach(Some(wlbuf), 0, 0);
+                        // wl_surface.damage_buffer は version 4 以降。互換のため damage を使う。
+                        surface.damage(0, 0, width as i32, height as i32);
+                        surface.commit();
+                    }
+                }
+                let _ = ctx.conn.flush();
+                return;
             }
         }
-        if let Err(e) = img.save("/tmp/viewkit_frame.png") {
-            eprintln!("ViewKit: failed to save frame png: {}", e);
-        } else {
-            println!(
-                "ViewKit: frame written to /tmp/viewkit_frame.png ({}x{})",
-                width, height
-            );
-        }
+
+        // Wayland が無い場合は headless で保持だけする（PNGはデフォルトで出さない）
+        self.pixels.copy_from_slice(buffer);
     }
 
     fn poll_os_event(&mut self) -> Option<RawOSEvent> {
-        // 実際の Wayland イベントのポーリングはここで行う。
-        // 今はダミー実装を返すのみ。
+        #[cfg(feature = "wayland")]
+        {
+            if let Some(ctx) = self.wayland.as_mut() {
+                ctx.dispatch_pending();
+
+                if ctx.state.quit_requested {
+                    return Some(RawOSEvent::Quit);
+                }
+
+                if !ctx.state.pending_keys.is_empty() {
+                    let key = ctx.state.pending_keys.remove(0);
+                    return Some(RawOSEvent::Key {
+                        scan_code: key,
+                        pressed: true,
+                    });
+                }
+            }
+        }
+
         None
     }
 

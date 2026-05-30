@@ -95,6 +95,17 @@ fn type_of_expr(expr: &Expr, env: &HashMap<String, Type>) -> Type {
                 Type::Unknown
             }
         }
+        Expr::IsExpr { value, pat, then_expr } => {
+            // `is` 式は「一致したら値を返し、そうでなければ none(ptr)」の想定
+            // ここは厳密化する余地があるが、当面は ptr 扱いにする。
+            let _ = (value, pat);
+            let tt = type_of_expr(then_expr, env);
+            if tt == Type::Ptr || tt == Type::Unknown {
+                Type::Ptr
+            } else {
+                Type::Unknown
+            }
+        }
         Expr::Block(_) => Type::Void,
         Expr::CallChain { .. } => Type::Unknown,
     }

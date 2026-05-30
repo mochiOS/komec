@@ -71,10 +71,14 @@ term = {
 if_expr = { "if" ~ expr ~ block ~ "else" ~ block }
 
 // メソッドチェーン viewKit.window.create().with(...)
-call_chain = { (ident | path) ~ (child_access | method_call | property_access)* }
-method_call = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" ~ block? }
+call_chain = { (ident | path) ~ (child_access | method_call | property_closure_call | property_access)* }
+// 呼び出し引数は通常 `expr` のカンマ区切りだが、
+// `children( is ... => ... )` のような「改行区切り」の is 群も許可する。
+method_call = { "(" ~ ( (is_stmt ~ (","? ~ is_stmt)*) | (expr ~ ("," ~ expr)*) )? ~ ")" ~ block? }
+// `.onClick { ... }` のように、引数なし + ブロックだけの呼び出しを許可する
+property_closure_call = { "." ~ ident ~ block }
 property_access = { "." ~ ident }
-child_access = { "with" ~ ident ~ "(" ~ (kv_pair ~ ("," ~ kv_pair)*)? ~ ")" }
+child_access = { "with" ~ ident ~ "(" ~ (kv_pair ~ ("," ~ kv_pair)* ~ ","?)? ~ ")" }
 
 // 演算子
 infix_op = _{ add | sub | mul | div | pipe | question | in_op | or | and | eq | neq | lt | gt | le | ge | with_op }
@@ -84,16 +88,16 @@ mul = { "*" }
 div = { "/" }
 pipe = { "|" ~ ! "|" }
 question = { "??" }
-in_op = { "in" } // path生成用の 'in' 演算子（example: "about.toml" in app_dirで{app_dir}/about.toml）
-or = { "or" | "||" }
-and = { "and" | "&&" }
+in_op = { "in" ~ !ASCII_ALPHANUMERIC } // 単語境界（within 等に誤爆しない）
+or = { ("or" ~ !ASCII_ALPHANUMERIC) | "||" }
+and = { ("and" ~ !ASCII_ALPHANUMERIC) | "&&" }
 eq = { "==" }
 neq = { "!=" }
 lt = { "<" }
 gt = { ">" }
 le = { "<=" }
 ge = { ">=" }
-with_op = { "with" }
+with_op = { "with" ~ !ASCII_ALPHANUMERIC }
 
 // if（文としての if。式 if（if_expr）は term 側に置く）
 if_stmt = { "if" ~ expr ~ then_block ~ ("else" ~ else_block)? }
@@ -107,9 +111,11 @@ while_stmt = { "while" ~ expr ~ block }
 for_stmt = { "for" ~ ident ~ "in" ~ expr ~ "~" ~ expr ~ block }
 
 // recipe
-recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ block }
+// - block 形式: `recipe app: clicked = { ... }`
+// - 式形式:    `recipe dock: AppState = dock().children(...)`
+recipe_stmt = { visibility? ~ "recipe" ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? ~ "=" ~ (block | expr) }
 
-assignment = { ("@default")? ~ call_chain ~ assignment_op ~ expr }
+assignment = { ("!default")? ~ call_chain ~ assignment_op ~ expr }
 
 // 代入演算子
 assignment_op = _{ assign | sub_assign | add_assign }
@@ -121,8 +127,8 @@ constant = { string | integer | boolean | none }
 boolean = { "true" | "false" }
 none = { "none" | "None()" }
 integer = @{ ASCII_DIGIT+ }
-string = ${ "\"" ~ inner_str ~ "\"" }
-inner_str = @{ (!"\"" ~ ANY)* }
+string = { "\"" ~ inner_str ~ "\"" }
+inner_str = @{ ( "\\\"" | "\\\\" | "\\n" | "\\t" | "\\r" | (!"\"" ~ ANY) )* }
 
 // enum
 enum_stmt = { "enum" ~ ident ~ "{" ~ (enum_variant ~ ("," ~ enum_variant)* ~ ","?)? ~ "}" }

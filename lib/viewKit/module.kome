@@ -1,0 +1,69 @@
+cinclude "viewkit.h"
+
+use viewKit.components
+
+fn create() -> Ptr {
+    kome_viewkit_app_create()
+}
+
+fn destroy(app: Ptr) {
+    if app != none {
+        kome_viewkit_app_destroy(app)
+    } else {
+        // 何もしない
+    }
+}
+
+// window.create() 互換: 引数なしでウィンドウを作る
+fn window_create() -> Ptr {
+    let app = kome_viewkit_app_create()
+    if app != none {
+        kome_viewkit_window_create(app, 640, 480, "Kome", 0)
+        // Wayland のイベントループを回さないと画面が更新されないため、別スレッドで起動する
+        kome_viewkit_app_run_async(app)
+    } else {
+        // 初期化失敗
+    }
+    app
+}
+
+// window.errWindow(...) 互換: 今は「ウィンドウを作ってテキストを出す」だけ
+fn window_errWindow(message: String) -> Ptr {
+    let app = window_create()
+    if app != none {
+        // 自分自身の別関数呼び出しが前方参照で失敗しないよう、ここでは直接呼ぶ
+        kome_viewkit_update_ui_tree(app, components.text(message))
+    }
+    app
+}
+
+fn window_card_onClick(closure: Ptr) {
+    // TODO: ViewKi側にクリックcallbackが来たら呼ぶ
+    let unused = closure
+}
+
+// コンポーネント系は viewKit.components を呼ぶだけにして重複実装を避ける
+fn text(value: String) -> String {
+    components.text(value)
+}
+
+fn card() -> String {
+    components.card()
+}
+
+fn register_component(app: Ptr, name: String, html: String) -> Bool {
+    let ok = kome_viewkit_register_component(app, name, html)
+    ok != 0
+}
+
+fn update_ui_tree(app: Ptr, tree_json: String) {
+    kome_viewkit_update_ui_tree(app, tree_json)
+}
+
+fn run(app: Ptr) {
+    kome_viewkit_app_run(app)
+}
+
+fn runAsync(app: Ptr) {
+    kome_viewkit_app_run_async(app)
+}

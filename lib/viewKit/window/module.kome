@@ -1,0 +1,12 @@
+use viewKit
+
+fn create(config: Any) -> Ptr {
+    // TODO: config から title/size/decoration を読む
+    let unused = config
+    window_create()
+}
+
+fn errWindow(message: String) -> Ptr {
+    // TODO: ViewKit 側で専用UIを作る
+    window_errWindow(message)
+}

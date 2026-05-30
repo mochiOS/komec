@@ -133,6 +133,11 @@ pub enum Expr {
         tails: Vec<Accessor>,
     },
     Block(Vec<Stmt>),
+    IsExpr {
+        value: Box<Expr>,
+        pat: MatchPat,
+        then_expr: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -746,7 +751,8 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
 
             // 演算子が続く場合の処理
             if let Some(op_pair) = inner.next() {
-                let op = match op_pair.as_str() {
+                let op_str = op_pair.as_str().trim();
+                let op = match op_str {
                     "+" => Op::Add,
                     "-" => Op::Sub,
                     "*" => Op::Mul,
@@ -762,7 +768,7 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                     "<=" => Op::Le,
                     ">=" => Op::Ge,
                     "with" => Op::With,
-                    _ => todo!("Undefined op: {}", op_pair.as_str()),
+                    _ => todo!("Undefined op: {}", op_str),
                 };
                 let right_term = parse_expr(inner.next().unwrap());
                 Expr::BinaryOp {
@@ -817,6 +823,26 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                                 Rule::expr => {
                                     args.push(parse_expr(sub_item));
                                 }
+                                Rule::is_stmt => {
+                                    let is_stmt = parse_stmt(sub_item);
+                                    let Stmt::Is { value, pat, body } = is_stmt else {
+                                        unreachable!("is_stmt should parse into Stmt::Is");
+                                    };
+                                    // is 式として扱う（then は式のみ対応）
+                                    let then_expr = match *body {
+                                        Stmt::ExprStmt(e) => e,
+                                        Stmt::Block(stmts) => Expr::Block(stmts),
+                                        other => {
+                                            // 仕様を単純化: ここは式だけ許可
+                                            panic!("is 引数は式にしてください: {:?}", other);
+                                        }
+                                    };
+                                    args.push(Expr::IsExpr {
+                                        value: Box::new(value),
+                                        pat,
+                                        then_expr: Box::new(then_expr),
+                                    });
+                                }
                                 Rule::block => {
                                     // 後ろにくっついているブロック `{ ... }` を解析
                                     let mut block_stmts = Vec::new();
@@ -832,6 +858,24 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                         }
 
                         tails.push(Accessor::Method(args, trailing_closure));
+                    }
+                    Rule::property_closure_call => {
+                        // `.name { ... }` を `Property(name)` + `Method([], block)` に展開する
+                        let mut inner = target_pair.into_inner();
+                        let name = inner
+                            .next()
+                            .expect("property_closure_call name")
+                            .as_str()
+                            .to_string();
+                        let block = inner.next().expect("property_closure_call block");
+                        let mut block_stmts = Vec::new();
+                        for stmt_pair in block.into_inner() {
+                            if stmt_pair.as_rule() == Rule::stmt {
+                                block_stmts.push(parse_stmt(stmt_pair));
+                            }
+                        }
+                        tails.push(Accessor::Property(name));
+                        tails.push(Accessor::Method(Vec::new(), Some(block_stmts)));
                     }
                     _ => {}
                 }

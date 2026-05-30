@@ -24,13 +24,13 @@ pub(crate) struct DefaultScope<'ctx> {
     assigned_flags: HashMap<String, PointerValue<'ctx>>,
 }
 
-fn resolve_std_module_file(std_root: &std::path::Path, path_parts: &[String]) -> Option<std::path::PathBuf> {
+fn resolve_module_file(root: &std::path::Path, path_parts: &[String]) -> Option<std::path::PathBuf> {
     let rel = path_parts.join("/");
-    let direct = std_root.join(format!("{rel}.kome"));
+    let direct = root.join(format!("{rel}.kome"));
     if direct.exists() {
         return Some(direct);
     }
-    let module = std_root.join(rel).join("module.kome");
+    let module = root.join(rel).join("module.kome");
     if module.exists() {
         return Some(module);
     }
@@ -39,7 +39,8 @@ fn resolve_std_module_file(std_root: &std::path::Path, path_parts: &[String]) ->
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_std_module_file;
+    use super::resolve_module_file;
+    use super::CodegenContext;
     use std::fs;
     use std::path::PathBuf;
 
@@ -51,10 +52,17 @@ mod tests {
         fs::write(root.join("std/io/module.kome"), "fn hello() {}").unwrap();
 
         let parts = vec!["std".to_string(), "io".to_string()];
-        let resolved = resolve_std_module_file(&root, &parts).unwrap();
+        let resolved = resolve_module_file(&root, &parts).unwrap();
         assert_eq!(resolved, PathBuf::from(root.join("std/io/module.kome")));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unescape_string_literal_supports_quotes_and_backslash() {
+        assert_eq!(CodegenContext::unescape_string_literal("\\\""), "\"");
+        assert_eq!(CodegenContext::unescape_string_literal("\\\\"), "\\");
+        assert_eq!(CodegenContext::unescape_string_literal("a\\nb"), "a\nb");
     }
 }
 
@@ -102,6 +110,32 @@ pub enum ReturnKind {
 }
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
+    fn unescape_string_literal(raw: &str) -> String {
+        // 最低限のエスケープだけ扱う（ViewKit の JSON を書けるのが目的）
+        let mut out = String::with_capacity(raw.len());
+        let mut it = raw.chars().peekable();
+        while let Some(ch) = it.next() {
+            if ch != '\\' {
+                out.push(ch);
+                continue;
+            }
+            match it.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    // 未定義はそのまま（例: \u は未対応）
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        }
+        out
+    }
+
     fn push_default_scope(&mut self) {
         self.default_scopes.push(DefaultScope::default());
     }
@@ -606,7 +640,13 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 #[allow(unused)]
                 Stmt::Import(path_parts) => {
                     let full_path = path_parts.join(".");
-                    let module_prefix = path_parts.last().cloned().unwrap_or_default();
+                    // `viewKit.window.*` のように「親モジュール名を含む名前」で呼びたいケースがある。
+                    // - `use viewKit` 単体は prelude 扱いで prefix を付けない（後段の特例）
+                    // - `use viewKit.window` は `viewKit_window_*` を生成して `viewKit.window.*` と一致させる
+                    let mut module_prefix = path_parts.last().cloned().unwrap_or_default();
+                    if path_parts.len() >= 2 && path_parts[0] == "viewKit" && path_parts[1] == "window" {
+                        module_prefix = "viewKit_window".to_string();
+                    }
 
                     if full_path.starts_with("libc.") {
                         if let Some(names) = self.library_manager.load_c_header_collect(
@@ -623,10 +663,178 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         continue;
                     }
 
+                    // std 以外のモジュールは lib 配下も探索する（例: `use viewKit`）
+                    let lib_root =
+                        std::env::var("KOME_LIB_PATH").unwrap_or_else(|_| "./lib".to_owned());
+                    let lib_root = std::path::PathBuf::from(lib_root);
+
+                    // lib/* は標準ライブラリと同じ形式で解決する（lib/viewKit/module.kome など）
+                    if full_path.starts_with("lib.") {
+                        let parts = &path_parts[1..];
+                        let lib_root =
+                            std::env::var("KOME_LIB_PATH").unwrap_or_else(|_| "./lib".to_owned());
+                        let lib_root = std::path::PathBuf::from(lib_root);
+                        let kome_file_path = resolve_module_file(&lib_root, parts)
+                            .unwrap_or_else(|| {
+                                let rel = parts.join("/");
+                                panic!(
+                                    "Library module not found at: {:?} or {:?}",
+                                    lib_root.join(format!("{rel}.kome")),
+                                    lib_root.join(rel).join("module.kome")
+                                );
+                            });
+
+                        let source = std::fs::read_to_string(&kome_file_path).map_err(|_| {
+                            format!("Failed to read library module: {:?}", kome_file_path)
+                        })?;
+
+                        if let Some(parent) = kome_file_path.parent() {
+                            self.current_dir = parent.to_path_buf();
+                        }
+
+                        let mut lib_ast: Vec<Stmt> = Vec::new();
+                        let pairs = match crate::KomeParser::parse(crate::Rule::program, &source) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                panic!(
+                                    "Failed to parse library module file {:?}: {}",
+                                    kome_file_path, e
+                                );
+                            }
+                        };
+
+                        for pair in pairs {
+                            match pair.as_rule() {
+                                crate::Rule::program => {
+                                    for inner_pair in pair.into_inner() {
+                                        if inner_pair.as_rule() == crate::Rule::stmt {
+                                            let stmt = parse_stmt(inner_pair);
+                                            lib_ast.push(stmt);
+                                        }
+                                    }
+                                }
+                                crate::Rule::stmt => {
+                                    let stmt = parse_stmt(pair);
+                                    lib_ast.push(stmt);
+                                }
+                                crate::Rule::EOI => {}
+                                _ => {}
+                            }
+                        }
+
+                        // import されたモジュール名で関数を名前空間化する
+                        if !module_prefix.is_empty() {
+                            for stmt in lib_ast.iter_mut() {
+                                if let Stmt::FnDecl { name, .. } = stmt {
+                                    if !name.contains('.')
+                                        && !name.starts_with(&format!("{module_prefix}_"))
+                                    {
+                                        *name = format!("{module_prefix}_{name}");
+                                    }
+                                }
+                            }
+                        }
+
+                        // lib モジュールも「C 呼び出しの明示」を守る
+                        let prev_prefix = self.current_module_prefix.take();
+                        let prev_allowed = std::mem::take(&mut self.allowed_externs);
+                        self.current_module_prefix = Some(module_prefix.clone());
+                        self.allowed_externs = HashSet::new();
+
+                        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                            eprintln!("DEBUG: compiling lib module {:?}", kome_file_path);
+                        }
+                        self.compile_statements(&lib_ast)?;
+                        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                            eprintln!("DEBUG: finished lib module {:?}", kome_file_path);
+                        }
+
+                        self.current_module_prefix = prev_prefix;
+                        self.allowed_externs = prev_allowed;
+
+                        continue;
+                    }
+
+                    // `use viewKit` / `use toml` のように lib 直下を名前で参照できるようにする
+                    if !full_path.starts_with("std.") && !full_path.starts_with("libc.") {
+                        if let Some(kome_file_path) = resolve_module_file(&lib_root, path_parts) {
+                            let source = std::fs::read_to_string(&kome_file_path).map_err(|_| {
+                                format!("Failed to read library module: {:?}", kome_file_path)
+                            })?;
+
+                            if let Some(parent) = kome_file_path.parent() {
+                                self.current_dir = parent.to_path_buf();
+                            }
+
+                            let mut lib_ast: Vec<Stmt> = Vec::new();
+                            let pairs =
+                                match crate::KomeParser::parse(crate::Rule::program, &source) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        panic!(
+                                            "Failed to parse library module file {:?}: {}",
+                                            kome_file_path, e
+                                        );
+                                    }
+                                };
+
+                            for pair in pairs {
+                                match pair.as_rule() {
+                                    crate::Rule::program => {
+                                        for inner_pair in pair.into_inner() {
+                                            if inner_pair.as_rule() == crate::Rule::stmt {
+                                                let stmt = parse_stmt(inner_pair);
+                                                lib_ast.push(stmt);
+                                            }
+                                        }
+                                    }
+                                    crate::Rule::stmt => {
+                                        let stmt = parse_stmt(pair);
+                                        lib_ast.push(stmt);
+                                    }
+                                    crate::Rule::EOI => {}
+                                    _ => {}
+                                }
+                            }
+
+                            // lib 直下のトップレベル import は「そのままの名前」で公開したい
+                            // 例: `use viewKit` で `window.create()` や `card()` が見える前提
+                            // なので、このケースは prefix を付けない。
+                            if !module_prefix.is_empty() && path_parts.len() != 1 {
+                                for stmt in lib_ast.iter_mut() {
+                                    if let Stmt::FnDecl { name, .. } = stmt {
+                                        if !name.contains('.')
+                                            && !name.starts_with(&format!("{module_prefix}_"))
+                                        {
+                                            *name = format!("{module_prefix}_{name}");
+                                        }
+                                    }
+                                }
+                            }
+
+                            let prev_prefix = self.current_module_prefix.take();
+                            let prev_allowed = std::mem::take(&mut self.allowed_externs);
+                            self.current_module_prefix = Some(module_prefix.clone());
+                            self.allowed_externs = HashSet::new();
+
+                            if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                                eprintln!("DEBUG: compiling lib module {:?}", kome_file_path);
+                            }
+                            self.compile_statements(&lib_ast)?;
+                            if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+                                eprintln!("DEBUG: finished lib module {:?}", kome_file_path);
+                            }
+
+                            self.current_module_prefix = prev_prefix;
+                            self.allowed_externs = prev_allowed;
+                            continue;
+                        }
+                    }
+
                     let std_root =
                         std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
                     let std_root = std::path::PathBuf::from(std_root);
-                    let kome_file_path = resolve_std_module_file(&std_root, path_parts)
+                    let kome_file_path = resolve_module_file(&std_root, path_parts)
                         .unwrap_or_else(|| {
                             // Keep a stable, actionable error message for users.
                             let rel = path_parts.join("/");
@@ -1651,28 +1859,95 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     Op::Eq => {
                         // ==
                         let right_val = self.compile_expr(right);
-                        self.builder
-                            .build_int_compare(
-                                IntPredicate::EQ,
-                                left_val.into_int_value(),
-                                right_val.into_int_value(),
-                                "eqtmp",
-                            )
-                            .expect("Failed to build icmp eq instruction")
-                            .as_basic_value_enum()
+                        if left_val.is_pointer_value() || right_val.is_pointer_value() {
+                            if !left_val.is_pointer_value() || !right_val.is_pointer_value() {
+                                panic!("ptr と int/bool は比較できません。");
+                            }
+                            let lp = left_val.into_pointer_value();
+                            let rp = right_val.into_pointer_value();
+                            // null 比較は専用命令を使う
+                            if rp.is_null() {
+                                self.builder
+                                    .build_is_null(lp, "peq_null")
+                                    .expect("isnull")
+                                    .as_basic_value_enum()
+                            } else if lp.is_null() {
+                                self.builder
+                                    .build_is_null(rp, "peq_null")
+                                    .expect("isnull")
+                                    .as_basic_value_enum()
+                            } else {
+                                let i64_t = self.context.i64_type();
+                                let li = self
+                                    .builder
+                                    .build_ptr_to_int(lp, i64_t, "peq_li")
+                                    .expect("ptrtoint");
+                                let ri = self
+                                    .builder
+                                    .build_ptr_to_int(rp, i64_t, "peq_ri")
+                                    .expect("ptrtoint");
+                                self.builder
+                                    .build_int_compare(IntPredicate::EQ, li, ri, "peq")
+                                    .expect("icmp")
+                                    .as_basic_value_enum()
+                            }
+                        } else {
+                            self.builder
+                                .build_int_compare(
+                                    IntPredicate::EQ,
+                                    left_val.into_int_value(),
+                                    right_val.into_int_value(),
+                                    "eqtmp",
+                                )
+                                .expect("Failed to build icmp eq instruction")
+                                .as_basic_value_enum()
+                        }
                     }
                     Op::Neq => {
                         // !=
                         let right_val = self.compile_expr(right);
-                        self.builder
-                            .build_int_compare(
-                                IntPredicate::NE,
-                                left_val.into_int_value(),
-                                right_val.into_int_value(),
-                                "netmp",
-                            )
-                            .expect("Failed to build icmp ne instruction")
-                            .as_basic_value_enum()
+                        if left_val.is_pointer_value() || right_val.is_pointer_value() {
+                            if !left_val.is_pointer_value() || !right_val.is_pointer_value() {
+                                panic!("ptr と int/bool は比較できません。");
+                            }
+                            let lp = left_val.into_pointer_value();
+                            let rp = right_val.into_pointer_value();
+                            if rp.is_null() {
+                                self.builder
+                                    .build_is_not_null(lp, "pne_null")
+                                    .expect("isnotnull")
+                                    .as_basic_value_enum()
+                            } else if lp.is_null() {
+                                self.builder
+                                    .build_is_not_null(rp, "pne_null")
+                                    .expect("isnotnull")
+                                    .as_basic_value_enum()
+                            } else {
+                                let i64_t = self.context.i64_type();
+                                let li = self
+                                    .builder
+                                    .build_ptr_to_int(lp, i64_t, "pne_li")
+                                    .expect("ptrtoint");
+                                let ri = self
+                                    .builder
+                                    .build_ptr_to_int(rp, i64_t, "pne_ri")
+                                    .expect("ptrtoint");
+                                self.builder
+                                    .build_int_compare(IntPredicate::NE, li, ri, "pne")
+                                    .expect("icmp")
+                                    .as_basic_value_enum()
+                            }
+                        } else {
+                            self.builder
+                                .build_int_compare(
+                                    IntPredicate::NE,
+                                    left_val.into_int_value(),
+                                    right_val.into_int_value(),
+                                    "netmp",
+                                )
+                                .expect("Failed to build icmp ne instruction")
+                                .as_basic_value_enum()
+                        }
                     }
                     Op::Lt => {
                         // <
@@ -2106,6 +2381,58 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     _ => panic!("if 式の then/else の型が一致していません。"),
                 }
             }
+            Expr::IsExpr { value, pat, then_expr } => {
+                // `is` は「一致したら then を返し、そうでなければ none(ptr null)」として扱う
+                let parent = self
+                    .builder
+                    .get_insert_block()
+                    .expect("is expr requires insert block")
+                    .get_parent()
+                    .expect("is expr requires parent func");
+
+                let then_bb = self.context.append_basic_block(parent, "is_expr_then");
+                let else_bb = self.context.append_basic_block(parent, "is_expr_else");
+                let merge_bb = self.context.append_basic_block(parent, "is_expr_merge");
+
+                let v = self.compile_expr(value);
+                let cond = self.build_match_pat_cond(v, pat);
+                self.builder
+                    .build_conditional_branch(cond, then_bb, else_bb)
+                    .expect("is expr br");
+
+                self.builder.position_at_end(then_bb);
+                let then_v = self.compile_expr(then_expr);
+                let then_end = self
+                    .builder
+                    .get_insert_block()
+                    .expect("then bb");
+                if then_end.get_terminator().is_none() {
+                    self.builder
+                        .build_unconditional_branch(merge_bb)
+                        .expect("is expr br merge");
+                }
+
+                self.builder.position_at_end(else_bb);
+                let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                let else_v = ptr_t.const_null().as_basic_value_enum();
+                let else_end = self
+                    .builder
+                    .get_insert_block()
+                    .expect("else bb");
+                if else_end.get_terminator().is_none() {
+                    self.builder
+                        .build_unconditional_branch(merge_bb)
+                        .expect("is expr br merge");
+                }
+
+                self.builder.position_at_end(merge_bb);
+                let phi = self
+                    .builder
+                    .build_phi(ptr_t, "is_expr_phi")
+                    .expect("phi is expr");
+                phi.add_incoming(&[(&then_v, then_end), (&else_v, else_end)]);
+                phi.as_basic_value()
+            }
             Expr::Block(stmts) => self.compile_block_expr(stmts),
             Expr::CallChain { head, tails } => {
                 /* Handle bundle.method() calls (e.g., App.run()) */
@@ -2124,23 +2451,37 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 // 可変長引数の転送（`...`）は、通常の関数呼び出しとして処理できるように
                 // `printf(fmt, ...)` を `vprintf(fmt, va_list)` へ lower する形で実装する。
 
+                // a.b() / a.b.c() / a.b.c.d() などは「末尾の Method」を関数呼び出しに解決する
+                // 例: `viewKit.window.create(x)` -> `viewKit_window_create(x)`
                 if tails.len() >= 2 {
                     if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
                         eprintln!("DEBUG: Found CallChain with {} tails", tails.len());
                     }
-                    if let (
-                        ast::Accessor::Property(method_name),
-                        ast::Accessor::Method(args, trailing_closure),
-                    ) = (&tails[0], &tails[1])
+                    if let (ast::Accessor::Method(args, trailing_closure), ast::Accessor::Property(method_name)) =
+                        (&tails[tails.len() - 1], &tails[tails.len() - 2])
                     {
                         if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
                             eprintln!(
-                                "DEBUG: Property + Method found: {}.{}()",
+                                "DEBUG: Property + Method found: {}.<...>.{}()",
                                 head, method_name
                             );
                         }
-                        let bundle_name = head;
-                        let fn_name = format!("{}_{}", bundle_name, method_name);
+                        // head + 途中の Property を '_' で連結して関数名にする
+                        // - 途中に Method がある場合はフォールバックへ回す
+                        let mut fn_name = head.clone();
+                        let mut ok = true;
+                        for prop in tails.iter().take(tails.len() - 1) {
+                            let ast::Accessor::Property(p) = prop else {
+                                ok = false;
+                                break;
+                            };
+                            fn_name.push('_');
+                            fn_name.push_str(p);
+                        }
+                        if !ok {
+                            // フォールバック: 旧仕様（bundle_name + method_name）
+                            fn_name = format!("{}_{}", head, method_name);
+                        }
                         if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
                             eprintln!("DEBUG: Looking for function: {}", fn_name);
                         }
@@ -2153,7 +2494,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                     && !self.allowed_externs.contains(&fn_name)
                                 {
                                     panic!(
-                                        "Std module tried to call C function '{}' without declaring it via `cinclude` (or `use libc.*`) in that std file.",
+                                        "モジュール内で C 関数 '{}' を呼び出そうとしましたが、このファイル内で `cinclude`（または `use libc.*`）が宣言されていません。",
                                         fn_name
                                     );
                                 }
@@ -2310,6 +2651,27 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     }
                 }
 
+                // `a.b` は「引数なし関数 a_b()」として扱う（定数っぽい API 用）
+                if tails.len() == 1 {
+                    if let ast::Accessor::Property(p) = &tails[0] {
+                        let fn_name = format!("{}_{}", head, p);
+                        if let Some(function) = self.module.get_function(&fn_name) {
+                            let call = self
+                                .builder
+                                .build_call(function, &[], "gettmp")
+                                .expect("call property getter");
+                            return match call.try_as_basic_value() {
+                                ValueKind::Basic(v) => v,
+                                ValueKind::Instruction(_) => self
+                                    .context
+                                    .i32_type()
+                                    .const_int(0, false)
+                                    .as_basic_value_enum(),
+                            };
+                        }
+                    }
+                }
+
                 if let Some(ast::Accessor::Method(args, trailing_closure)) = tails.first() {
                     let mut fn_name = head.clone();
                     let lookup_name = fn_name.replace('.', "_");
@@ -2337,10 +2699,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         if self.current_module_prefix.is_some()
                             && !self.allowed_externs.contains(&fn_name)
                         {
-                            panic!(
-                                "Std module tried to call C function '{}' without declaring it via `cinclude` (or `use libc.*`) in that std file.",
-                                fn_name
-                            );
+                            panic!("モジュール内で C 関数 '{}' を呼び出そうとしましたが、このファイル内で `cinclude`（または `use libc.*`）が宣言されていません。", fn_name);
                         }
                     }
 
@@ -2491,7 +2850,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             }
 
             Expr::String(s) => {
-                let unescaped = s.replace("\\n", "\n");
+                let unescaped = Self::unescape_string_literal(s);
                 let global_str_ptr = self
                     .builder
                     .build_global_string_ptr(&unescaped, "str_literal")

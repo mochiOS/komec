@@ -1,0 +1,14 @@
+use viewKit
+
+fn create() -> Ptr {
+    viewKit.create()
+}
+
+fn destroy(app: Ptr) {
+    viewKit.destroy(app)
+}
+
+fn run(app: Ptr) {
+    viewKit.run(app)
+}
+
