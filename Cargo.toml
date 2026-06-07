@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [[bin]]
-name = "Kome"
+name = "komec"
 path = "src/main.rs"
 test = false
 bench = false
