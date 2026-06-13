@@ -1,6 +1,5 @@
 use crate::codegen::CodegenContext;
 use crate::library::LibraryManager;
-use env_logger;
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
 use inkwell::targets::{InitializationConfig, Target};
@@ -11,10 +10,6 @@ use pest_derive::Parser;
 use std::env;
 use std::fs;
 use std::ffi::CString;
-
-// ViewKit をリンクに含める（C shim が viewkit_* シンボルを参照する）
-#[allow(unused_imports)]
-use viewkit as _;
 
 // Declare the C runtime functions as extern so we can obtain their addresses
 // directly (without dlsym). These symbols are provided by the C sources
@@ -49,48 +44,6 @@ unsafe extern "C" {
     unsafe fn __kome_std_keyboard_scan(any: *mut c_void, closure: *mut c_void);
     unsafe fn __kome_str_concat(a: *const std::os::raw::c_char, b: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
     unsafe fn concat(a: *const std::os::raw::c_char, b: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
-
-    unsafe fn kome_viewkit_app_create() -> *mut c_void;
-    unsafe fn kome_viewkit_app_destroy(app_ptr: *mut c_void);
-    unsafe fn kome_viewkit_window_create(
-        app_ptr: *mut c_void,
-        width: i32,
-        height: i32,
-        title_ptr: *const std::os::raw::c_char,
-        no_decoration: i32,
-    );
-    unsafe fn kome_viewkit_register_component(
-        app_ptr: *mut c_void,
-        name_ptr: *const std::os::raw::c_char,
-        html_ptr: *const std::os::raw::c_char,
-    ) -> i32;
-    unsafe fn kome_viewkit_update_ui_tree(
-        app_ptr: *mut c_void,
-        tree_json_ptr: *const std::os::raw::c_char,
-    );
-    unsafe fn kome_viewkit_app_run(app_ptr: *mut c_void);
-    unsafe fn kome_viewkit_app_run_async(app_ptr: *mut c_void);
-    unsafe fn kome_viewkit_set_key_tap_callback_raw(app_ptr: *mut c_void, callback_ptr: *mut c_void);
-    unsafe fn kome_viewkit_async_is_running() -> i32;
-
-    // ViewKit components 用の C ヘルパ（lib/viewKit/components/components.c）
-    unsafe fn __kome_viewkit_json_text(value: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
-    unsafe fn __kome_viewkit_json_component(
-        name: *const std::os::raw::c_char,
-        children: *const *const std::os::raw::c_char,
-        len: i32,
-    ) -> *mut std::os::raw::c_char;
-    unsafe fn __kome_viewkit_json_children(
-        base: *const std::os::raw::c_char,
-        children: *const *const std::os::raw::c_char,
-        len: i32,
-    ) -> *mut std::os::raw::c_char;
-    unsafe fn __kome_i32_to_string(value: i32) -> *mut std::os::raw::c_char;
-    unsafe fn __kome_bool_to_string(value: bool) -> *mut std::os::raw::c_char;
-    unsafe fn __kome_record_field(
-        record_ptr: *const std::os::raw::c_char,
-        key_ptr: *const std::os::raw::c_char,
-    ) -> *mut std::os::raw::c_char;
 }
 
 unsafe fn register_llvm_symbol(name: &str, ptr: *const ()) {
@@ -131,21 +84,6 @@ unsafe fn register_builtin_symbols() {
         register_llvm_symbol("__kome_std_keyboard_scan", __kome_std_keyboard_scan as *const ());
         register_llvm_symbol("__kome_str_concat", __kome_str_concat as *const ());
         register_llvm_symbol("concat", concat as *const ());
-        register_llvm_symbol("kome_viewkit_app_create", kome_viewkit_app_create as *const ());
-        register_llvm_symbol("kome_viewkit_app_destroy", kome_viewkit_app_destroy as *const ());
-        register_llvm_symbol("kome_viewkit_window_create", kome_viewkit_window_create as *const ());
-        register_llvm_symbol("kome_viewkit_register_component", kome_viewkit_register_component as *const ());
-        register_llvm_symbol("kome_viewkit_update_ui_tree", kome_viewkit_update_ui_tree as *const ());
-        register_llvm_symbol("kome_viewkit_app_run", kome_viewkit_app_run as *const ());
-        register_llvm_symbol("kome_viewkit_app_run_async", kome_viewkit_app_run_async as *const ());
-        register_llvm_symbol("kome_viewkit_set_key_tap_callback_raw", kome_viewkit_set_key_tap_callback_raw as *const ());
-        register_llvm_symbol("kome_viewkit_async_is_running", kome_viewkit_async_is_running as *const ());
-        register_llvm_symbol("__kome_viewkit_json_text", __kome_viewkit_json_text as *const ());
-        register_llvm_symbol("__kome_viewkit_json_component", __kome_viewkit_json_component as *const ());
-        register_llvm_symbol("__kome_viewkit_json_children", __kome_viewkit_json_children as *const ());
-        register_llvm_symbol("__kome_i32_to_string", __kome_i32_to_string as *const ());
-        register_llvm_symbol("__kome_bool_to_string", __kome_bool_to_string as *const ());
-        register_llvm_symbol("__kome_record_field", __kome_record_field as *const ());
     }
 }
 
@@ -231,68 +169,8 @@ fn main() {
         }
     }
 
-    let source_dir = std::path::Path::new(&source_file)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let mut component_templates = std::collections::HashMap::new();
-    let mut expanded_ast = Vec::new();
-    for stmt in ast_state {
-        match stmt {
-            ast::Stmt::Decorator { pairs, .. } => {
-                for (component_name, path_expr) in pairs {
-                    let template_path = match path_expr {
-                        ast::Expr::String(path) => {
-                            let resolved = source_dir.join(&path);
-                            match fs::read_to_string(&resolved) {
-                                Ok(contents) => {
-                                    component_templates.insert(component_name.clone(), contents);
-                                    Some(path)
-                                }
-                                Err(_) => {
-                                    eprintln!(
-                                        "Failed to read component template: {}",
-                                        resolved.display()
-                                    );
-                                    None
-                                }
-                            }
-                        }
-                        _ => {
-                            eprintln!("Component template path must be a string: {}", component_name);
-                            None
-                        }
-                    };
-
-                    let _ = template_path;
-
-                    expanded_ast.push(ast::Stmt::FnDecl {
-                        is_public: false,
-                        name: component_name.clone(),
-                        params: vec![ast::FnParam {
-                            name: "args".to_string(),
-                            ty: "Ptr".to_string(),
-                            is_variadic: true,
-                        }],
-                        return_ty: Some("Ptr".to_string()),
-                        body: vec![ast::Stmt::ExprStmt(ast::Expr::CallChain {
-                            head: "__kome_viewkit_json_component".to_string(),
-                            tails: vec![ast::Accessor::Method(
-                                vec![
-                                    ast::CallArg::Positional(ast::Expr::String(component_name.clone())),
-                                    ast::CallArg::Positional(ast::Expr::None),
-                                    ast::CallArg::Positional(ast::Expr::Integer(0)),
-                                ],
-                                None,
-                            )],
-                        })],
-                    });
-                }
-            }
-            other => expanded_ast.push(other),
-        }
-    }
-    ast_state = expanded_ast;
+    let component_templates: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     debug!("Generated AST:");
     for stmt in &ast_state {
@@ -474,76 +352,6 @@ fn main() {
         debug!("[jit-map] mapped concat -> {:p}", concat as *const ());
     }
 
-    // ViewKit の C shim
-    if let Some(fn_val) = module.get_function("kome_viewkit_app_create") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_app_create as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_app_destroy") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_app_destroy as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_window_create") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_window_create as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_register_component") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_register_component as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_update_ui_tree") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_update_ui_tree as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_app_run") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_app_run as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_app_run_async") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_app_run_async as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_set_key_tap_callback_raw") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(
-            &gv,
-            kome_viewkit_set_key_tap_callback_raw as *const () as usize,
-        );
-    }
-    if let Some(fn_val) = module.get_function("kome_viewkit_async_is_running") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, kome_viewkit_async_is_running as *const () as usize);
-    }
-
-    // ViewKit components の C ヘルパ
-    if let Some(fn_val) = module.get_function("__kome_viewkit_json_text") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_viewkit_json_text as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("__kome_viewkit_json_component") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(
-            &gv,
-            __kome_viewkit_json_component as *const () as usize,
-        );
-    }
-    if let Some(fn_val) = module.get_function("__kome_viewkit_json_children") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_viewkit_json_children as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("__kome_i32_to_string") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_i32_to_string as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("__kome_bool_to_string") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_bool_to_string as *const () as usize);
-    }
-    if let Some(fn_val) = module.get_function("__kome_record_field") {
-        let gv = fn_val.as_global_value();
-        execution_engine.add_global_mapping(&gv, __kome_record_field as *const () as usize);
-    }
-
     unsafe {
         if let Ok(entry_fn) =
             execution_engine.get_function::<unsafe extern "C" fn() -> i32>("__kome_entry")
@@ -588,14 +396,7 @@ fn main() {
         }
     }
 
-    // ViewKit の run_loop を別スレッドで動かしている場合は、
-    // このプロセスが終了するとウィンドウも即終了してしまうので待機する。
     unsafe {
-        if kome_viewkit_async_is_running() != 0 {
-            loop {
-                libc::sleep(1);
-            }
-        }
         libc::fflush(std::ptr::null_mut());
         libc::_exit(0);
     }
