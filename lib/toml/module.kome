@@ -1,0 +1,6 @@
+cinclude "../../std/toml.h"
+cinclude "../../std/objects.h"
+
+fn parse(text: String) -> Ptr {
+    __kome_toml_parse(text)
+}

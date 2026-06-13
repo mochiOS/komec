@@ -1,5 +1,0 @@
-fn noImage() -> String {
-    // TODO: アイコン画像をプロジェクトに含めて、そこから読み込むようにする
-    "/tmp/viewkit_no_image.png"
-}
-

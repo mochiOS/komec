@@ -1,0 +1,11 @@
+cinclude "../string/concat.h"
+cinclude "fs.h"
+cinclude "../objects.h"
+
+fn list(path: String) -> Ptr {
+    __kome_fs_list(path)
+}
+
+fn read(path: String) -> String {
+    __kome_fs_read(path)
+}

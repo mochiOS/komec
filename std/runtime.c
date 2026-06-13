@@ -12,6 +12,7 @@ typedef struct Sub {
 } Sub;
 
 static Sub *subscriptions = NULL;
+static void *runtime_app = NULL;
 
 /// ランタイムにコールバックを保存する
 ///
@@ -69,4 +70,12 @@ void __kome_runtime_emit(const char *name) {
 /// そのためここは互換のための no-op として残す。
 void __kome_runtime_process_events(void) {
     (void)0;
+}
+
+void __kome_runtime_set_app(void *app) {
+    runtime_app = app;
+}
+
+void* __kome_runtime_get_app(void) {
+    return runtime_app;
 }

@@ -50,9 +50,10 @@ param = { ident ~ ":" ~ type_spec ~ ellipsis? }
 // 型の定義（識別子、または path を許可）
 // `T?` の Optional を許可する
 type_spec = { (path | ident) ~ "?"? }
+
 // 変数宣言
 declaration = {
-    visibility? ~ state_kw? ~ "let" ~ "mut"? ~ ident ~ "=" ~ expr ~ range_limit?
+    visibility? ~ state_kw? ~ "let" ~ "mut"? ~ ident ~ (":" ~ type_spec)? ~ "=" ~ expr ~ range_limit?
 }
 state_kw = { "state" }
 range_limit = { "within" ~ expr ~ "~" ~ expr ~ cycle_kw? }
@@ -63,6 +64,7 @@ expr = { term ~ (infix_op ~ term)* }
 term = {
     if_expr
     | constant
+    | record
     | call_chain
     | "(" ~ expr ~ ")"
 }
@@ -71,16 +73,23 @@ term = {
 if_expr = { "if" ~ expr ~ block ~ "else" ~ block }
 
 // メソッドチェーン viewKit.window.create().with(...)
-call_chain = { (ident | path) ~ (child_access | method_call | property_closure_call | property_access)* }
+call_chain = { (ident | path) ~ (child_access | method_call | property_closure_call | property_access | index_access)* }
+
 // 呼び出し引数は通常 `expr` のカンマ区切りだが、
 // `children( is ... => ... )` のような「改行区切り」の is 群も許可する。
 // さらに `children(base, is ... => ...)` のような混在も許可する（components.children 用）
-method_call = { "(" ~ (call_arg ~ (","? ~ call_arg)*)? ~ ")" ~ block? }
-call_arg = { is_stmt | expr }
+method_call = { "(" ~ (call_arg ~ (","? ~ call_arg)*)? ~ ")" ~ closure_block? }
+call_arg = { named_arg | is_stmt | expr }
+named_arg = { ident ~ ":" ~ expr }
+
 // `.onClick { ... }` のように、引数なし + ブロックだけの呼び出しを許可する
-property_closure_call = { "." ~ ident ~ block }
+property_closure_call = { "." ~ ident ~ closure_block }
 property_access = { "." ~ ident }
+index_access = { "[" ~ expr ~ "]" }
 child_access = { "with" ~ ident ~ "(" ~ (kv_pair ~ ("," ~ kv_pair)* ~ ","?)? ~ ")" }
+closure_block = { "{" ~ closure_params? ~ stmt* ~ "}" }
+closure_params = { "as" ~ ident ~ ("," ~ ident)* ~ ":" }
+record = { "{" ~ (kv_pair ~ ("," ~ kv_pair)* ~ ","?)? ~ "}" }
 
 // 演算子
 infix_op = _{ add | sub | mul | div | pipe | question | in_op | or | and | eq | neq | lt | gt | le | ge | with_op }

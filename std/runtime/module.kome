@@ -1,0 +1,10 @@
+cinclude "runtime.h"
+
+fn set_app(app: Ptr) {
+    __kome_runtime_set_app(app)
+}
+
+fn get_app() -> Ptr {
+    __kome_runtime_get_app()
+}
+

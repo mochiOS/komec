@@ -26,6 +26,7 @@ pub enum Stmt {
         is_state: bool,
         is_mut: bool,
         name: String,
+        ty: Option<String>,
         value: Expr,
         range: Option<RangeLimit>,
     },
@@ -132,6 +133,7 @@ pub enum Expr {
         head: String,
         tails: Vec<Accessor>,
     },
+    Record(Vec<(String, Expr)>),
     Block(Vec<Stmt>),
     IsExpr {
         value: Box<Expr>,
@@ -144,7 +146,23 @@ pub enum Expr {
 #[allow(unused)]
 pub enum Accessor {
     Property(String),
-    Method(Vec<Expr>, Option<Vec<Stmt>>), // Option<Vec<Stmt>>はトレイリングクロージャ
+    Index(Expr),
+    Method(Vec<CallArg>, Option<ClosureBlock>), // Option<ClosureBlock> はトレイリングクロージャ
+    With(String, Vec<(String, Expr)>),
+}
+
+#[derive(Debug, Clone)]
+#[allow(unused)]
+pub enum CallArg {
+    Positional(Expr),
+    Named(String, Expr),
+}
+
+#[derive(Debug, Clone)]
+#[allow(unused)]
+pub struct ClosureBlock {
+    pub params: Vec<String>,
+    pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +212,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             let mut inner = pair.into_inner();
             let mut is_state = false;
             let mut is_mut = false;
+            let mut ty = None;
 
             let mut next = inner.next().unwrap();
 
@@ -219,7 +238,13 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             }
 
             let name = current.as_str().to_string();
-            let value = parse_expr(inner.next().unwrap());
+            let next_after_name = inner.next().unwrap();
+            let value = if next_after_name.as_rule() == Rule::type_spec {
+                ty = Some(next_after_name.as_str().to_string());
+                parse_expr(inner.next().unwrap())
+            } else {
+                parse_expr(next_after_name)
+            };
             let range = inner.next().map(|p| parse_range_limit(p));
 
             Stmt::Declaration {
@@ -227,6 +252,7 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
                 is_state,
                 is_mut,
                 name,
+                ty,
                 value,
                 range,
             }
@@ -246,6 +272,22 @@ pub(crate) fn parse_stmt(pair: Pair<Rule>) -> Stmt {
             // `string` rule yields inner_str
             let inner = s.into_inner().next().unwrap().as_str().to_string();
             Stmt::CInclude(inner)
+        }
+        Rule::decorator => {
+            let mut inner = pair.into_inner();
+            let name = inner.next().unwrap().as_str().to_string();
+            let target = inner.next().unwrap().as_str().to_string();
+            let mut pairs = Vec::new();
+            for p in inner {
+                if p.as_rule() != Rule::kv_pair {
+                    continue;
+                }
+                let mut kv = p.into_inner();
+                let key = kv.next().unwrap().as_str().to_string();
+                let value = parse_expr(kv.next().unwrap());
+                pairs.push((key, value));
+            }
+            Stmt::Decorator { name, target, pairs }
         }
         Rule::enum_stmt => {
             let mut inner = pair.into_inner();
@@ -797,11 +839,24 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
 
             let mut tails = Vec::new();
             for accessor_pair in inner {
-                let target_pair = if accessor_pair.as_rule() == Rule::child_access {
-                    accessor_pair.into_inner().next().unwrap()
-                } else {
-                    accessor_pair
-                };
+                if accessor_pair.as_rule() == Rule::child_access {
+                    let mut w = accessor_pair.into_inner();
+                    let name = w.next().unwrap().as_str().to_string();
+                    let mut pairs = Vec::new();
+                    for p in w {
+                        if p.as_rule() != Rule::kv_pair {
+                            continue;
+                        }
+                        let mut kv = p.into_inner();
+                        let key = kv.next().unwrap().as_str().to_string();
+                        let value = parse_expr(kv.next().unwrap());
+                        pairs.push((key, value));
+                    }
+                    tails.push(Accessor::With(name, pairs));
+                    continue;
+                }
+
+                let target_pair = accessor_pair;
 
                 match target_pair.as_rule() {
                     Rule::property_access => {
@@ -813,6 +868,10 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                             .to_string();
                         tails.push(Accessor::Property(prop_name));
                     }
+                    Rule::index_access => {
+                        let idx_expr = target_pair.into_inner().next().unwrap();
+                        tails.push(Accessor::Index(parse_expr(idx_expr)));
+                    }
                     Rule::method_call => {
                         let inner_method = target_pair.into_inner();
                         let mut args = Vec::new();
@@ -823,8 +882,14 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                                 Rule::call_arg => {
                                     let inner = sub_item.into_inner().next().unwrap();
                                     match inner.as_rule() {
+                                        Rule::named_arg => {
+                                            let mut named = inner.into_inner();
+                                            let key = named.next().unwrap().as_str().to_string();
+                                            let value = parse_expr(named.next().unwrap());
+                                            args.push(CallArg::Named(key, value));
+                                        }
                                         Rule::expr => {
-                                            args.push(parse_expr(inner));
+                                            args.push(CallArg::Positional(parse_expr(inner)));
                                         }
                                         Rule::is_stmt => {
                                             let is_stmt = parse_stmt(inner);
@@ -840,53 +905,55 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                                                     panic!("is 引数は式にしてください: {:?}", other);
                                                 }
                                             };
-                                            args.push(Expr::IsExpr {
+                                            args.push(CallArg::Positional(Expr::IsExpr {
                                                 value: Box::new(value),
                                                 pat,
                                                 then_expr: Box::new(then_expr),
-                                            });
+                                            }));
                                         }
                                         _ => unreachable!("call_arg inner should be expr or is_stmt"),
                                     }
                                 }
-                                Rule::expr => {
-                                    args.push(parse_expr(sub_item));
-                                }
-                                Rule::is_stmt => {
-                                    let is_stmt = parse_stmt(sub_item);
-                                    let Stmt::Is { value, pat, body } = is_stmt else {
-                                        unreachable!("is_stmt should parse into Stmt::Is");
-                                    };
-                                    // is 式として扱う（then は式のみ対応）
-                                    let then_expr = match *body {
-                                        Stmt::ExprStmt(e) => e,
-                                        Stmt::Block(stmts) => Expr::Block(stmts),
-                                        other => {
-                                            // 仕様を単純化: ここは式だけ許可
-                                            panic!("is 引数は式にしてください: {:?}", other);
+                                Rule::closure_block => {
+                                    let mut closure_inner = sub_item.into_inner();
+                                    let mut params = Vec::new();
+                                    let first = closure_inner.next();
+                                    let mut first_stmt_pair = None;
+                                    if let Some(first_pair) = first {
+                                        if first_pair.as_rule() == Rule::closure_params {
+                                            for p in first_pair.into_inner() {
+                                                if p.as_rule() == Rule::ident {
+                                                    params.push(p.as_str().to_string());
+                                                }
+                                            }
+                                            first_stmt_pair = closure_inner.next();
+                                        } else if first_pair.as_rule() == Rule::stmt {
+                                            first_stmt_pair = Some(first_pair);
                                         }
-                                    };
-                                    args.push(Expr::IsExpr {
-                                        value: Box::new(value),
-                                        pat,
-                                        then_expr: Box::new(then_expr),
-                                    });
-                                }
-                                Rule::block => {
-                                    // 後ろにくっついているブロック `{ ... }` を解析
+                                    }
+
                                     let mut block_stmts = Vec::new();
-                                    for stmt_pair in sub_item.into_inner() {
+                                    if let Some(stmt_pair) = first_stmt_pair {
+                                        block_stmts.push(parse_stmt(stmt_pair));
+                                    }
+                                    for stmt_pair in closure_inner {
                                         if stmt_pair.as_rule() == Rule::stmt {
                                             block_stmts.push(parse_stmt(stmt_pair));
                                         }
                                     }
-                                    trailing_closure = Some(block_stmts);
+                                    trailing_closure = Some(ClosureBlock {
+                                        params,
+                                        body: normalize_block_statements(block_stmts),
+                                    });
                                 }
                                 _ => {}
                             }
                         }
 
-                        tails.push(Accessor::Method(args, trailing_closure));
+                        tails.push(Accessor::Method(
+                            normalize_call_args(args),
+                            trailing_closure,
+                        ));
                     }
                     Rule::property_closure_call => {
                         // `.name { ... }` を `Property(name)` + `Method([], block)` に展開する
@@ -897,14 +964,38 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
                             .as_str()
                             .to_string();
                         let block = inner.next().expect("property_closure_call block");
+                        let mut closure_inner = block.into_inner();
+                        let mut params = Vec::new();
+                        let mut first_stmt_pair = None;
+                        if let Some(first_pair) = closure_inner.next() {
+                            if first_pair.as_rule() == Rule::closure_params {
+                                for p in first_pair.into_inner() {
+                                    if p.as_rule() == Rule::ident {
+                                        params.push(p.as_str().to_string());
+                                    }
+                                }
+                                first_stmt_pair = closure_inner.next();
+                            } else if first_pair.as_rule() == Rule::stmt {
+                                first_stmt_pair = Some(first_pair);
+                            }
+                        }
                         let mut block_stmts = Vec::new();
-                        for stmt_pair in block.into_inner() {
+                        if let Some(stmt_pair) = first_stmt_pair {
+                            block_stmts.push(parse_stmt(stmt_pair));
+                        }
+                        for stmt_pair in closure_inner {
                             if stmt_pair.as_rule() == Rule::stmt {
                                 block_stmts.push(parse_stmt(stmt_pair));
                             }
                         }
                         tails.push(Accessor::Property(name));
-                        tails.push(Accessor::Method(Vec::new(), Some(block_stmts)));
+                        tails.push(Accessor::Method(
+                            Vec::new(),
+                            Some(ClosureBlock {
+                                params,
+                                body: normalize_block_statements(block_stmts),
+                            }),
+                        ));
                     }
                     _ => {}
                 }
@@ -915,6 +1006,19 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
             } else {
                 Expr::CallChain { head, tails }
             }
+        }
+        Rule::record => {
+            let mut fields = Vec::new();
+            for field in pair.into_inner() {
+                if field.as_rule() != Rule::kv_pair {
+                    continue;
+                }
+                let mut kv = field.into_inner();
+                let key = kv.next().unwrap().as_str().to_string();
+                let value = parse_expr(kv.next().unwrap());
+                fields.push((key, value));
+            }
+            Expr::Record(fields)
         }
         Rule::block => {
             let mut body = Vec::new();
@@ -954,6 +1058,147 @@ pub fn parse_expr(pair: Pair<Rule>) -> Expr {
             panic!("parse_expr: Undefined rule: {:?}", pair.as_rule());
         }
     }
+}
+
+fn normalize_block_statements(stmts: Vec<Stmt>) -> Vec<Stmt> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < stmts.len() {
+        if i + 2 < stmts.len() {
+            if let Stmt::Declaration {
+                is_public,
+                is_state,
+                is_mut,
+                name,
+                ty,
+                value,
+                range,
+            } = &stmts[i]
+            {
+                let op_name = match &stmts[i + 1] {
+                    Stmt::ExprStmt(Expr::Ident(name)) => name.as_str(),
+                    _ => "",
+                };
+                let op = match op_name {
+                    "and" | "&&" => Some(Op::And),
+                    "or" | "||" => Some(Op::Or),
+                    "??" => Some(Op::Question),
+                    "in" => Some(Op::In),
+                    "with" => Some(Op::With),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    if let Stmt::ExprStmt(rhs) = &stmts[i + 2] {
+                        out.push(Stmt::Declaration {
+                            is_public: *is_public,
+                            is_state: *is_state,
+                            is_mut: *is_mut,
+                            name: name.clone(),
+                            ty: ty.clone(),
+                            value: Expr::BinaryOp {
+                                left: Box::new(value.clone()),
+                                op,
+                                right: Box::new(rhs.clone()),
+                            },
+                            range: range.clone(),
+                        });
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if i + 2 < stmts.len() {
+            let lhs = match &stmts[i] {
+                Stmt::ExprStmt(expr) => expr.clone(),
+                _ => {
+                    out.push(stmts[i].clone());
+                    i += 1;
+                    continue;
+                }
+            };
+            let op_name = match &stmts[i + 1] {
+                Stmt::ExprStmt(Expr::Ident(name)) => name.as_str(),
+                _ => {
+                    out.push(stmts[i].clone());
+                    i += 1;
+                    continue;
+                }
+            };
+            let op = match op_name {
+                "and" | "&&" => Some(Op::And),
+                "or" | "||" => Some(Op::Or),
+                "??" => Some(Op::Question),
+                "in" => Some(Op::In),
+                "with" => Some(Op::With),
+                _ => None,
+            };
+            if let Some(op) = op {
+                if let Stmt::ExprStmt(rhs) = &stmts[i + 2] {
+                    out.push(Stmt::ExprStmt(Expr::BinaryOp {
+                        left: Box::new(lhs),
+                        op,
+                        right: Box::new(rhs.clone()),
+                    }));
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
+        out.push(stmts[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn normalize_call_args(args: Vec<CallArg>) -> Vec<CallArg> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if i + 2 < args.len() {
+            let lhs = match &args[i] {
+                CallArg::Positional(expr) => expr.clone(),
+                _ => {
+                    out.push(args[i].clone());
+                    i += 1;
+                    continue;
+                }
+            };
+            let op_name = match &args[i + 1] {
+                CallArg::Positional(Expr::Ident(name)) => name.as_str(),
+                _ => {
+                    out.push(args[i].clone());
+                    i += 1;
+                    continue;
+                }
+            };
+            let op = match op_name {
+                "and" | "&&" => Some(Op::And),
+                "or" | "||" => Some(Op::Or),
+                "??" => Some(Op::Question),
+                "in" => Some(Op::In),
+                "with" => Some(Op::With),
+                _ => None,
+            };
+            if let Some(op) = op {
+                if let CallArg::Positional(rhs) = &args[i + 2] {
+                    out.push(CallArg::Positional(Expr::BinaryOp {
+                        left: Box::new(lhs),
+                        op,
+                        right: Box::new(rhs.clone()),
+                    }));
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
 }
 
 /// 変数の有効範囲を制限する構文を解析して `RangeLimit` 構造体へ変換する

@@ -16,3 +16,6 @@ char *__kome_str_concat(const char *a, const char *b) {
     return out;
 }
 
+char *concat(const char *a, const char *b) {
+    return __kome_str_concat(a, b);
+}

@@ -48,6 +48,7 @@ impl LibraryManager {
 
         let void_t = context.void_type();
         let i32_t = context.i32_type();
+        let i1_t = context.bool_type();
         let ptr_t = context.ptr_type(inkwell::AddressSpace::from(0));
 
         // allowlist 用に「ヘッダ内で見つけた関数名」を返す。
@@ -108,6 +109,8 @@ impl LibraryManager {
 
             let ret_kind = if ret_norm == "void" {
                 None
+            } else if ret_norm == "bool" || ret_norm == "_Bool" {
+                Some(i1_t.as_basic_type_enum())
             } else if ret_norm == "int" || ret_norm.ends_with(" int") || ret_norm.ends_with("int") {
                 Some(i32_t.as_basic_type_enum())
             } else {
@@ -127,6 +130,8 @@ impl LibraryManager {
                     // Parse type only; ignore parameter name.
                     let arg_type = if arg.contains('*') {
                         ptr_t.as_basic_type_enum()
+                    } else if arg.starts_with("bool") || arg.starts_with("_Bool") {
+                        i1_t.as_basic_type_enum()
                     } else if arg.starts_with("int") {
                         i32_t.as_basic_type_enum()
                     } else if arg.starts_with("void") {
@@ -180,12 +185,26 @@ impl LibraryManager {
         context: &'a inkwell::context::Context,
         module: &Module<'a>,
     ) -> Option<Vec<String>> {
+        eprintln!("LibraryManager: load_c_header_collect called with: {}", header_name);
+        
         let header_path = if header_name.ends_with(".h") {
             header_name.to_string()
         } else {
             let parts: Vec<&str> = header_name.split('.').collect();
-            let actual_name = if parts.len() == 2 && parts[0] == "libc" {
-                parts[1]
+            eprintln!("LibraryManager: DEBUG - parts: {:?}", parts);
+            
+            let (base_name, subpath) = if parts.len() == 2 && parts[0] == "libc" {
+                (parts[1].to_string(), String::new())
+            } else if parts.len() >= 2 && parts[0] == "std" {
+                // "std.runtime" -> base="runtime", subpath=""
+                // "std.foo.bar" -> base="foo", subpath="bar"
+                let base = parts[1].to_string();
+                let sub = if parts.len() > 2 {
+                    format!("/{}", parts[2..].join("/"))
+                } else {
+                    String::new()
+                };
+                (base, sub)
             } else {
                 eprintln!(
                     "LibraryManager: Invalid header name format: {}",
@@ -194,62 +213,85 @@ impl LibraryManager {
                 return None;
             };
 
-            // まずシステムヘッダを探す
-            let system_path = format!("/usr/include/{}.h", actual_name);
-            if Path::new(&system_path).exists() {
-                system_path
+            eprintln!("LibraryManager: DEBUG - base_name: {}, subpath: {}", base_name, subpath);
+            
+            // Check direct path first (e.g., "std.runtime" -> "./std/runtime.h")
+            let std_root =
+                std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
+            let direct_path_in_std = if subpath.is_empty() {
+                Path::new(&std_root)
+                    .join("std")
+                    .join(format!("{}.h", base_name))
             } else {
-                let local_path = format!("./{}.h", actual_name);
-                if Path::new(&local_path).exists() {
-                    local_path
+                Path::new(&std_root)
+                    .join("std")
+                    .join(format!("{}{}.h", base_name, subpath))
+            };
+            
+            eprintln!("LibraryManager: DEBUG - Checking direct path: {:?}", direct_path_in_std);
+            eprintln!("LibraryManager: DEBUG - Exists: {}", direct_path_in_std.exists());
+            
+            if direct_path_in_std.exists() {
+                eprintln!("LibraryManager: DEBUG - Found at direct path");
+                direct_path_in_std.to_string_lossy().into_owned()
+            } else {
+                // Try system include first
+                let system_path = format!("/usr/include/{}.h", base_name);
+                if Path::new(&system_path).exists() {
+                    system_path
                 } else {
-                    let std_root =
-                        std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
-                    let std_base = Path::new(&std_root).join("std");
+                    // Try local path
+                    let local_path = format!("./{}.h", base_name);
+                    if Path::new(&local_path).exists() {
+                        local_path
+                    } else {
+                        // Search recursively in std directory
+                        let std_base = Path::new(&std_root).join("std");
 
-                    // 再帰探索ヘルパー
-                    fn find_in_dir(dir: &Path, target: &str) -> Option<std::path::PathBuf> {
-                        let entries = match std::fs::read_dir(dir) {
-                            Ok(e) => e,
-                            Err(_) => return None,
-                        };
-                        for entry in entries.filter_map(Result::ok) {
-                            let p = entry.path();
-                            if p.is_file() {
-                                if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                                    if fname == target {
-                                        return Some(p);
+                        // 再帰探索ヘルパー
+                        fn find_in_dir(dir: &Path, target: &str) -> Option<std::path::PathBuf> {
+                            let entries = match std::fs::read_dir(dir) {
+                                Ok(e) => e,
+                                Err(_) => return None,
+                            };
+                            for entry in entries.filter_map(Result::ok) {
+                                let p = entry.path();
+                                if p.is_file() {
+                                    if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                                        if fname == target {
+                                            return Some(p);
+                                        }
+                                    }
+                                } else if p.is_dir() {
+                                    if let Some(found) = find_in_dir(&p, target) {
+                                        return Some(found);
                                     }
                                 }
-                            } else if p.is_dir() {
-                                if let Some(found) = find_in_dir(&p, target) {
-                                    return Some(found);
-                                }
                             }
+                            None
                         }
-                        None
-                    }
 
-                    let target_name = format!("{}.h", actual_name);
-                    let found = if std_base.exists() {
-                        find_in_dir(&std_base, &target_name)
-                    } else {
-                        None
-                    };
-
-                    if let Some(p) = found {
-                        p.to_string_lossy().into_owned()
-                    } else {
-                        // std_root 直下も最後にチェック
-                        let alt = Path::new(&std_root).join(&target_name);
-                        if alt.exists() {
-                            alt.to_string_lossy().into_owned()
+                        let target_name = format!("{}.h", base_name);
+                        let found = if std_base.exists() {
+                            find_in_dir(&std_base, &target_name)
                         } else {
-                            eprintln!(
-                                "LibraryManager: Header not found in system, local or std (recursively): {}.h",
-                                actual_name
-                            );
-                            return None;
+                            None
+                        };
+
+                        if let Some(p) = found {
+                            p.to_string_lossy().into_owned()
+                        } else {
+                            // std_root 直下も最後にチェック
+                            let alt = Path::new(&std_root).join(&target_name);
+                            if alt.exists() {
+                                alt.to_string_lossy().into_owned()
+                            } else {
+                                eprintln!(
+                                    "LibraryManager: Header not found in system, local or std (recursively): {}.h",
+                                    base_name
+                                );
+                                return None;
+                            }
                         }
                     }
                 }
@@ -257,6 +299,25 @@ impl LibraryManager {
         };
 
         if !Path::new(&header_path).exists() {
+            // Try to find the file in alternative locations
+            // If looking for /path/to/dir/module/module.h, try /path/to/dir/module.h instead
+            if header_path.ends_with("/module.h") {
+                let alt_path = header_path.trim_end_matches("/module.h").trim_end_matches("/module").to_string() + ".h";
+                if Path::new(&alt_path).exists() {
+                    eprintln!("LibraryManager: DEBUG - Found alternative path: {}", alt_path);
+                    return self.load_c_header_collect(&alt_path, context, module);
+                }
+            }
+            
+            // If looking for /path/runtime/runtime.h, try /path/runtime.h instead
+            if header_path.contains("//") || (header_path.ends_with("/runtime.h") && header_path.contains("/runtime/")) {
+                let alt_path = header_path.replace("/runtime/runtime.h", "/runtime.h");
+                if Path::new(&alt_path).exists() {
+                    eprintln!("LibraryManager: DEBUG - Found alternative path: {}", alt_path);
+                    return self.load_c_header_collect(&alt_path, context, module);
+                }
+            }
+            
             eprintln!(
                 "LibraryManager: Header file not found on disk: {}",
                 header_path
@@ -303,6 +364,7 @@ impl LibraryManager {
                         for arg in argument_types {
                             match arg.get_kind() {
                                 TypeKind::Int => llvm_args.push(context.i32_type().into()),
+                                TypeKind::Bool => llvm_args.push(context.bool_type().into()),
                                 TypeKind::Pointer => {
                                     let ptr = context.ptr_type(inkwell::AddressSpace::from(0));
                                     llvm_args.push(ptr.into());
@@ -319,6 +381,7 @@ impl LibraryManager {
                         let fn_type = match result_type.get_kind() {
                             TypeKind::Void => context.void_type().fn_type(&llvm_args, is_variadic),
                             TypeKind::Int => context.i32_type().fn_type(&llvm_args, is_variadic),
+                            TypeKind::Bool => context.bool_type().fn_type(&llvm_args, is_variadic),
                             TypeKind::Pointer => {
                                 let ptr = context.ptr_type(inkwell::AddressSpace::from(0));
                                 ptr.fn_type(&llvm_args, is_variadic)

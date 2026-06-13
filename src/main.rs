@@ -3,6 +3,7 @@ use crate::library::LibraryManager;
 use env_logger;
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
+use inkwell::targets::{InitializationConfig, Target};
 use std::os::raw::c_void;
 use log::*;
 use pest::Parser;
@@ -19,16 +20,36 @@ use viewkit as _;
 // directly (without dlsym). These symbols are provided by the C sources
 // compiled into the crate by build.rs.
 unsafe extern "C" {
+    unsafe fn LLVMAddSymbol(symbolName: *const std::os::raw::c_char, symbolValue: *mut c_void);
     unsafe fn __kome_runtime_start_loop();
     unsafe fn __kome_runtime_subscribe(name: *const std::os::raw::c_char, cb: *mut c_void);
     unsafe fn __kome_runtime_process_events();
     unsafe fn __kome_runtime_emit(name: *const std::os::raw::c_char);
+    unsafe fn __kome_runtime_set_app(app: *mut c_void);
+    unsafe fn __kome_runtime_get_app() -> *mut c_void;
     unsafe fn __kome_printf_i32v(fmt: *const std::os::raw::c_char, data: *const i32, len: i32) -> i32;
+    unsafe fn __kome_fs_list(path: *const std::os::raw::c_char) -> *mut c_void;
+    unsafe fn __kome_fs_read(path: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_process_exec(command: *const std::os::raw::c_char) -> i32;
+    unsafe fn __kome_process_exit(code: i32);
+    unsafe fn __kome_toml_parse(text: *const std::os::raw::c_char) -> *mut c_void;
+    unsafe fn __kome_value_map(list_ptr: *mut c_void, closure_ptr: *mut c_void) -> *mut c_void;
+    unsafe fn __kome_value_filter(list_ptr: *mut c_void, closure_ptr: *mut c_void) -> *mut c_void;
+    unsafe fn __kome_value_len(list_ptr: *mut c_void) -> i32;
+    unsafe fn __kome_value_index(list_ptr: *mut c_void, index: i32) -> *mut c_void;
+    unsafe fn __kome_value_name(path_ptr: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_value_isDir(path_ptr: *const std::os::raw::c_char) -> bool;
+    unsafe fn __kome_value_hasSuffix(value_ptr: *const std::os::raw::c_char, suffix_ptr: *const std::os::raw::c_char) -> bool;
+    unsafe fn __kome_value_trimSuffix(value_ptr: *const std::os::raw::c_char, suffix_ptr: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_value_entry(toml_ptr: *mut c_void) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_value_icon(toml_ptr: *mut c_void) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_value_image(base_ptr: *const std::os::raw::c_char, ...) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_value_selected(base_ptr: *const std::os::raw::c_char, ...) -> *mut std::os::raw::c_char;
     unsafe fn __kome_std_keyboard_onPress(any: *mut c_void, closure: *mut c_void);
     unsafe fn __kome_std_keyboard_scan(any: *mut c_void, closure: *mut c_void);
     unsafe fn __kome_str_concat(a: *const std::os::raw::c_char, b: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
+    unsafe fn concat(a: *const std::os::raw::c_char, b: *const std::os::raw::c_char) -> *mut std::os::raw::c_char;
 
-    // ViewKit の C shim（lib/viewKit/viewkit_shim.c）
     unsafe fn kome_viewkit_app_create() -> *mut c_void;
     unsafe fn kome_viewkit_app_destroy(app_ptr: *mut c_void);
     unsafe fn kome_viewkit_window_create(
@@ -64,6 +85,68 @@ unsafe extern "C" {
         children: *const *const std::os::raw::c_char,
         len: i32,
     ) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_i32_to_string(value: i32) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_bool_to_string(value: bool) -> *mut std::os::raw::c_char;
+    unsafe fn __kome_record_field(
+        record_ptr: *const std::os::raw::c_char,
+        key_ptr: *const std::os::raw::c_char,
+    ) -> *mut std::os::raw::c_char;
+}
+
+unsafe fn register_llvm_symbol(name: &str, ptr: *const ()) {
+    let c_name = CString::new(name).unwrap();
+    let leaked_name = c_name.into_raw();
+    unsafe {
+        LLVMAddSymbol(leaked_name, ptr as *mut c_void);
+    }
+}
+
+unsafe fn register_builtin_symbols() {
+    unsafe {
+        register_llvm_symbol("__kome_runtime_start_loop", __kome_runtime_start_loop as *const ());
+        register_llvm_symbol("__kome_runtime_subscribe", __kome_runtime_subscribe as *const ());
+        register_llvm_symbol("__kome_runtime_process_events", __kome_runtime_process_events as *const ());
+        register_llvm_symbol("__kome_runtime_emit", __kome_runtime_emit as *const ());
+        register_llvm_symbol("__kome_runtime_set_app", __kome_runtime_set_app as *const ());
+        register_llvm_symbol("__kome_runtime_get_app", __kome_runtime_get_app as *const ());
+        register_llvm_symbol("__kome_printf_i32v", __kome_printf_i32v as *const ());
+        register_llvm_symbol("__kome_fs_list", __kome_fs_list as *const ());
+        register_llvm_symbol("__kome_fs_read", __kome_fs_read as *const ());
+        register_llvm_symbol("__kome_process_exec", __kome_process_exec as *const ());
+        register_llvm_symbol("__kome_process_exit", __kome_process_exit as *const ());
+        register_llvm_symbol("__kome_toml_parse", __kome_toml_parse as *const ());
+        register_llvm_symbol("__kome_value_map", __kome_value_map as *const ());
+        register_llvm_symbol("__kome_value_filter", __kome_value_filter as *const ());
+        register_llvm_symbol("__kome_value_len", __kome_value_len as *const ());
+        register_llvm_symbol("__kome_value_index", __kome_value_index as *const ());
+        register_llvm_symbol("__kome_value_name", __kome_value_name as *const ());
+        register_llvm_symbol("__kome_value_isDir", __kome_value_isDir as *const ());
+        register_llvm_symbol("__kome_value_hasSuffix", __kome_value_hasSuffix as *const ());
+        register_llvm_symbol("__kome_value_trimSuffix", __kome_value_trimSuffix as *const ());
+        register_llvm_symbol("__kome_value_entry", __kome_value_entry as *const ());
+        register_llvm_symbol("__kome_value_icon", __kome_value_icon as *const ());
+        register_llvm_symbol("__kome_value_image", __kome_value_image as *const ());
+        register_llvm_symbol("__kome_value_selected", __kome_value_selected as *const ());
+        register_llvm_symbol("__kome_std_keyboard_onPress", __kome_std_keyboard_onPress as *const ());
+        register_llvm_symbol("__kome_std_keyboard_scan", __kome_std_keyboard_scan as *const ());
+        register_llvm_symbol("__kome_str_concat", __kome_str_concat as *const ());
+        register_llvm_symbol("concat", concat as *const ());
+        register_llvm_symbol("kome_viewkit_app_create", kome_viewkit_app_create as *const ());
+        register_llvm_symbol("kome_viewkit_app_destroy", kome_viewkit_app_destroy as *const ());
+        register_llvm_symbol("kome_viewkit_window_create", kome_viewkit_window_create as *const ());
+        register_llvm_symbol("kome_viewkit_register_component", kome_viewkit_register_component as *const ());
+        register_llvm_symbol("kome_viewkit_update_ui_tree", kome_viewkit_update_ui_tree as *const ());
+        register_llvm_symbol("kome_viewkit_app_run", kome_viewkit_app_run as *const ());
+        register_llvm_symbol("kome_viewkit_app_run_async", kome_viewkit_app_run_async as *const ());
+        register_llvm_symbol("kome_viewkit_set_key_tap_callback_raw", kome_viewkit_set_key_tap_callback_raw as *const ());
+        register_llvm_symbol("kome_viewkit_async_is_running", kome_viewkit_async_is_running as *const ());
+        register_llvm_symbol("__kome_viewkit_json_text", __kome_viewkit_json_text as *const ());
+        register_llvm_symbol("__kome_viewkit_json_component", __kome_viewkit_json_component as *const ());
+        register_llvm_symbol("__kome_viewkit_json_children", __kome_viewkit_json_children as *const ());
+        register_llvm_symbol("__kome_i32_to_string", __kome_i32_to_string as *const ());
+        register_llvm_symbol("__kome_bool_to_string", __kome_bool_to_string as *const ());
+        register_llvm_symbol("__kome_record_field", __kome_record_field as *const ());
+    }
 }
 
 mod ast;
@@ -148,6 +231,69 @@ fn main() {
         }
     }
 
+    let source_dir = std::path::Path::new(&source_file)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut component_templates = std::collections::HashMap::new();
+    let mut expanded_ast = Vec::new();
+    for stmt in ast_state {
+        match stmt {
+            ast::Stmt::Decorator { pairs, .. } => {
+                for (component_name, path_expr) in pairs {
+                    let template_path = match path_expr {
+                        ast::Expr::String(path) => {
+                            let resolved = source_dir.join(&path);
+                            match fs::read_to_string(&resolved) {
+                                Ok(contents) => {
+                                    component_templates.insert(component_name.clone(), contents);
+                                    Some(path)
+                                }
+                                Err(_) => {
+                                    eprintln!(
+                                        "Failed to read component template: {}",
+                                        resolved.display()
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        _ => {
+                            eprintln!("Component template path must be a string: {}", component_name);
+                            None
+                        }
+                    };
+
+                    let _ = template_path;
+
+                    expanded_ast.push(ast::Stmt::FnDecl {
+                        is_public: false,
+                        name: component_name.clone(),
+                        params: vec![ast::FnParam {
+                            name: "args".to_string(),
+                            ty: "Ptr".to_string(),
+                            is_variadic: true,
+                        }],
+                        return_ty: Some("Ptr".to_string()),
+                        body: vec![ast::Stmt::ExprStmt(ast::Expr::CallChain {
+                            head: "__kome_viewkit_json_component".to_string(),
+                            tails: vec![ast::Accessor::Method(
+                                vec![
+                                    ast::CallArg::Positional(ast::Expr::String(component_name.clone())),
+                                    ast::CallArg::Positional(ast::Expr::None),
+                                    ast::CallArg::Positional(ast::Expr::Integer(0)),
+                                ],
+                                None,
+                            )],
+                        })],
+                    });
+                }
+            }
+            other => expanded_ast.push(other),
+        }
+    }
+    ast_state = expanded_ast;
+
     debug!("Generated AST:");
     for stmt in &ast_state {
         debug!("{:?}", stmt);
@@ -159,6 +305,12 @@ fn main() {
             libc::fflush(std::ptr::null_mut());
             libc::_exit(1);
         }
+    }
+
+    // JIT のターゲット初期化を先に済ませる
+    Target::initialize_native(&InitializationConfig::default()).unwrap();
+    unsafe {
+        register_builtin_symbols();
     }
 
     let context = Context::create();
@@ -178,6 +330,11 @@ fn main() {
         fn_params: std::collections::HashMap::new(),
         current_return: None,
         default_scopes: Vec::new(),
+        component_templates,
+        pending_subscriptions: Vec::new(),
+        in_bundle_prelude: false,
+        loaded_modules: std::collections::HashSet::new(),
+        loading_modules: std::collections::HashSet::new(),
     };
 
     for stmt in &ast_state {
@@ -208,7 +365,7 @@ fn main() {
             | ast::Stmt::Assignment { .. }
             | ast::Stmt::ExprStmt(..) => {
                 codegen
-                    .compile_statements(&[stmt.clone()])
+                    .compile_statements(std::slice::from_ref(stmt))
                     .expect("Failed to compile entry logic");
             }
             _ => {}
@@ -311,6 +468,11 @@ fn main() {
             __kome_str_concat as *const ()
         );
     }
+    if let Some(fn_val) = module.get_function("concat") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, concat as *const () as usize);
+        debug!("[jit-map] mapped concat -> {:p}", concat as *const ());
+    }
 
     // ViewKit の C shim
     if let Some(fn_val) = module.get_function("kome_viewkit_app_create") {
@@ -369,6 +531,18 @@ fn main() {
         let gv = fn_val.as_global_value();
         execution_engine.add_global_mapping(&gv, __kome_viewkit_json_children as *const () as usize);
     }
+    if let Some(fn_val) = module.get_function("__kome_i32_to_string") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_i32_to_string as *const () as usize);
+    }
+    if let Some(fn_val) = module.get_function("__kome_bool_to_string") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_bool_to_string as *const () as usize);
+    }
+    if let Some(fn_val) = module.get_function("__kome_record_field") {
+        let gv = fn_val.as_global_value();
+        execution_engine.add_global_mapping(&gv, __kome_record_field as *const () as usize);
+    }
 
     unsafe {
         if let Ok(entry_fn) =
@@ -382,21 +556,13 @@ fn main() {
         }
     }
 
-    // std/bundle などが生成した subscribe 登録を実行
-    // まずはランタイム関数が呼べるかの自己診断（JIT とは無関係）
-    if std::env::var("KOME_SELFTEST_SUBSCRIBE").ok().as_deref() == Some("1") {
-        let s = CString::new("selftest").unwrap();
-        unsafe {
-            __kome_runtime_subscribe(s.as_ptr(), std::ptr::null_mut());
-        }
-    }
-    unsafe {
-        if let Ok(register_fn) =
-            execution_engine.get_function::<unsafe extern "C" fn()>("__kome_register")
-        {
-            debug!("[runtime] calling __kome_register()");
-            register_fn.call();
-            debug!("[runtime] returned from __kome_register()");
+    // レシピ購読はホスト側で確定させる
+    for (dep_var, recipe_fn_name) in &codegen.pending_subscriptions {
+        if let Ok(addr) = execution_engine.get_function_address(recipe_fn_name) {
+            let name = CString::new(dep_var.as_str()).unwrap();
+            unsafe {
+                __kome_runtime_subscribe(name.as_ptr(), addr as *mut c_void);
+            }
         }
     }
 

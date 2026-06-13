@@ -1,8 +1,5 @@
-// 文字列ユーティリティ
-
 cinclude "concat.h"
 
 fn concat(a: String, b: String) -> String {
-    __kome_str_concat(a, b)
+    concat(a, b)
 }
-

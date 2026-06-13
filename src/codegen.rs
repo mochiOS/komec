@@ -1,12 +1,14 @@
+#![allow(clippy::collapsible_if)]
+
 use crate::ast;
-use crate::ast::{Expr, Op, Stmt, parse_stmt};
+use crate::ast::{CallArg, Expr, Op, Stmt, parse_stmt};
 use crate::library::LibraryManager;
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::BasicType;
+use inkwell::types::{AnyTypeEnum, BasicType};
 use inkwell::values::{BasicValue, PointerValue, ValueKind};
 use log::debug;
 use pest::Parser;
@@ -23,7 +25,6 @@ pub(crate) struct DefaultScope<'ctx> {
     /// 通常代入が発生したか（制御フローを跨ぐため i1 の alloca を使う）
     assigned_flags: HashMap<String, PointerValue<'ctx>>,
 }
-
 fn resolve_module_file(root: &std::path::Path, path_parts: &[String]) -> Option<std::path::PathBuf> {
     let rel = path_parts.join("/");
     let direct = root.join(format!("{rel}.kome"));
@@ -81,6 +82,13 @@ pub struct CodegenContext<'a, 'ctx> {
     pub current_return: Option<ReturnKind>,
     /// `!default` の適用単位（関数/クロージャ）をスタックで管理
     pub(crate) default_scopes: Vec<DefaultScope<'ctx>>,
+    pub component_templates: HashMap<String, String>,
+    pub pending_subscriptions: Vec<(String, String)>,
+    pub(crate) in_bundle_prelude: bool,
+    /// すでに読み込んだモジュールを記録する
+    pub(crate) loaded_modules: HashSet<String>,
+    /// 読み込み中のモジュールを記録する
+    pub(crate) loading_modules: HashSet<String>,
 }
 
 /// 変数の情報
@@ -110,6 +118,23 @@ pub enum ReturnKind {
 }
 
 impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
+    fn module_key(kind: &str, path_parts: &[String]) -> String {
+        format!("{kind}:{}", path_parts.join("."))
+    }
+
+    fn module_import_begin(&mut self, key: &str) -> bool {
+        if self.loaded_modules.contains(key) || self.loading_modules.contains(key) {
+            return false;
+        }
+        self.loading_modules.insert(key.to_string());
+        true
+    }
+
+    fn module_import_end(&mut self, key: &str) {
+        self.loading_modules.remove(key);
+        self.loaded_modules.insert(key.to_string());
+    }
+
     fn unescape_string_literal(raw: &str) -> String {
         // 最低限のエスケープだけ扱う（ViewKit の JSON を書けるのが目的）
         let mut out = String::with_capacity(raw.len());
@@ -423,6 +448,168 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
         }
     }
 
+    fn function_name_candidates(segments: &[String]) -> Vec<String> {
+        let mut candidates = Vec::new();
+        for start in 0..segments.len() {
+            candidates.push(segments[start..].join("_"));
+        }
+        candidates
+    }
+
+    fn resolve_function_name(&self, segments: &[String]) -> Option<String> {
+        for candidate in Self::function_name_candidates(segments) {
+            if self.module.get_function(&candidate).is_some() {
+                return Some(candidate);
+            }
+        }
+
+        let candidate_names = Self::function_name_candidates(segments);
+        for candidate in candidate_names {
+            if let Some(found) = self
+                .fn_params
+                .keys()
+                .find(|name| name.as_str() == candidate || name.ends_with(&format!("_{candidate}")))
+            {
+                return Some(found.clone());
+            }
+        }
+
+        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
+            eprintln!(
+                "DEBUG: resolve_function_name failed for {:?}, known={:?}",
+                segments,
+                self.fn_params.keys().cloned().collect::<Vec<_>>()
+            );
+        }
+
+        None
+    }
+
+    fn resolve_function_name_from_head(
+        &self,
+        head: &str,
+        extra_segments: &[String],
+    ) -> Option<String> {
+        let mut segments = head
+            .split('.')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        segments.extend(extra_segments.iter().cloned());
+        self.resolve_function_name(&segments)
+    }
+
+    fn compile_call_arg_value(&mut self, arg: &CallArg) -> inkwell::values::BasicValueEnum<'ctx> {
+        match arg {
+            CallArg::Positional(expr) | CallArg::Named(_, expr) => self.compile_expr(expr),
+        }
+    }
+
+    fn build_call_arguments(
+        &mut self,
+        fn_name: &str,
+        args: &[CallArg],
+        trailing_closure: Option<&ast::ClosureBlock>,
+    ) -> Option<Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>> {
+        let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+        let i32_t = self.context.i32_type();
+        let Some(params) = self.fn_params.get(fn_name).map(|p| p.as_slice()) else {
+            let mut llvm_args = Vec::new();
+            for arg in args {
+                llvm_args.push(self.compile_call_arg_value(arg).into());
+            }
+            if let Some(block_stmts) = trailing_closure {
+                let closure = self.compile_anonymous_closure(&[], ReturnKind::Void, &block_stmts.body);
+                llvm_args.push(closure.as_global_value().as_pointer_value().into());
+            }
+            return Some(llvm_args);
+        };
+
+        let is_variadic = params.iter().any(|p| p.is_variadic);
+        if !is_variadic {
+            let mut llvm_args = Vec::new();
+            for arg in args {
+                llvm_args.push(self.compile_call_arg_value(arg).into());
+            }
+            if let Some(block_stmts) = trailing_closure {
+                let closure = self.compile_anonymous_closure(&[], ReturnKind::Void, &block_stmts.body);
+                llvm_args.push(closure.as_global_value().as_pointer_value().into());
+            }
+            return Some(llvm_args);
+        }
+
+        let fixed_count = params.iter().take_while(|p| !p.is_variadic).count();
+        let mut llvm_args = Vec::new();
+        for arg in args.iter().take(fixed_count) {
+            llvm_args.push(self.compile_call_arg_value(arg).into());
+        }
+
+        if is_variadic {
+            let extra_args = if args.len() > fixed_count {
+                &args[fixed_count..]
+            } else {
+                &[]
+            };
+
+            if extra_args.is_empty() {
+                llvm_args.push(ptr_t.const_null().into());
+                llvm_args.push(i32_t.const_int(0, false).into());
+            } else {
+                let array_ty = ptr_t.array_type(extra_args.len() as u32);
+                let array_alloca = self
+                    .builder
+                    .build_alloca(array_ty, "varargs_arr")
+                    .ok()?;
+                let zero = i32_t.const_int(0, false);
+
+                for (index, arg) in extra_args.iter().enumerate() {
+                    let value = self.compile_call_arg_value(arg);
+                    let value = if value.is_pointer_value() {
+                        value
+                    } else {
+                        return None;
+                    };
+                    let idx = i32_t.const_int(index as u64, false);
+                    let element_ptr = unsafe {
+                        self.builder
+                            .build_in_bounds_gep(array_ty, array_alloca, &[zero, idx], "varargs_gep")
+                            .ok()?
+                    };
+                    self.builder.build_store(element_ptr, value).ok()?;
+                }
+
+                llvm_args.push(array_alloca.into());
+                llvm_args.push(i32_t.const_int(extra_args.len() as u64, false).into());
+            }
+        }
+
+        Some(llvm_args)
+    }
+
+    fn build_named_call(
+        &mut self,
+        function: inkwell::values::FunctionValue<'ctx>,
+        fn_name: &str,
+        args: &[CallArg],
+        trailing_closure: Option<&ast::ClosureBlock>,
+        call_name: &str,
+    ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+        let llvm_args = self.build_call_arguments(fn_name, args, trailing_closure)?;
+        let call = self
+            .builder
+            .build_call(function, &llvm_args, call_name)
+            .ok()?;
+        match call.try_as_basic_value() {
+            ValueKind::Basic(v) => Some(v),
+            ValueKind::Instruction(_) => Some(
+                self.context
+                    .i32_type()
+                    .const_int(0, false)
+                    .as_basic_value_enum(),
+            ),
+        }
+    }
+
     fn ensure_register_fn(&mut self) -> inkwell::values::FunctionValue<'ctx> {
         if let Some(f) = self.register_fn {
             return f;
@@ -450,7 +637,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
         self.register_fn = Some(f);
         f
     }
-    // ここでは「C の可変長引数への転送」は扱わない（Kome の可変長だけを正式機能にする方針）。
+    
     /// 複数の文（Statements）を順番に LLVM 命令に変換する
     pub fn compile_statements(
         &mut self,
@@ -514,6 +701,66 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             }
         }
 
+        // 関数の相互参照を許すため、先に宣言だけ作っておく。
+        for stmt in statements {
+            let Stmt::FnDecl {
+                name,
+                params,
+                return_ty,
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+
+            let llvm_name = name.replace('.', "_");
+            self.fn_params
+                .entry(llvm_name.clone())
+                .or_insert_with(|| params.clone());
+
+            if self.module.get_function(&llvm_name).is_some() {
+                continue;
+            }
+
+            let fn_is_variadic = params.iter().any(|p| p.is_variadic);
+            let void_type = self.context.void_type();
+            let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+            let i32_t = self.context.i32_type();
+            let i1_t = self.context.bool_type();
+            let i64_t = self.context.i64_type();
+            let ret_kind = Self::parse_return_kind(return_ty.as_deref());
+
+            let mut llvm_param_types = Vec::new();
+            for p in params {
+                if p.is_variadic {
+                    continue;
+                }
+                let ty = p.ty.as_str();
+                let llvm_ty = match ty {
+                    "Ptr" | "Any" | "String" => ptr_t.into(),
+                    "Int" | "i32" => i32_t.into(),
+                    "Bool" | "bool" => i1_t.into(),
+                    _ => i32_t.into(),
+                };
+                llvm_param_types.push(llvm_ty);
+            }
+
+            if fn_is_variadic {
+                llvm_param_types.push(ptr_t.into());
+                llvm_param_types.push(i32_t.into());
+            }
+
+            let fn_type = match ret_kind {
+                ReturnKind::Void => void_type.fn_type(&llvm_param_types, false),
+                ReturnKind::I32 => i32_t.fn_type(&llvm_param_types, false),
+                ReturnKind::Ptr => ptr_t.fn_type(&llvm_param_types, false),
+                ReturnKind::Bool => i1_t.fn_type(&llvm_param_types, false),
+                ReturnKind::OptI32 => i64_t.fn_type(&llvm_param_types, false),
+                ReturnKind::OptPtr => ptr_t.fn_type(&llvm_param_types, false),
+            };
+            self.module.add_function(&llvm_name, fn_type, None);
+        }
+
         for stmt in statements {
             match stmt {
                 Stmt::CInclude(path) => {
@@ -543,6 +790,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     is_state,
                     is_mut: _,
                     name,
+                    ty: _,
                     value,
                     range: _,
                 } => {
@@ -577,6 +825,84 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 .expect("store state init");
                         }
                     } else {
+                        if self.in_bundle_prelude {
+                            let init = self.compile_expr(value);
+                            match init {
+                                inkwell::values::BasicValueEnum::IntValue(iv) => {
+                                    if iv.get_type().get_bit_width() == 1 {
+                                        let global = match self.module.get_global(name) {
+                                            Some(g) => g,
+                                            None => {
+                                                let g =
+                                                    self.module.add_global(self.context.bool_type(), None, name);
+                                                g.set_initializer(&self.context.bool_type().const_int(0, false));
+                                                g
+                                            }
+                                        };
+                                        self.builder
+                                            .build_store(global.as_pointer_value(), iv)
+                                            .expect("store bundle bool");
+                                        self.variables.insert(
+                                            name.clone(),
+                                            VariableInfo {
+                                                ptr: global.as_pointer_value(),
+                                                is_state: false,
+                                                kind: VariableKind::Bool,
+                                            },
+                                        );
+                                        continue;
+                                    }
+                                    let global = match self.module.get_global(name) {
+                                        Some(g) => g,
+                                        None => {
+                                            let g =
+                                                self.module.add_global(self.context.i32_type(), None, name);
+                                            g.set_initializer(&self.context.i32_type().const_int(0, false));
+                                            g
+                                        }
+                                    };
+                                    self.builder
+                                        .build_store(global.as_pointer_value(), iv)
+                                        .expect("store bundle i32");
+                                    self.variables.insert(
+                                        name.clone(),
+                                        VariableInfo {
+                                            ptr: global.as_pointer_value(),
+                                            is_state: false,
+                                            kind: VariableKind::I32,
+                                        },
+                                    );
+                                    continue;
+                                }
+                                inkwell::values::BasicValueEnum::PointerValue(pv) => {
+                                    let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                                    let global = match self.module.get_global(name) {
+                                        Some(g) => g,
+                                        None => {
+                                            let g = self.module.add_global(ptr_t, None, name);
+                                            g.set_initializer(&ptr_t.const_null());
+                                            g
+                                        }
+                                    };
+                                    self.builder
+                                        .build_store(global.as_pointer_value(), pv)
+                                        .expect("store bundle ptr");
+                                    self.variables.insert(
+                                        name.clone(),
+                                        VariableInfo {
+                                            ptr: global.as_pointer_value(),
+                                            is_state: false,
+                                            kind: VariableKind::Ptr,
+                                        },
+                                    );
+                                    continue;
+                                }
+                                _ => {
+                                    panic!("トップレベル初期化では未対応の値型です: {}", name);
+                                }
+                            }
+                        }
+
                         // ローカル変数: 現在の挿入ブロックが必要
                         let Some(_) = self.builder.get_insert_block() else {
                             panic!("ローカル変数 '{}' は関数の中で宣言してください。", name);
@@ -643,13 +969,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     // `viewKit.window.*` のように「親モジュール名を含む名前」で呼びたいケースがある。
                     // - `use viewKit` 単体は prelude 扱いで prefix を付けない（後段の特例）
                     // - `use viewKit.window` は `viewKit_window_*` を生成して `viewKit.window.*` と一致させる
-                    let mut module_prefix = path_parts.last().cloned().unwrap_or_default();
-                    if path_parts.len() >= 2 && path_parts[0] == "viewKit" && path_parts[1] == "window" {
-                        module_prefix = "viewKit_window".to_string();
-                    }
-                    if path_parts.len() >= 2 && path_parts[0] == "viewKit" && path_parts[1] == "handler" {
-                        module_prefix = "viewKit_handler".to_string();
-                    }
+                    let module_prefix = path_parts.last().cloned().unwrap_or_default();
 
                     if full_path.starts_with("libc.") {
                         if let Some(names) = self.library_manager.load_c_header_collect(
@@ -674,6 +994,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     // lib/* は標準ライブラリと同じ形式で解決する（lib/viewKit/module.kome など）
                     if full_path.starts_with("lib.") {
                         let parts = &path_parts[1..];
+                        let import_key = Self::module_key("lib", parts);
+                        if !self.module_import_begin(&import_key) {
+                            continue;
+                        }
                         let lib_root =
                             std::env::var("KOME_LIB_PATH").unwrap_or_else(|_| "./lib".to_owned());
                         let lib_root = std::path::PathBuf::from(lib_root);
@@ -752,6 +1076,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             eprintln!("DEBUG: finished lib module {:?}", kome_file_path);
                         }
 
+                        self.module_import_end(&import_key);
                         self.current_module_prefix = prev_prefix;
                         self.allowed_externs = prev_allowed;
 
@@ -760,6 +1085,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
 
                     // `use viewKit` / `use toml` のように lib 直下を名前で参照できるようにする
                     if !full_path.starts_with("std.") && !full_path.starts_with("libc.") {
+                        let import_key = Self::module_key("lib", path_parts);
+                        if !self.module_import_begin(&import_key) {
+                            continue;
+                        }
                         if let Some(kome_file_path) = resolve_module_file(&lib_root, path_parts) {
                             let source = std::fs::read_to_string(&kome_file_path).map_err(|_| {
                                 format!("Failed to read library module: {:?}", kome_file_path)
@@ -803,7 +1132,9 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             // lib 直下のトップレベル import は「そのままの名前」で公開したい
                             // 例: `use viewKit` で `window.create()` や `card()` が見える前提
                             // なので、このケースは prefix を付けない。
-                            if !module_prefix.is_empty() && path_parts.len() != 1 {
+                            if !module_prefix.is_empty()
+                                && (path_parts.len() != 1 || path_parts[0] == "toml")
+                            {
                                 for stmt in lib_ast.iter_mut() {
                                     if let Stmt::FnDecl { name, .. } = stmt {
                                         if !name.contains('.')
@@ -828,15 +1159,21 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                                 eprintln!("DEBUG: finished lib module {:?}", kome_file_path);
                             }
 
+                            self.module_import_end(&import_key);
                             self.current_module_prefix = prev_prefix;
                             self.allowed_externs = prev_allowed;
                             continue;
                         }
+                        self.module_import_end(&import_key);
                     }
 
                     let std_root =
                         std::env::var("KOME_STD_PATH").unwrap_or_else(|_| "./".to_owned());
                     let std_root = std::path::PathBuf::from(std_root);
+                    let import_key = Self::module_key("std", path_parts);
+                    if !self.module_import_begin(&import_key) {
+                        continue;
+                    }
                     let kome_file_path = resolve_module_file(&std_root, path_parts)
                         .unwrap_or_else(|| {
                             // Keep a stable, actionable error message for users.
@@ -917,6 +1254,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         eprintln!("DEBUG: finished std module {:?}", kome_file_path);
                     }
 
+                    self.module_import_end(&import_key);
                     self.current_module_prefix = prev_prefix;
                     self.allowed_externs = prev_allowed;
                 }
@@ -1002,7 +1340,10 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         ReturnKind::OptI32 => i64_t.fn_type(&llvm_param_types, false),
                         ReturnKind::OptPtr => ptr_t.fn_type(&llvm_param_types, false),
                     };
-                    let function = self.module.add_function(&llvm_name, fn_type, None);
+                    let function = match self.module.get_function(&llvm_name) {
+                        Some(existing) => existing,
+                        None => self.module.add_function(&llvm_name, fn_type, None),
+                    };
                     let entry_block = self.context.append_basic_block(function, "entry");
 
                     self.variables.retain(|_, v| v.is_state);
@@ -1399,8 +1740,59 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     name: bundle_name,
                     body,
                 } => {
+                    let mut init_stmts = Vec::new();
+                    let mut rest_stmts = Vec::new();
+                    let mut collecting_init = true;
+                    for stmt in body.iter().cloned() {
+                        if collecting_init {
+                            match &stmt {
+                                Stmt::Declaration { is_state, .. } if !*is_state => {
+                                    init_stmts.push(stmt);
+                                    continue;
+                                }
+                                _ => {
+                                    collecting_init = false;
+                                }
+                            }
+                        }
+                        rest_stmts.push(stmt);
+                    }
+
+                    let mut init_function = None;
+                    if !init_stmts.is_empty() {
+                        let init_fn_name = format!("__kome_bundle_init_{}", bundle_name);
+                        let void_type = self.context.void_type();
+                        let init_fn_type = void_type.fn_type(&[], false);
+                        let function = self.module.add_function(&init_fn_name, init_fn_type, None);
+                        let entry_block = self.context.append_basic_block(function, "entry");
+                        let prev_block = self.builder.get_insert_block();
+                        self.builder.position_at_end(entry_block);
+
+                        let prev_prelude = self.in_bundle_prelude;
+                        self.in_bundle_prelude = true;
+                        self.compile_statements(&init_stmts)?;
+                        self.in_bundle_prelude = prev_prelude;
+
+                        if self
+                            .builder
+                            .get_insert_block()
+                            .and_then(|bb| bb.get_terminator())
+                            .is_none()
+                        {
+                            self.builder.build_return(None).ok();
+                        }
+
+                        if let Some(prev) = prev_block {
+                            self.builder.position_at_end(prev);
+                        } else {
+                            self.builder.clear_insertion_position();
+                        }
+
+                        init_function = Some(function);
+                    }
+
                     /* compile bundle body first */
-                    self.compile_statements(body)?;
+                    self.compile_statements(&rest_stmts)?;
 
                     /* Then auto-generate run() method for every bundle */
                     let run_fn_name = format!("{}_run", bundle_name);
@@ -1414,8 +1806,12 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         self.builder.position_at_end(entry_block);
 
                         /* Call the runtime start loop */
-                        if let Some(loop_fn) = self.module.get_function("__kome_runtime_start_loop")
-                        {
+                        if let Some(init_fn) = init_function {
+                            self.builder
+                                .build_call(init_fn, &[], "call_bundle_init")
+                                .ok();
+                        }
+                        if let Some(loop_fn) = self.module.get_function("__kome_runtime_start_loop") {
                             self.builder
                                 .build_call(loop_fn, &[], "call_start_loop")
                                 .ok();
@@ -1464,9 +1860,53 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     let recipe_entry_bb = self.context.append_basic_block(recipe_function, "entry");
 
                     self.builder.position_at_end(recipe_entry_bb);
-
-                    let recipe_stmts: Vec<Stmt> = vec![Stmt::ExprStmt(body.clone())];
-                    self.compile_statements(&recipe_stmts)?;
+                    // recipe は UI ツリー（JSON文字列）を生成して ViewKit に流す
+                    let json_value = self.compile_expr(body);
+                    if json_value.is_pointer_value() {
+                        let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                        let app_getter = self
+                            .module
+                            .get_function("__kome_runtime_get_app")
+                            .or_else(|| {
+                                let fn_ty = ptr_t.fn_type(&[], false);
+                                Some(self.module.add_function("__kome_runtime_get_app", fn_ty, None))
+                            })
+                            .expect("runtime get app");
+                        let app_call = self.builder.build_call(app_getter, &[], "recipe_app").ok();
+                        if let Some(app_call) = app_call {
+                            let app_ptr = match app_call.try_as_basic_value() {
+                                ValueKind::Basic(v) => v.into_pointer_value(),
+                                ValueKind::Instruction(_) => ptr_t.const_null(),
+                            };
+                            let non_null = self
+                                .builder
+                                .build_is_not_null(app_ptr, "recipe_app_nonnull")
+                                .expect("nonnull");
+                            let parent = recipe_function;
+                            let ok_bb = self.context.append_basic_block(parent, "recipe_ok");
+                            let end_bb = self.context.append_basic_block(parent, "recipe_end");
+                            self.builder
+                                .build_conditional_branch(non_null, ok_bb, end_bb)
+                                .expect("branch");
+                            self.builder.position_at_end(ok_bb);
+                            if let Some(update) = self.module.get_function("kome_viewkit_update_ui_tree") {
+                                let _ = self.builder.build_call(
+                                    update,
+                                    &[app_ptr.into(), json_value.into_pointer_value().into()],
+                                    "recipe_update",
+                                );
+                            }
+                            if self
+                                .builder
+                                .get_insert_block()
+                                .and_then(|bb| bb.get_terminator())
+                                .is_none()
+                            {
+                                self.builder.build_unconditional_branch(end_bb).ok();
+                            }
+                            self.builder.position_at_end(end_bb);
+                        }
+                    }
 
                     // entry ブロックは最初の分岐で終端していることがあるので、
                     // 「現在の挿入ブロック」が終端しているかで判定する。
@@ -1508,6 +1948,8 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     };
 
                     for dep_var in state_deps {
+                        self.pending_subscriptions
+                            .push((dep_var.clone(), recipe_fn_name.clone()));
                         let dep_var_global = self
                             .builder
                             .build_global_string_ptr(dep_var, "dep_var_name")
@@ -1778,45 +2220,92 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                     return ptr_t.const_null().as_basic_value_enum();
                 }
 
-                    let ptr = if let Some(var_info) = self.variables.get(name) {
-                        var_info.ptr
-                    } else if let Some(global_var) = self.module.get_global(name) {
-                        global_var.as_pointer_value()
-                    } else if let Some(short_name) = name.split('.').last() {
-                        if let Some(global_var) = self.module.get_global(short_name) {
-                            global_var.as_pointer_value()
-                        } else {
-                            panic!(
-                                "Undefined variable: {} (tried short name: {})",
-                                name, short_name
-                            );
-                        }
-                    } else {
-                        panic!("Undefined variable: {}", name);
-                    };
-
                 if let Some(var_info) = self.variables.get(name) {
-                    match var_info.kind {
+                    return match var_info.kind {
                         VariableKind::I32 => self
                             .builder
-                            .build_load(self.context.i32_type(), ptr, name)
+                            .build_load(self.context.i32_type(), var_info.ptr, name)
                             .expect("Failed to load variable"),
                         VariableKind::Ptr => {
                             let ptr_t = self.context.ptr_type(AddressSpace::from(0));
                             self.builder
-                                .build_load(ptr_t, ptr, name)
+                                .build_load(ptr_t, var_info.ptr, name)
                                 .expect("Failed to load ptr variable")
                         }
                         VariableKind::Bool => self
                             .builder
-                            .build_load(self.context.bool_type(), ptr, name)
+                            .build_load(self.context.bool_type(), var_info.ptr, name)
                             .expect("Failed to load bool variable"),
-                    }
-                } else {
-                    self.builder
-                        .build_load(self.context.i32_type(), ptr, name)
-                        .expect("Failed to load variable")
+                    };
                 }
+
+                if let Some(global_var) = self.module.get_global(name) {
+                    return match global_var.get_value_type() {
+                        AnyTypeEnum::IntType(_) => self
+                            .builder
+                            .build_load(
+                                self.context.i32_type(),
+                                global_var.as_pointer_value(),
+                                name,
+                            )
+                            .expect("Failed to load global variable"),
+                        AnyTypeEnum::PointerType(_) => self
+                            .builder
+                            .build_load(
+                                self.context.ptr_type(AddressSpace::from(0)),
+                                global_var.as_pointer_value(),
+                                name,
+                            )
+                            .expect("Failed to load global variable"),
+                        _ => self
+                            .builder
+                            .build_load(
+                                self.context.i32_type(),
+                                global_var.as_pointer_value(),
+                                name,
+                            )
+                            .expect("Failed to load global variable"),
+                    };
+                }
+
+                if let Some(function_name) = self.resolve_function_name_from_head(name, &[]) {
+                    if let Some(function) = self.module.get_function(&function_name) {
+                        return function.as_global_value().as_pointer_value().as_basic_value_enum();
+                    }
+                }
+
+                if let Some(short_name) = name.split('.').last() {
+                    if let Some(global_var) = self.module.get_global(short_name) {
+                        return match global_var.get_value_type() {
+                            AnyTypeEnum::IntType(_) => self
+                                .builder
+                                .build_load(
+                                    self.context.i32_type(),
+                                    global_var.as_pointer_value(),
+                                    short_name,
+                                )
+                                .expect("Failed to load global variable"),
+                            AnyTypeEnum::PointerType(_) => self
+                                .builder
+                                .build_load(
+                                    self.context.ptr_type(AddressSpace::from(0)),
+                                    global_var.as_pointer_value(),
+                                    short_name,
+                                )
+                                .expect("Failed to load global variable"),
+                            _ => self
+                                .builder
+                                .build_load(
+                                    self.context.i32_type(),
+                                    global_var.as_pointer_value(),
+                                    short_name,
+                                )
+                                .expect("Failed to load global variable"),
+                        };
+                    }
+                }
+
+                panic!("Undefined variable: {}", name);
             }
             Expr::BinaryOp { left, op, right } => {
                 // 左辺と右辺をそれぞれLLVM IRにする
@@ -2046,7 +2535,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .expect("phi and");
                         let false_v = left_i1.get_type().const_int(0, false);
                         phi.add_incoming(&[(&false_v, left_bb), (&rhs_v, rhs_end)]);
-                        phi.as_basic_value()
+                        phi.as_basic_value().into_int_value().as_basic_value_enum()
                     }
                     Op::Or => {
                         // ||（短絡評価）
@@ -2090,11 +2579,40 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                             .expect("phi or");
                         let true_v = left_i1.get_type().const_int(1, false);
                         phi.add_incoming(&[(&true_v, left_bb), (&rhs_v, rhs_end)]);
-                        phi.as_basic_value()
+                        phi.as_basic_value().into_int_value().as_basic_value_enum()
                     }
                     Op::In => {
-                        // TODO: 実装
-                        todo!("Codegen: 'in' operator is not yet implemented.")
+                        let right_val = self.compile_expr(right);
+                        if !left_val.is_pointer_value() || !right_val.is_pointer_value() {
+                            panic!("in は文字列/パス同士でのみ使えます。");
+                        }
+                        let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                        let concat_fn = if let Some(f) = self.module.get_function("concat") {
+                            f
+                        } else {
+                            let fn_ty = ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                            self.module.add_function("concat", fn_ty, None)
+                        };
+                        let slash = self
+                            .builder
+                            .build_global_string_ptr("/", "path_sep")
+                            .expect("path sep");
+                        let joined = self
+                            .builder
+                            .build_call(concat_fn, &[right_val.into_pointer_value().into(), slash.as_pointer_value().into()], "path_join_base")
+                            .expect("path join base");
+                        let base = match joined.try_as_basic_value() {
+                            ValueKind::Basic(v) => v.into_pointer_value(),
+                            ValueKind::Instruction(_) => panic!("path join should return value"),
+                        };
+                        let final_join = self
+                            .builder
+                            .build_call(concat_fn, &[base.into(), left_val.into_pointer_value().into()], "path_join")
+                            .expect("path join");
+                        match final_join.try_as_basic_value() {
+                            ValueKind::Basic(v) => v,
+                            ValueKind::Instruction(_) => panic!("path join should return value"),
+                        }
                     }
                     Op::Question => {
                         // ??（null/none 合体）
@@ -2437,439 +2955,237 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                 phi.as_basic_value()
             }
             Expr::Block(stmts) => self.compile_block_expr(stmts),
+            Expr::Record(fields) => {
+                let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                let concat_fn = if let Some(f) = self.module.get_function("concat") {
+                    f
+                } else {
+                    let fn_ty = ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                    self.module.add_function("concat", fn_ty, None)
+                };
+                let empty = self
+                    .builder
+                    .build_global_string_ptr("", "record_empty")
+                    .expect("record empty");
+                let mut current = empty.as_pointer_value();
+
+                for (key, value) in fields {
+                    let raw = self.compile_expr(value);
+                    let value_ptr = match raw {
+                        inkwell::values::BasicValueEnum::PointerValue(pv) => {
+                            if pv.is_null() {
+                                continue;
+                            }
+                            pv
+                        }
+                        inkwell::values::BasicValueEnum::IntValue(iv) => {
+                            let helper_name = if iv.get_type().get_bit_width() == 1 {
+                                "__kome_bool_to_string"
+                            } else {
+                                "__kome_i32_to_string"
+                            };
+                            let helper = self.module.get_function(helper_name).unwrap_or_else(|| {
+                                let fn_ty = if iv.get_type().get_bit_width() == 1 {
+                                    ptr_t.fn_type(&[self.context.bool_type().into()], false)
+                                } else {
+                                    ptr_t.fn_type(&[self.context.i32_type().into()], false)
+                                };
+                                self.module.add_function(helper_name, fn_ty, None)
+                            });
+                            let arg = if iv.get_type().get_bit_width() == 1 {
+                                iv.as_basic_value_enum().into()
+                            } else {
+                                iv.as_basic_value_enum().into()
+                            };
+                            let call = self
+                                .builder
+                                .build_call(helper, &[arg], "record_value_str")
+                                .expect("record int/bool to string");
+                            match call.try_as_basic_value() {
+                                ValueKind::Basic(v) => v.into_pointer_value(),
+                                ValueKind::Instruction(_) => continue,
+                            }
+                        }
+                        _ => continue,
+                    };
+
+                    let key_eq = self
+                        .builder
+                        .build_global_string_ptr(&format!("{}=", key), "record_key")
+                        .expect("record key");
+                    let semi = self
+                        .builder
+                        .build_global_string_ptr(";", "record_sep")
+                        .expect("record sep");
+                    let left = self
+                        .builder
+                        .build_call(concat_fn, &[current.into(), key_eq.as_pointer_value().into()], "record_k")
+                        .expect("record concat key");
+                    let left = match left.try_as_basic_value() {
+                        ValueKind::Basic(v) => v.into_pointer_value(),
+                        ValueKind::Instruction(_) => continue,
+                    };
+                    let mid = self
+                        .builder
+                        .build_call(concat_fn, &[left.into(), value_ptr.into()], "record_v")
+                        .expect("record concat value");
+                    let mid = match mid.try_as_basic_value() {
+                        ValueKind::Basic(v) => v.into_pointer_value(),
+                        ValueKind::Instruction(_) => continue,
+                    };
+                    let tail = self
+                        .builder
+                        .build_call(concat_fn, &[mid.into(), semi.as_pointer_value().into()], "record_s")
+                        .expect("record concat sep");
+                    current = match tail.try_as_basic_value() {
+                        ValueKind::Basic(v) => v.into_pointer_value(),
+                        ValueKind::Instruction(_) => continue,
+                    };
+                }
+
+                current.as_basic_value_enum()
+            }
             Expr::CallChain { head, tails } => {
-                /* Handle bundle.method() calls (e.g., App.run()) */
                 if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
                     eprintln!(
                         "DEBUG: compile_expr CallChain head={}, tails.len={}",
                         head,
                         tails.len()
                     );
-                    for (i, tail) in tails.iter().enumerate() {
-                        eprintln!("DEBUG:   tail[{}] = {:?}", i, tail);
-                    }
                 }
 
-                // ここでは `print` や `io.print` のような特別扱い（ハードコード）はしない。
-                // 可変長引数の転送（`...`）は、通常の関数呼び出しとして処理できるように
-                // `printf(fmt, ...)` を `vprintf(fmt, va_list)` へ lower する形で実装する。
-
-                // a.b() / a.b.c() / a.b.c.d() などは「末尾の Method」を関数呼び出しに解決する
-                // 例: `viewKit.window.create(x)` -> `viewKit_window_create(x)`
-                if tails.len() >= 2 {
-                    if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
-                        eprintln!("DEBUG: Found CallChain with {} tails", tails.len());
-                    }
-                    if let (
-                        ast::Accessor::Method(args, trailing_closure),
-                        ast::Accessor::Property(method_name),
-                    ) = (&tails[tails.len() - 1], &tails[tails.len() - 2])
-                    {
-                        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
-                            eprintln!(
-                                "DEBUG: Property + Method found: {}.<...>.{}()",
-                                head, method_name
-                            );
-                        }
-
-                        // head + 途中の Property を '_' で連結して関数名にする
-                        // - 途中に Method がある場合はフォールバックへ回す
-                        let mut fn_name = head.clone();
-                        let mut ok = true;
-                        for prop in tails.iter().take(tails.len() - 1) {
-                            let ast::Accessor::Property(p) = prop else {
-                                ok = false;
-                                break;
-                            };
-                            fn_name.push('_');
-                            fn_name.push_str(p);
-                        }
-                        if !ok {
-                            // フォールバック: 旧仕様（bundle_name + method_name）
-                            fn_name = format!("{}_{}", head, method_name);
-                        }
-
-                        if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
-                            eprintln!("DEBUG: Looking for function: {}", fn_name);
-                        }
-                        if let Some(function) = self.module.get_function(&fn_name) {
-                            if std::env::var("KOME_DEBUG_CODEGEN").ok().as_deref() == Some("1") {
-                                eprintln!("DEBUG: Found function: {}", fn_name);
-                            }
-                            if function.count_basic_blocks() == 0 {
-                                if self.current_module_prefix.is_some()
-                                    && !self.allowed_externs.contains(&fn_name)
-                                {
-                                    panic!(
-                                        "モジュール内で C 関数 '{}' を呼び出そうとしましたが、このファイル内で `cinclude`（または `use libc.*`）が宣言されていません。",
-                                        fn_name
-                                    );
-                                }
-                            }
-
-                            let mut llvm_args = Vec::new();
-                            // Kome 関数の可変長引数（型付き）は、呼び出し側で (ptr data, len) に pack する
-                            if let Some(sig) = self.fn_params.get(&fn_name).cloned() {
-                                let variadic = sig.iter().position(|p| p.is_variadic);
-                                if let Some(var_pos) = variadic {
-                                    if var_pos + 1 != sig.len() {
-                                        panic!("可変長引数は最後の1つだけ指定できます。");
-                                    }
-                                    let fixed = var_pos;
-                                    if args.len() < fixed {
-                                        panic!("引数の数が足りません: {}", fn_name);
-                                    }
-                                    // 固定引数
-                                    for a in args.iter().take(fixed) {
-                                        let v = self.compile_expr(a);
-                                        llvm_args.push(v.into());
-                                    }
-                                    // 可変長部分を i32/ptr 配列としてスタックに確保
-                                    let var_param = &sig[var_pos];
-                                    let elem_kind = var_param.ty.as_str();
-                                    let ptr_t = self.context.ptr_type(AddressSpace::from(0));
-                                    let (elem_ty, elem_kind_enum) = match elem_kind {
-                                        "Ptr" | "Any" | "String" => {
-                                            (ptr_t.as_basic_type_enum(), VariableKind::Ptr)
-                                        }
-                                        "Int" | "i32" => (
-                                            self.context.i32_type().as_basic_type_enum(),
-                                            VariableKind::I32,
-                                        ),
-                                        _ => (
-                                            self.context.i32_type().as_basic_type_enum(),
-                                            VariableKind::I32,
-                                        ),
-                                    };
-                                    let var_vals = args.iter().skip(fixed).collect::<Vec<_>>();
-                                    let len = var_vals.len() as u64;
-                                    let arr_ty = elem_ty.array_type(var_vals.len() as u32);
-                                    let arr = self
-                                        .builder
-                                        .build_alloca(arr_ty, "varargs_arr")
-                                        .expect("alloca varargs arr");
-                                    for (i, a) in var_vals.into_iter().enumerate() {
-                                        let gep = unsafe {
-                                            self.builder.build_in_bounds_gep(
-                                                arr_ty,
-                                                arr,
-                                                &[
-                                                    self.context.i32_type().const_int(0, false),
-                                                    self.context
-                                                        .i32_type()
-                                                        .const_int(i as u64, false),
-                                                ],
-                                                "vararg_gep",
-                                            )
-                                        }
-                                        .expect("gep vararg");
-                                        let val = self.compile_expr(a);
-                                        match elem_kind_enum {
-                                            VariableKind::I32 => {
-                                                self.builder
-                                                    .build_store(gep, val.into_int_value())
-                                                    .ok();
-                                            }
-                                            VariableKind::Ptr => {
-                                                self.builder
-                                                    .build_store(gep, val.into_pointer_value())
-                                                    .ok();
-                                            }
-                                            VariableKind::Bool => {
-                                                unreachable!("variadic bool is not supported")
-                                            }
-                                        }
-                                    }
-                                    // 先頭要素ポインタ
-                                    let data_ptr = unsafe {
-                                        self.builder.build_in_bounds_gep(
-                                            arr_ty,
-                                            arr,
-                                            &[
-                                                self.context.i32_type().const_int(0, false),
-                                                self.context.i32_type().const_int(0, false),
-                                            ],
-                                            "varargs_data",
-                                        )
-                                    }
-                                    .expect("gep varargs data");
-                                    llvm_args.push(data_ptr.into());
-                                    llvm_args.push(
-                                        self.context
-                                            .i32_type()
-                                            .const_int(len, false)
-                                            .as_basic_value_enum()
-                                            .into(),
-                                    );
-                                } else {
-                                    for arg in args {
-                                        let val = self.compile_expr(arg);
-                                        llvm_args.push(val.into());
+                if let Some((idx, _)) = tails.iter().enumerate().find(|(_, a)| matches!(a, ast::Accessor::With(_, _))) {
+                    let (left, right) = tails.split_at(idx);
+                    let base = self.compile_expr(&Expr::CallChain { head: head.clone(), tails: left.to_vec() });
+                    if let [ast::Accessor::With(name, pairs)] = right {
+                        if name == "children" && base.is_pointer_value() {
+                            if let Some((_, value_expr)) = pairs.first() {
+                                let json = self.compile_expr(value_expr);
+                                if json.is_pointer_value() {
+                                    if let Some(update) = self.module.get_function("kome_viewkit_update_ui_tree")
+                                        .or_else(|| self.module.get_function("viewkit_update_ui_tree"))
+                                    {
+                                        let _ = self.builder.build_call(
+                                            update,
+                                            &[base.into(), json.into_pointer_value().into()],
+                                            "with_children_update_expr",
+                                        );
                                     }
                                 }
-                            } else {
-                                for arg in args {
-                                    let val = self.compile_expr(arg);
-                                    llvm_args.push(val.into());
-                                }
                             }
-
-                            // If there is a trailing closure, compile it and add closure pointer as argument
-                            if let Some(block_stmts) = trailing_closure {
-                                let mut i = 0;
-                                let closure_name = loop {
-                                    let name = format!("__kome_anon_closure_{}", i);
-                                    if self.module.get_function(&name).is_none() {
-                                        break name;
-                                    }
-                                    i += 1;
-                                };
-
-                                let void_type = self.context.void_type();
-                                let closure_fn_type = void_type.fn_type(&[], false);
-                                let closure_function =
-                                    self.module
-                                        .add_function(&closure_name, closure_fn_type, None);
-
-                                let entry_bb =
-                                    self.context.append_basic_block(closure_function, "entry");
-                                let current_bb = self.builder.get_insert_block().unwrap();
-                                self.builder.position_at_end(entry_bb);
-
-                                self.push_default_scope();
-                                self.compile_statements(block_stmts)
-                                    .expect("Failed to compile trailing closure body");
-                                self.pop_default_scope_apply()
-                                    .expect("Failed to apply trailing closure defaults");
-
-                                self.builder
-                                    .build_return(None)
-                                    .expect("Failed to build return for closure");
-                                self.builder.position_at_end(current_bb);
-
-                                let closure_ptr =
-                                    closure_function.as_global_value().as_pointer_value();
-                                llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(
-                                    closure_ptr,
-                                ));
-                            }
-
-                            let call = self
-                                .builder
-                                .build_call(function, &llvm_args, "calltmp")
-                                .expect("Codegen: Failed to build function call");
-
-                            match call.try_as_basic_value() {
-                                ValueKind::Basic(val) => return val,
-                                ValueKind::Instruction(_) => {
-                                    return self
-                                        .context
-                                        .i32_type()
-                                        .const_int(0, false)
-                                        .as_basic_value_enum();
-                                }
-                            }
-                        }
-
-                        // NOTE: 受け手付きメソッドの自動変換はまだ行わない（仕様確定後に実装する）
-                    }
-                }
-
-                // `a.b` は「引数なし関数 a_b()」として扱う（定数っぽい API 用）
-                if tails.len() == 1 {
-                    if let ast::Accessor::Property(p) = &tails[0] {
-                        let fn_name = format!("{}_{}", head, p);
-                        if let Some(function) = self.module.get_function(&fn_name) {
-                            let call = self
-                                .builder
-                                .build_call(function, &[], "gettmp")
-                                .expect("call property getter");
-                            return match call.try_as_basic_value() {
-                                ValueKind::Basic(v) => v,
-                                ValueKind::Instruction(_) => self
-                                    .context
-                                    .i32_type()
-                                    .const_int(0, false)
-                                    .as_basic_value_enum(),
-                            };
+                            return base;
                         }
                     }
                 }
 
-                if let Some(ast::Accessor::Method(args, trailing_closure)) = tails.first() {
-                    let mut fn_name = head.clone();
-                    let lookup_name = fn_name.replace('.', "_");
+                if let Some(value) = self.compile_value_chain(head, tails) {
+                    return value;
+                }
 
-                    if self.module.get_function(&lookup_name).is_none() {
-                        if let Some(method_name) = head.split('.').last() {
-                            let fallback_name = format!("__bundle_{}", method_name);
-                            if self.module.get_function(&fallback_name).is_some() {
-                                fn_name = fallback_name;
-                            } else {
-                                fn_name = lookup_name;
-                            }
-                        } else {
-                            fn_name = lookup_name;
-                        }
+                let mut segments = head
+                    .split('.')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>();
+
+                if let [ast::Accessor::Property(prop)] = tails.as_slice() {
+                    segments.push(prop.clone());
+                    let function = if let Some(fn_name) = self.resolve_function_name(&segments) {
+                        self.module
+                            .get_function(&fn_name)
+                            .expect("resolved function must exist")
                     } else {
-                        fn_name = lookup_name;
-                    }
+                        return self.compile_expr(&Expr::Ident(head.to_string()));
+                    };
+                    let resolved_name = function.get_name().to_string_lossy().to_string();
+                    return self
+                        .build_named_call(function, &resolved_name, &[], None, "calltmp")
+                        .unwrap_or_else(|| {
+                            self.context
+                                .i32_type()
+                                .const_int(0, false)
+                                .as_basic_value_enum()
+                        });
+                }
 
-                    let function = self
-                        .module
-                        .get_function(&fn_name)
-                        .expect(&format!("Undefined function: {}", head));
-                    if function.count_basic_blocks() == 0 {
-                        if self.current_module_prefix.is_some()
-                            && !self.allowed_externs.contains(&fn_name)
-                        {
-                            panic!("モジュール内で C 関数 '{}' を呼び出そうとしましたが、このファイル内で `cinclude`（または `use libc.*`）が宣言されていません。", fn_name);
-                        }
-                    }
-
-                    let mut llvm_args = Vec::new();
-                    if let Some(sig) = self.fn_params.get(&fn_name).cloned() {
-                        let variadic = sig.iter().position(|p| p.is_variadic);
-                        if let Some(var_pos) = variadic {
-                            if var_pos + 1 != sig.len() {
-                                panic!("可変長引数は最後の1つだけ指定できます。");
-                            }
-                            let fixed = var_pos;
-                            if args.len() < fixed {
-                                panic!("引数の数が足りません: {}", fn_name);
-                            }
-                            for a in args.iter().take(fixed) {
-                                let v = self.compile_expr(a);
-                                llvm_args.push(v.into());
-                            }
-                            let var_param = &sig[var_pos];
-                            let elem_kind = var_param.ty.as_str();
-                            let ptr_t = self.context.ptr_type(AddressSpace::from(0));
-                            let (elem_ty, elem_kind_enum) = match elem_kind {
-                                "Ptr" | "Any" | "String" => {
-                                    (ptr_t.as_basic_type_enum(), VariableKind::Ptr)
-                                }
-                                "Int" | "i32" => {
-                                    (self.context.i32_type().as_basic_type_enum(), VariableKind::I32)
-                                }
-                                _ => (self.context.i32_type().as_basic_type_enum(), VariableKind::I32),
-                            };
-                            let var_vals = args.iter().skip(fixed).collect::<Vec<_>>();
-                            let len = var_vals.len() as u64;
-                            let arr_ty = elem_ty.array_type(var_vals.len() as u32);
-                            let arr = self
-                                .builder
-                                .build_alloca(arr_ty, "varargs_arr")
-                                .expect("alloca varargs arr");
-                            for (i, a) in var_vals.into_iter().enumerate() {
-                                let gep = unsafe {
-                                    self.builder.build_in_bounds_gep(
-                                        arr_ty,
-                                        arr,
-                                        &[
-                                            self.context.i32_type().const_int(0, false),
-                                            self.context.i32_type().const_int(i as u64, false),
-                                        ],
-                                        "vararg_gep",
-                                    )
-                                }
-                                .expect("gep vararg");
-                                let val = self.compile_expr(a);
-                                    match elem_kind_enum {
-                                        VariableKind::I32 => {
-                                            self.builder.build_store(gep, val.into_int_value()).ok();
-                                        }
-                                        VariableKind::Ptr => {
-                                            self.builder.build_store(gep, val.into_pointer_value()).ok();
-                                        }
-                                        VariableKind::Bool => unreachable!("variadic bool is not supported"),
-                                    }
-                                }
-                            let data_ptr = unsafe {
-                                self.builder.build_in_bounds_gep(
-                                    arr_ty,
-                                    arr,
-                                    &[
-                                        self.context.i32_type().const_int(0, false),
-                                        self.context.i32_type().const_int(0, false),
-                                    ],
-                                    "varargs_data",
-                                )
-                            }
-                            .expect("gep varargs data");
-                            llvm_args.push(data_ptr.into());
-                            llvm_args.push(
-                                self.context
-                                    .i32_type()
-                                    .const_int(len, false)
-                                    .as_basic_value_enum()
-                                    .into(),
-                            );
-                        } else {
-                            for arg in args {
-                                let val = self.compile_expr(arg);
-                                llvm_args.push(val.into());
+                let (args, trailing_closure) = match tails.last() {
+                    Some(ast::Accessor::Method(args, trailing)) => {
+                        for accessor in tails.iter().take(tails.len().saturating_sub(1)) {
+                            if let ast::Accessor::Property(name) = accessor {
+                                segments.push(name.clone());
                             }
                         }
-                    } else {
-                        for arg in args {
-                            let val = self.compile_expr(arg);
-                            llvm_args.push(val.into());
-                        }
+                        (args, trailing)
                     }
-
-                        if let Some(block_stmts) = trailing_closure {
-                            let mut i = 0;
-                            let closure_name = loop {
-                                let name = format!("__kome_anon_closure_{}", i);
-                            if self.module.get_function(&name).is_none() {
-                                break name;
-                            }
-                            i += 1;
-                        };
-
-                        let void_type = self.context.void_type();
-                        let closure_fn_type = void_type.fn_type(&[], false);
-                        let closure_function =
-                            self.module
-                                .add_function(&closure_name, closure_fn_type, None);
-
-                            let entry_bb = self.context.append_basic_block(closure_function, "entry");
-                            let current_bb = self.builder.get_insert_block().unwrap();
-                            self.builder.position_at_end(entry_bb);
-
-                            self.push_default_scope();
-                            self.compile_statements(block_stmts)
-                                .expect("Failed to compile trailing closure body");
-                            self.pop_default_scope_apply()
-                                .expect("Failed to apply trailing closure defaults");
-
-                            self.builder
-                                .build_return(None)
-                                .expect("Failed to build return for closure");
-                            self.builder.position_at_end(current_bb);
-
-                        let closure_ptr = closure_function.as_global_value().as_pointer_value();
-                        llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(closure_ptr));
+                    _ => {
+                        panic!("Undefined function when resolving callchain head: '{head}'");
                     }
+                };
 
-                    let call = self
-                        .builder
-                        .build_call(function, &llvm_args, "calltmp")
-                        .expect("Codegen: Failed to build function call");
-
-                    match call.try_as_basic_value() {
-                        ValueKind::Basic(val) => val,
-                        ValueKind::Instruction(_) => self
-                            .context
-                            .i32_type()
-                            .const_int(0, false)
-                            .as_basic_value_enum(),
-                    }
-                } else {
-                    // 未定義の関数を 0 扱いすると後段で LLVM IR が壊れてセグフォになりやすいので、
-                    // 早めに落として原因が分かるようにする。
+                let Some(fn_name) = self.resolve_function_name(&segments) else {
                     panic!("Undefined function when resolving callchain head: '{head}'");
+                };
+                let function = self
+                    .module
+                    .get_function(&fn_name)
+                    .expect("resolved function must exist");
+
+                let mut llvm_args = Vec::new();
+                for arg in args {
+                    let expr = match arg {
+                        CallArg::Positional(expr) | CallArg::Named(_, expr) => expr,
+                    };
+                    let val = self.compile_expr(expr);
+                    llvm_args.push(val.into());
+                }
+
+                if let Some(block_stmts) = trailing_closure {
+                    let mut i = 0;
+                    let closure_name = loop {
+                        let name = format!("__kome_anon_closure_{}", i);
+                        if self.module.get_function(&name).is_none() {
+                            break name;
+                        }
+                        i += 1;
+                    };
+
+                    let void_type = self.context.void_type();
+                    let closure_fn_type = void_type.fn_type(&[], false);
+                    let closure_function =
+                        self.module
+                            .add_function(&closure_name, closure_fn_type, None);
+
+                    let entry_bb = self.context.append_basic_block(closure_function, "entry");
+                    let current_bb = self.builder.get_insert_block().unwrap();
+                    self.builder.position_at_end(entry_bb);
+
+                    self.push_default_scope();
+                    self.compile_statements(&block_stmts.body)
+                        .expect("Failed to compile trailing closure body");
+                    self.pop_default_scope_apply()
+                        .expect("Failed to apply trailing closure defaults");
+
+                    self.builder
+                        .build_return(None)
+                        .expect("Failed to build return for closure");
+                    self.builder.position_at_end(current_bb);
+
+                    let closure_ptr = closure_function.as_global_value().as_pointer_value();
+                    llvm_args.push(inkwell::values::BasicMetadataValueEnum::from(closure_ptr));
+                }
+
+                let call = self
+                    .builder
+                    .build_call(function, &llvm_args, "calltmp")
+                    .expect("Codegen: Failed to build function call");
+
+                match call.try_as_basic_value() {
+                    ValueKind::Basic(val) => val,
+                    ValueKind::Instruction(_) => self
+                        .context
+                        .i32_type()
+                        .const_int(0, false)
+                        .as_basic_value_enum(),
                 }
             }
 
@@ -2901,7 +3217,18 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
                         .expect("icmp to bool")
                 }
             }
-            _ => panic!("bool へ変換できない値です。"),
+            inkwell::values::BasicValueEnum::PointerValue(pv) => {
+                let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+                self.builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        pv.into(),
+                        ptr_t.const_null(),
+                        "tobool_ptr",
+                    )
+                    .expect("icmp ptr to bool")
+            }
+            _ => panic!("boolへ変換できない値です。"),
         }
     }
 
@@ -2946,7 +3273,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
         if v.is_pointer_value() {
             return v;
         }
-        panic!("ptr? の戻り値はポインタ型である必要があります。");
+        panic!("ptr?の戻り値はポインタ型である必要があります。");
     }
 
     fn build_match_pat_cond(
@@ -2981,7 +3308,7 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             }
             ast::MatchPat::None => {
                 if !value.is_pointer_value() {
-                    panic!("none パターンは ptr にだけ使えます。");
+                    panic!("noneパターンはptrにだけ使えます。");
                 }
                 self.builder
                     .build_is_null(value.into_pointer_value(), "m_isnull")
@@ -2990,17 +3317,642 @@ impl<'a, 'ctx> CodegenContext<'a, 'ctx> {
             ast::MatchPat::String(_s) => {
                 // 今は文字列比較は未実装なので、ポインタ一致のみ
                 if !value.is_pointer_value() {
-                    panic!("string パターンは ptr にだけ使えます。");
+                    panic!("stringパターンはptrにだけ使えます。");
                 }
                 // string literal は global ptr なので、同一リテラル以外は一致しない
                 //（将来的には strcmp を std.string に置く）
                 i1_t.const_int(0, false)
             }
-            ast::MatchPat::Variant(_name) => {
-                // enum の値表現が未実装
-                panic!("enum の match は未実装です。");
+            ast::MatchPat::Variant(name) => {
+                // いまはキー名の簡易マッチだけ受ける
+                let code = match name.as_str() {
+                    "left" => 105,
+                    "right" => 106,
+                    "enter" => 28,
+                    "esc" => 1,
+                    _ => {
+                        panic!("未対応の variant match: {}", name);
+                    }
+                };
+                self.builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        value.into_int_value(),
+                        self.context.i32_type().const_int(code, false),
+                        "m_variant",
+                    )
+                    .expect("icmp")
             }
         }
+    }
+
+    fn value_helper_name(&self, name: &str) -> String {
+        format!("__kome_value_{name}")
+    }
+
+    fn call_value_helper(
+        &mut self,
+        helper_name: &str,
+        receiver: inkwell::values::BasicValueEnum<'ctx>,
+        extra_args: &[inkwell::values::BasicValueEnum<'ctx>],
+    ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+        let function = self.module.get_function(helper_name)?;
+        let mut args = Vec::with_capacity(1 + extra_args.len());
+        args.push(receiver.into());
+        for arg in extra_args {
+            args.push((*arg).into());
+        }
+        let call = self
+            .builder
+            .build_call(function, &args, "value_call")
+            .ok()?;
+        match call.try_as_basic_value() {
+            ValueKind::Basic(v) => Some(v),
+            ValueKind::Instruction(_) => Some(
+                self.context
+                    .ptr_type(AddressSpace::from(0))
+                    .const_null()
+                    .as_basic_value_enum(),
+            ),
+        }
+    }
+
+    fn compile_anonymous_closure(
+        &mut self,
+        params: &[(String, VariableKind)],
+        ret_kind: ReturnKind,
+        body: &[Stmt],
+    ) -> inkwell::values::FunctionValue<'ctx> {
+        let mut i = 0;
+        let closure_name = loop {
+            let name = format!("__kome_anon_closure_{}", i);
+            if self.module.get_function(&name).is_none() {
+                break name;
+            }
+            i += 1;
+        };
+
+        let ptr_t = self.context.ptr_type(AddressSpace::from(0));
+        let i32_t = self.context.i32_type();
+        let i1_t = self.context.bool_type();
+        let fn_param_types = params
+            .iter()
+            .map(|(_, kind)| match kind {
+                VariableKind::I32 => i32_t.into(),
+                VariableKind::Ptr => ptr_t.into(),
+                VariableKind::Bool => i1_t.into(),
+            })
+            .collect::<Vec<_>>();
+        let fn_type = match ret_kind {
+            ReturnKind::Void => self.context.void_type().fn_type(&fn_param_types, false),
+            ReturnKind::I32 => i32_t.fn_type(&fn_param_types, false),
+            ReturnKind::Ptr => ptr_t.fn_type(&fn_param_types, false),
+            ReturnKind::Bool => i1_t.fn_type(&fn_param_types, false),
+            ReturnKind::OptI32 => self.context.i64_type().fn_type(&fn_param_types, false),
+            ReturnKind::OptPtr => ptr_t.fn_type(&fn_param_types, false),
+        };
+
+        let function = self.module.add_function(&closure_name, fn_type, None);
+        let entry_bb = self.context.append_basic_block(function, "entry");
+        let current_bb = self.builder.get_insert_block();
+        let saved_vars = self.variables.clone();
+        let saved_return = self.current_return;
+        self.builder.position_at_end(entry_bb);
+        self.current_return = Some(ret_kind);
+
+        // 外側ローカルは別関数へそのまま持ち込めないので、参照だけ残して
+        // ここでは無害なプレースホルダを置く。
+        self.variables.retain(|_, v| v.is_state);
+
+        let body = body.to_vec();
+        let (body_prefix, body_last) = if ret_kind != ReturnKind::Void {
+            match body.split_last() {
+                Some((last, prefix)) => (prefix, Some(last)),
+                None => (body.as_slice(), None),
+            }
+        } else {
+            (body.as_slice(), None)
+        };
+
+        for (idx, (name, kind)) in params.iter().enumerate() {
+            let alloca = match kind {
+                VariableKind::I32 => self
+                    .builder
+                    .build_alloca(i32_t, name)
+                    .expect("alloca closure i32"),
+                VariableKind::Ptr => self
+                    .builder
+                    .build_alloca(ptr_t, name)
+                    .expect("alloca closure ptr"),
+                VariableKind::Bool => self
+                    .builder
+                    .build_alloca(i1_t, name)
+                    .expect("alloca closure bool"),
+            };
+            let arg = function.get_nth_param(idx as u32).expect("closure param");
+            self.builder.build_store(alloca, arg).expect("store closure param");
+            self.variables.insert(
+                name.clone(),
+                VariableInfo {
+                    ptr: alloca,
+                    is_state: false,
+                    kind: *kind,
+                },
+            );
+        }
+
+        for (name, var) in &saved_vars {
+            if var.is_state || self.variables.contains_key(name) {
+                continue;
+            }
+            let alloca = match var.kind {
+                VariableKind::I32 => self
+                    .builder
+                    .build_alloca(i32_t, name)
+                    .expect("alloca captured i32"),
+                VariableKind::Ptr => self
+                    .builder
+                    .build_alloca(ptr_t, name)
+                    .expect("alloca captured ptr"),
+                VariableKind::Bool => self
+                    .builder
+                    .build_alloca(i1_t, name)
+                    .expect("alloca captured bool"),
+            };
+            match var.kind {
+                VariableKind::I32 => {
+                    self.builder
+                        .build_store(alloca, i32_t.const_int(0, false))
+                        .expect("init captured i32");
+                }
+                VariableKind::Ptr => {
+                    self.builder
+                        .build_store(alloca, ptr_t.const_null())
+                        .expect("init captured ptr");
+                }
+                VariableKind::Bool => {
+                    self.builder
+                        .build_store(alloca, i1_t.const_int(0, false))
+                        .expect("init captured bool");
+                }
+            }
+            self.variables.insert(
+                name.clone(),
+                VariableInfo {
+                    ptr: alloca,
+                    is_state: false,
+                    kind: var.kind,
+                },
+            );
+        }
+
+        self.push_default_scope();
+        self.compile_statements(body_prefix)
+            .expect("Failed to compile closure prefix");
+        self.pop_default_scope_apply()
+            .expect("Failed to apply closure defaults");
+
+        if self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_terminator())
+            .is_none()
+        {
+            match ret_kind {
+                ReturnKind::Void => {
+                    self.builder.build_return(None).ok();
+                }
+                ReturnKind::I32 | ReturnKind::Ptr => match body_last {
+                    Some(stmt) => {
+                        let e = match stmt {
+                            Stmt::ExprStmt(e) | Stmt::Return(Some(e)) => e,
+                            _ => panic!("クロージャは最後の式が必要です。"),
+                        };
+                        let v = self.compile_expr(e);
+                        self.builder.build_return(Some(&v)).ok();
+                    }
+                    _ => panic!("クロージャは最後の式が必要です。"),
+                },
+                ReturnKind::Bool => match body_last {
+                    Some(stmt) => {
+                        let e = match stmt {
+                            Stmt::ExprStmt(e) | Stmt::Return(Some(e)) => e,
+                            _ => panic!("クロージャは最後の式が必要です。"),
+                        };
+                        let tmp = self.compile_expr(e);
+                        let v = self.to_bool(tmp);
+                        self.builder.build_return(Some(&v)).ok();
+                    }
+                    _ => panic!("クロージャは最後の式が必要です。"),
+                },
+                ReturnKind::OptI32 | ReturnKind::OptPtr => {
+                    panic!("このクロージャ戻り値型は未対応です。")
+                }
+            }
+        }
+
+        self.variables = saved_vars;
+        self.current_return = saved_return;
+        if let Some(bb) = current_bb {
+            self.builder.position_at_end(bb);
+        } else {
+            self.builder.clear_insertion_position();
+        }
+        function
+    }
+
+    fn compile_value_chain(
+        &mut self,
+        head: &str,
+        tails: &[ast::Accessor],
+    ) -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+        let apply_tails = |this: &mut Self,
+                           mut current: inkwell::values::BasicValueEnum<'ctx>,
+                           tails: &[ast::Accessor]|
+         -> Option<inkwell::values::BasicValueEnum<'ctx>> {
+            let mut i = 0;
+            while i < tails.len() {
+                match &tails[i] {
+                    ast::Accessor::Property(name) => {
+                        if i + 1 < tails.len() {
+                            if let ast::Accessor::Method(args, trailing) = &tails[i + 1] {
+                                if name == "onKeyTap" {
+                                    if let Some(block_stmts) = trailing {
+                                        let name = block_stmts
+                                            .params
+                                            .first()
+                                            .cloned()
+                                            .unwrap_or_else(|| "key".to_string());
+                                        let closure = this.compile_anonymous_closure(
+                                            &[(name, VariableKind::I32)],
+                                            ReturnKind::Void,
+                                            &block_stmts.body,
+                                        );
+                                        if let Some(setter) =
+                                            this.module.get_function("kome_viewkit_set_key_tap_callback_raw")
+                                        {
+                                            let closure_ptr =
+                                                closure.as_global_value().as_pointer_value();
+                                            let _ = this.builder.build_call(
+                                                setter,
+                                                &[current.into(), closure_ptr.into()],
+                                                "set_key_cb",
+                                            );
+                                        }
+                                        i += 2;
+                                        continue;
+                                    }
+                                }
+
+                                if name == "onClick" {
+                                    if let Some(block_stmts) = trailing {
+                                        let closure = this.compile_anonymous_closure(
+                                            &[],
+                                            ReturnKind::Void,
+                                            &block_stmts.body,
+                                        );
+                                        if let Some(handler_fn) =
+                                            this.module.get_function("viewKit_handler_card_onClick")
+                                        {
+                                            let closure_ptr =
+                                                closure.as_global_value().as_pointer_value();
+                                            let _ = this.builder.build_call(
+                                                handler_fn,
+                                                &[closure_ptr.into()],
+                                                "set_click_cb",
+                                            );
+                                        }
+                                        i += 2;
+                                        continue;
+                                    }
+                                }
+
+                                if name == "err" && current.is_pointer_value() && args.len() >= 2 {
+                                    let handler_expr = match &args[0] {
+                                        CallArg::Positional(expr) | CallArg::Named(_, expr) => expr,
+                                    };
+                                    let fallback_expr = match &args[1] {
+                                        CallArg::Positional(expr) | CallArg::Named(_, expr) => expr,
+                                    };
+
+                                    let ptr_t = this.context.ptr_type(AddressSpace::from(0));
+                                    let non_null = this
+                                        .builder
+                                        .build_is_not_null(current.into_pointer_value(), "err_nonnull")
+                                        .expect("err nonnull");
+                                    let parent = this
+                                        .builder
+                                        .get_insert_block()
+                                        .expect("err requires insert block")
+                                        .get_parent()
+                                        .expect("err requires parent func");
+                                    let ok_bb = this.context.append_basic_block(parent, "err_ok");
+                                    let err_bb = this.context.append_basic_block(parent, "err_bad");
+                                    let merge_bb = this.context.append_basic_block(parent, "err_merge");
+
+                                    this.builder
+                                        .build_conditional_branch(non_null, ok_bb, err_bb)
+                                        .expect("err branch");
+
+                                    this.builder.position_at_end(ok_bb);
+                                    let ok_end = this.builder.get_insert_block().expect("err ok");
+                                    if ok_end.get_terminator().is_none() {
+                                        this.builder
+                                            .build_unconditional_branch(merge_bb)
+                                            .expect("err ok br");
+                                    }
+
+                                    this.builder.position_at_end(err_bb);
+                                    let fallback_val = this.compile_expr(fallback_expr);
+                                    if let Expr::Ident(handler_name) = handler_expr {
+                                        if handler_name == "panic" {
+                                            if let Some(panic_fn) = this.module.get_function("process_panic") {
+                                                let _ = this.builder.build_call(
+                                                    panic_fn,
+                                                    &[fallback_val.into()],
+                                                    "err_panic",
+                                                );
+                                            }
+                                        }
+                                    }
+                                    let err_end = this.builder.get_insert_block().expect("err bad");
+                                    if err_end.get_terminator().is_none() {
+                                        this.builder
+                                            .build_unconditional_branch(merge_bb)
+                                            .expect("err bad br");
+                                    }
+
+                                    this.builder.position_at_end(merge_bb);
+                                    let phi = this
+                                        .builder
+                                        .build_phi(ptr_t, "errtmp")
+                                        .expect("phi err");
+                                    phi.add_incoming(&[
+                                        (&current.into_pointer_value(), ok_end),
+                                        (&fallback_val.into_pointer_value(), err_end),
+                                    ]);
+                                    current = phi.as_basic_value();
+                                    i += 2;
+                                    continue;
+                                }
+
+                                if name == "children" {
+                                    if let Some(function) = this.module.get_function("components_children") {
+                                        let mut llvm_args = Vec::new();
+                                        llvm_args.push(current.into());
+
+                                        if let Some(params) = this.fn_params.get("components_children").map(|p| p.as_slice()) {
+                                            let is_variadic = params.iter().any(|p| p.is_variadic);
+                                            if is_variadic {
+                                                let ptr_t = this.context.ptr_type(AddressSpace::from(0));
+                                                let i32_t = this.context.i32_type();
+                                                let extra_args = args;
+                                                if extra_args.is_empty() {
+                                                    llvm_args.push(ptr_t.const_null().into());
+                                                    llvm_args.push(i32_t.const_int(0, false).into());
+                                                } else {
+                                                    let array_ty = ptr_t.array_type(extra_args.len() as u32);
+                                                    let array_alloca = this
+                                                        .builder
+                                                        .build_alloca(array_ty, "children_args")
+                                                        .ok()?;
+                                                    let zero = i32_t.const_int(0, false);
+                                                    for (index, a) in extra_args.iter().enumerate() {
+                                                        let value = this.compile_call_arg_value(a);
+                                                        let value = if value.is_pointer_value() {
+                                                            value
+                                                        } else {
+                                                            return None;
+                                                        };
+                                                        let idx = i32_t.const_int(index as u64, false);
+                                                        let element_ptr = unsafe {
+                                                            this.builder
+                                                                .build_in_bounds_gep(
+                                                                    array_ty,
+                                                                    array_alloca,
+                                                                    &[zero, idx],
+                                                                    "children_gep",
+                                                                )
+                                                                .ok()?
+                                                        };
+                                                        this.builder.build_store(element_ptr, value).ok()?;
+                                                    }
+                                                    llvm_args.push(array_alloca.into());
+                                                    llvm_args.push(i32_t.const_int(extra_args.len() as u64, false).into());
+                                                }
+                                            } else {
+                                                for a in args {
+                                                    llvm_args.push(this.compile_call_arg_value(a).into());
+                                                }
+                                            }
+                                        } else {
+                                            for a in args {
+                                                llvm_args.push(this.compile_call_arg_value(a).into());
+                                            }
+                                        }
+
+                                        let call = this
+                                            .builder
+                                            .build_call(function, &llvm_args, "children_call")
+                                            .ok()?;
+                                        current = match call.try_as_basic_value() {
+                                            ValueKind::Basic(v) => v,
+                                            ValueKind::Instruction(_) => return None,
+                                        };
+                                        i += 2;
+                                        continue;
+                                    }
+                                }
+
+                                let mut call_args = Vec::new();
+                                for a in args {
+                                    let expr = match a {
+                                        CallArg::Positional(expr) | CallArg::Named(_, expr) => expr,
+                                    };
+                                    call_args.push(this.compile_expr(expr));
+                                }
+
+                                let closure_ptr = if let Some(block_stmts) = trailing {
+                                    let closure_ret = match name.as_str() {
+                                        "filter" => ReturnKind::Bool,
+                                        "onClick" => ReturnKind::Void,
+                                        "onKeyTap" => ReturnKind::Void,
+                                        _ => ReturnKind::Ptr,
+                                    };
+                                    let closure_params = match name.as_str() {
+                                        "map" | "filter" => {
+                                            let names = if block_stmts.params.is_empty() {
+                                                vec!["it".to_string(), "i".to_string()]
+                                            } else if block_stmts.params.len() == 1 {
+                                                vec![
+                                                    block_stmts.params[0].clone(),
+                                                    "i".to_string(),
+                                                ]
+                                            } else {
+                                                block_stmts.params.clone()
+                                            };
+                                            vec![
+                                                (names[0].clone(), VariableKind::Ptr),
+                                                (names[1].clone(), VariableKind::I32),
+                                            ]
+                                        }
+                                        "onKeyTap" => {
+                                            let name = block_stmts
+                                                .params
+                                                .first()
+                                                .cloned()
+                                                .unwrap_or_else(|| "key".to_string());
+                                            vec![(name, VariableKind::I32)]
+                                        }
+                                        _ => Vec::new(),
+                                    };
+                                    let closure = this.compile_anonymous_closure(
+                                        &closure_params,
+                                        closure_ret,
+                                        &block_stmts.body,
+                                    );
+                                    Some(closure.as_global_value().as_pointer_value())
+                                } else {
+                                    None
+                                };
+
+                                let helper = this.value_helper_name(name);
+                                let mut extra = call_args;
+                                if let Some(cp) = closure_ptr {
+                                    extra.push(cp.as_basic_value_enum());
+                                }
+                                current = this.call_value_helper(&helper, current, &extra)?;
+                                i += 2;
+                                continue;
+                            }
+                        }
+
+                        let helper = this.value_helper_name(name);
+                        if let Some(v) = this.call_value_helper(&helper, current, &[]) {
+                            current = v;
+                        } else if current.is_pointer_value() {
+                            let record_field = this
+                                .module
+                                .get_function("__kome_record_field")
+                                .or_else(|| {
+                                    let ptr_t = this.context.ptr_type(AddressSpace::from(0));
+                                    let fn_ty = ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+                                    Some(this.module.add_function("__kome_record_field", fn_ty, None))
+                                })?;
+                            let key = this
+                                .builder
+                                .build_global_string_ptr(name, "record_field_key")
+                                .expect("record field key");
+                            let call = this
+                                .builder
+                                .build_call(
+                                    record_field,
+                                    &[current.into(), key.as_pointer_value().into()],
+                                    "record_field",
+                                )
+                                .ok()?;
+                            current = match call.try_as_basic_value() {
+                                ValueKind::Basic(v) => v,
+                                ValueKind::Instruction(_) => return None,
+                            };
+                        } else {
+                            return None;
+                        }
+                        i += 1;
+                    }
+                    ast::Accessor::Index(expr) => {
+                        let idx = this.compile_expr(expr);
+                        let helper = this.value_helper_name("index");
+                        current = this.call_value_helper(&helper, current, &[idx])?;
+                        i += 1;
+                    }
+                    ast::Accessor::With(name, pairs) => {
+                        if name == "children" {
+                            // windowPtr with children(...) は UI ツリーを更新する
+                            if current.is_pointer_value() {
+                                if let Some((_, value_expr)) = pairs.first() {
+                                    // recipe 参照 (`App.main`) は `App_recipe_main()` を呼ぶ
+                                    if let Expr::CallChain { head, tails } = value_expr {
+                                        if tails.len() == 1 {
+                                            if let ast::Accessor::Property(prop) = &tails[0] {
+                                                let recipe_fn_name = format!("{}_recipe_{}", head.replace('.', "_"), prop);
+                                                if let Some(recipe_fn) = this.module.get_function(&recipe_fn_name) {
+                                                    let _ = this.builder.build_call(recipe_fn, &[], "with_children_recipe");
+                                                    i += 1;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    let json_value = this.compile_expr(value_expr);
+                                    if json_value.is_pointer_value() {
+                                        let update = this
+                                            .module
+                                            .get_function("kome_viewkit_update_ui_tree")
+                                            .or_else(|| this.module.get_function("viewkit_update_ui_tree"))?;
+                                        let _ = this.builder.build_call(
+                                            update,
+                                            &[
+                                                current.into(),
+                                                json_value.into_pointer_value().into(),
+                                            ],
+                                            "with_children_update",
+                                        );
+                                    }
+                                }
+                            }
+                            i += 1;
+                            continue;
+                        }
+                        i += 1;
+                    }
+                    ast::Accessor::Method(_, _) => return None,
+                }
+            }
+            Some(current)
+        };
+
+        if let Some(ast::Accessor::Method(args, trailing)) = tails.first() {
+            let Some(fn_name) = self.resolve_function_name_from_head(head, &[]) else {
+                return None;
+            };
+            let function = self.module.get_function(&fn_name)?;
+            let current = self.build_named_call(function, &fn_name, args, trailing.as_ref(), "calltmp")?;
+            if tails.len() == 1 {
+                return Some(current);
+            }
+            return apply_tails(self, current, &tails[1..]);
+        }
+
+        if self.variables.contains_key(head) || self.module.get_global(head).is_some() {
+            let current = self.compile_expr(&Expr::Ident(head.to_string()));
+            return apply_tails(self, current, tails);
+        }
+
+        if tails.len() == 1
+            && matches!(tails[0], ast::Accessor::Property(_))
+            && (self.variables.contains_key(head)
+                || self.module.get_global(head).is_some()
+                || self.resolve_function_name_from_head(head, &[]).is_some())
+        {
+            let current = self.compile_expr(&Expr::Ident(head.to_string()));
+            return apply_tails(self, current, tails);
+        }
+
+        if tails.len() >= 2 {
+            if let (ast::Accessor::Property(prop), ast::Accessor::Method(args, trailing)) =
+                (&tails[0], &tails[1])
+            {
+                let fn_name = format!("{}_{}", head, prop);
+                if let Some(function) = self.module.get_function(&fn_name) {
+                    let current = self.build_named_call(function, &fn_name, args, trailing.as_ref(), "prefix_call")?;
+                    return apply_tails(self, current, &tails[2..]);
+                }
+            }
+        }
+
+        None
     }
 
     fn compile_block_expr(&mut self, stmts: &[Stmt]) -> inkwell::values::BasicValueEnum<'ctx> {

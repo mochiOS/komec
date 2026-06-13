@@ -106,6 +106,7 @@ fn type_of_expr(expr: &Expr, env: &HashMap<String, Type>) -> Type {
                 Type::Unknown
             }
         }
+        Expr::Record(_) => Type::Ptr,
         Expr::Block(_) => Type::Void,
         Expr::CallChain { .. } => Type::Unknown,
     }
