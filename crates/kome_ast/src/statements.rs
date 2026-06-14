@@ -7,14 +7,14 @@ use crate::{AstNode, Span};
 pub enum Statement {
     Block(BlockStatement),
     Expression(ExpressionStatement),
-    Let(LetStatement),
+    Let(crate::declarations::Binding),
     If(IfStatement),
     While(WhileStatement),
     ForIn(ForInStatement),
     Return(ReturnStatement),
     Break(BreakStatement),
     Continue(ContinueStatement),
-    Empty(EmptyStatement),
+    Empty(Span),
     Is(IsStatement),
     Declaration(crate::declarations::Declaration),
 }
@@ -26,17 +26,6 @@ pub enum Statement {
 pub struct BlockStatement {
     pub span: Span,
     pub statements: Vec<Statement>,
-}
-
-// ---- Let ----
-
-/// A `let` statement.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LetStatement {
-    pub span: Span,
-    pub pattern: crate::patterns::Pattern,
-    pub init: Option<crate::expressions::Expression>,
-    pub type_annotation: Option<crate::types::Type>,
 }
 
 // ---- Expression ----
@@ -120,14 +109,6 @@ pub struct IsStatement {
     pub body: Box<Statement>,
 }
 
-// ---- Empty ----
-
-/// Empty statement (bare `;`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct EmptyStatement {
-    pub span: Span,
-}
-
 // ---- AstNode implementation ----
 
 impl AstNode for Statement {
@@ -143,7 +124,7 @@ impl AstNode for Statement {
             Statement::Break(s) => s.span,
             Statement::Continue(s) => s.span,
             Statement::Is(s) => s.span,
-            Statement::Empty(s) => s.span,
+            Statement::Empty(s) => *s,
             Statement::Declaration(d) => d.span(),
         }
     }
