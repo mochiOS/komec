@@ -1,0 +1,115 @@
+// ============================================================
+// all_syntax.kome  —  kome_ast でカバーされている全構文の網羅
+// ============================================================
+
+// ---- use ----
+use *
+use devkit
+
+// ---- function ----
+func greet(name: String, greeting: String) -> String {
+    return greeting + ", " + name
+}
+func add(a: Number, b: Number = 0) -> Number { a + b }
+func log(value: String) { print(value) }
+
+// ---- component ----
+@application
+component App(title: String = "Kome") {
+    // ---- state ----
+    state items = [1, 2, 3]
+    state name = "world"
+    state flag = true
+    state fig = 100
+    state val = null
+    state ratio = 50%
+    state nested = { a: 1, b: 2 }
+    state counter = 0
+    state input = TextInput()
+    state color = .blue
+    state pct = 75%
+    state list = [1, 2, 3, null]
+    state obj = { name: "kome", version: 1 }
+    state msg = "result: {counter + 1}"
+    state zero = 0
+    state active = true
+    state total = (1 + 2) * 3
+
+    // ---- body recipe ----
+    recipe body {
+        VStack {
+            Text("Hello, {name}", weight: .bold),
+            Text("count: {counter}"),
+            Button("increment", color: .blue, radius: 50%),
+        }
+    }
+
+    // ---- recipe with event source ----
+    recipe handle_click: button {
+        counter = counter + 1
+
+        if counter > 10 {
+            counter = 0
+        } else {
+            counter = counter + 1
+        }
+    }
+
+    recipe on_input: input {
+        // ---- is statement (single-arm) ----
+        is input.event .entered => {
+            for item in items {
+                print(item)
+            }
+        }
+    }
+
+    // 属性も依存ステートもない recipe → 呼ばれないので warn
+    recipe compute {
+        // ---- closure ----
+        items.each(|v| print(v))
+        items.sort(|a, b| a > b)
+
+        // ---- call with named args ----
+        Button("click", color: .red, radius: 50%)
+
+        // ---- member call ----
+        config.send("ready")
+
+        // ---- member / index ----
+        label = obj.name
+        first = items[0]
+    }
+
+    // 同上 (warn)
+    recipe lifecycle {
+        while counter < 100 {
+            counter = counter + 1
+        }
+
+        for item in items {
+            if item == null {
+                continue
+            }
+            if item == 0 {
+                break
+            }
+            print(item)
+        }
+
+        return
+    }
+}
+
+// ---- component with block children ----
+component ListView() {
+    state items = ["a", "b"]
+
+    recipe body {
+        VStack {
+            Text("Items"),
+            List { items.expand() },
+            Button("add", color: .green),
+        }
+    }
+}
