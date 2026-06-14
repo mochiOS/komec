@@ -6,12 +6,12 @@
 use *
 use devkit
 
-// ---- function ----
-func greet(name: String, greeting: String) -> String {
+// ---- fntion ----
+fn greet(name: String, greeting: String) -> String {
     return greeting + ", " + name
 }
-func add(a: Number, b: Number = 0) -> Number { a + b }
-func log(value: String) { print(value) }
+fn add(a: Number, b: Number = 0) -> Number { a + b }
+fn log(value: String) { print(value) }
 
 // ---- component ----
 @application
