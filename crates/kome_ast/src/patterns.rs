@@ -24,12 +24,13 @@ pub struct LiteralPattern {
     pub value: crate::expressions::LiteralKind,
 }
 
-/// `name` or `name: Type`.
+/// `name`, `name: Type`, or `name: Type = default`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentifierPattern {
     pub span: Span,
     pub name: String,
     pub type_annotation: Option<crate::types::Type>,
+    pub default: Option<Box<crate::expressions::Expression>>,
 }
 
 /// `.name` pattern for `is` matching.

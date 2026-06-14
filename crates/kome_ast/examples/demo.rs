@@ -45,6 +45,7 @@ fn main() {
             span: Span::new(20, 26),
             kind: PrimitiveTypeKind::String,
         })),
+        default: None,
     });
 
     // --- function: fn greet(name: String) { ... } ---
