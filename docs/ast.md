@@ -73,8 +73,6 @@
 | `List` | List type (`ElementType[]`) |
 | `Object` | Object type (`{ key: Type }`) |
 | `Named` | Named type (`Name<Arg>`) |
-| `Union` | Union type (`A \| B`) |
-| `Intersection` | Intersection type (`A & B`) |
 
 ## Sub-nodes
 
