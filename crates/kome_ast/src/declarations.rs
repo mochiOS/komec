@@ -7,8 +7,8 @@ use crate::{AstNode, Span};
 pub enum Declaration {
     Component(ComponentDeclaration),
     Function(FunctionDeclaration),
-    Let(LetDeclaration),
-    Constant(ConstantDeclaration),
+    Let(Binding),
+    Constant(Binding),
     Use(UseDeclaration),
 }
 
@@ -24,44 +24,17 @@ pub enum Declaration {
 pub struct ComponentDeclaration {
     pub span: Span,
     pub name: String,
-    pub params: Vec<ComponentParameter>,
+    pub params: Vec<crate::types::Parameter>,
     pub attributes: Vec<Attribute>,
     pub body: Vec<ComponentMember>,
-}
-
-/// A component parameter, optionally with a default value.
-///
-/// ```kome
-/// component Text(label: String, color: Color = .normal_text_color)
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-pub struct ComponentParameter {
-    pub span: Span,
-    pub name: String,
-    pub type_annotation: Option<crate::types::Type>,
-    pub default: Option<crate::expressions::Expression>,
 }
 
 /// An item inside a component body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentMember {
-    State(StateDeclaration),
+    State(Binding),
     Recipe(RecipeDeclaration),
     Attribute(Attribute),
-}
-
-// ---- State ----
-
-/// A `state` variable inside a component.
-///
-/// ```kome
-/// state items = []
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-pub struct StateDeclaration {
-    pub span: Span,
-    pub pattern: crate::patterns::Pattern,
-    pub init: Option<crate::expressions::Expression>,
 }
 
 // ---- Recipe ----
@@ -102,20 +75,11 @@ pub struct FunctionDeclaration {
     pub return_type: Option<crate::types::Type>,
 }
 
-// ---- Let / Constant ----
+// ---- Binding (state / let / const) ----
 
-/// A `let` binding.
+/// A variable binding: `state`, `let`, or `const`.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LetDeclaration {
-    pub span: Span,
-    pub pattern: crate::patterns::Pattern,
-    pub init: Option<crate::expressions::Expression>,
-    pub type_annotation: Option<crate::types::Type>,
-}
-
-/// A `const` binding.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConstantDeclaration {
+pub struct Binding {
     pub span: Span,
     pub pattern: crate::patterns::Pattern,
     pub init: Option<crate::expressions::Expression>,
@@ -172,8 +136,7 @@ impl AstNode for Declaration {
         match self {
             Declaration::Component(d) => d.span,
             Declaration::Function(d) => d.span,
-            Declaration::Let(d) => d.span,
-            Declaration::Constant(d) => d.span,
+            Declaration::Let(d) | Declaration::Constant(d) => d.span,
             Declaration::Use(d) => d.span,
         }
     }
