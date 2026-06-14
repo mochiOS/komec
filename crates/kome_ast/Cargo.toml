@@ -1,5 +1,5 @@
 [package]
-name = "mochi_ast"
+name = "kome_ast"
 version = "0.1.0"
 edition.workspace = true
 

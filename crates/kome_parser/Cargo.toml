@@ -1,7 +1,7 @@
 [package]
-name = "mochi_parser"
+name = "kome_parser"
 version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
-mochi-ast.workspace = true
+kome_ast.workspace = true
