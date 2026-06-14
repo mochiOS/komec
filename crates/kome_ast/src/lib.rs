@@ -25,7 +25,6 @@ impl Span {
     pub const fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
-
 }
 
 /// Every AST node has a source [`Span`].
