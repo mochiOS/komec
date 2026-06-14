@@ -1,7 +1,0 @@
-fn bad(x: Int) -> Int {
-    if x == 0 {
-        return 1
-    }
-    // else が無いので fallthrough する可能性がある
-}
-

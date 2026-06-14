@@ -1,5 +1,0 @@
-cinclude "concat.h"
-
-fn concat(a: String, b: String) -> String {
-    concat(a, b)
-}

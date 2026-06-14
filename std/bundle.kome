@@ -1,5 +1,0 @@
-use libc.bundle
-
-extend bundle.run() {
-    __kome_runtime_start_loop()
-}

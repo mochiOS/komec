@@ -1,7 +1,0 @@
-use std.io
-
-fn main() {
-    let mut x = if 1 == 1 { 10 } else { 20 }
-    io.println("x=%d", x)
-}
-
