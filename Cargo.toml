@@ -6,8 +6,13 @@ edition = "2024"
 [workspace]
 resolver = "3"
 members = [
-  "crates/mochi_ast", "crates/mochi_parser",
-  "crates/parser",
+  "crates/mochi_ast",
+  "crates/mochi_parser",
 ]
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+mochi-ast = { path = "crates/mochi_ast" }
 
 [dependencies]
