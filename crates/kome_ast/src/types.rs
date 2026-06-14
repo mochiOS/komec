@@ -31,12 +31,13 @@ pub enum PrimitiveTypeKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionType {
     pub span: Span,
-    pub params: Vec<FunctionParameterType>,
+    pub params: Vec<Parameter>,
     pub return_type: Box<Type>,
 }
 
+/// A single parameter in a function type or component declaration.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionParameterType {
+pub struct Parameter {
     pub span: Span,
     pub name: String,
     pub type_: Type,
