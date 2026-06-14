@@ -34,7 +34,6 @@
 | `Return` | Return |
 | `Break` | Break (optional label) |
 | `Continue` | Continue (optional label) |
-| `Empty` | Empty statement (`;`) |
 | `Is` | Is pattern-match statement |
 | `Declaration` | Declaration (see below) |
 
