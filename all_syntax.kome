@@ -27,7 +27,7 @@ component App(title: String = "Kome") {
     state total = (1 + 2) * 3
 
     @body
-    recipe body {
+    struct body {
         VStack {
             Text("Hello, {name}", weight: .bold),
             Text("count: {counter}"),
@@ -94,7 +94,7 @@ component ListView() {
     state items = ["a", "b"]
 
     @body
-    recipe body {
+    struct body {
         VStack {
             Text("Items"),
             List { items.expand() },
