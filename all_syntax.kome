@@ -94,7 +94,7 @@ component ListView() {
     state items = ["a", "b"]
 
     @body
-    let mut body: View = {
+    let body: View = {
         VStack {
             Text("Items"),
             List { items.expand() },

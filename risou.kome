@@ -7,7 +7,7 @@ component App(title: String = "Kome") {
     state input = ""
 
     @body
-    let mut body: View = {
+    let body: View = {
         VStack(
             spacing: .large,
             alignment: .center,

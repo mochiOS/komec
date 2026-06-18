@@ -1,4 +1,4 @@
-//! Top-level declarations: `component`, `function`, `let`, `const`, `use`.
+//! Declarations: `component`, `function`, `recipe`, `state`, `let`, `const`, `use`.
 
 use crate::{AstNode, Span};
 
@@ -18,7 +18,18 @@ pub enum Declaration {
 ///
 /// ```kome
 /// @application
-/// component App() { state x = 1; recipe body { ... } }
+/// component App() {
+///     state counter = 0
+///
+///     @body
+///     let body: View = {
+///         Text("count: {counter}")
+///     }
+///
+///     fn increment() {
+///         counter = counter + 1
+///     }
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComponentDeclaration {
@@ -29,25 +40,28 @@ pub struct ComponentDeclaration {
     pub body: Vec<ComponentMember>,
 }
 
-/// An item inside a component body.
+/// An item declared inside a component body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentMember {
     State(Box<Binding>),
+    Let(Box<Binding>),
     Recipe(RecipeDeclaration),
-    Attribute(Attribute),
+    Function(FunctionDeclaration),
 }
 
 // ---- Recipe ----
 
-/// A `recipe` (event handler / lifecycle method) inside a component.
+/// A `recipe` event handler or lifecycle declaration inside a component.
 ///
 /// ```kome
-/// recipe body { ... }
-/// recipe load_article: id_input { ... }
+/// recipe load_article: id_input {
+///     print(id_input)
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecipeDeclaration {
     pub span: Span,
+    pub attributes: Vec<Attribute>,
     pub name: String,
     pub event_source: Option<String>,
     pub body: crate::statements::BlockStatement,
@@ -55,7 +69,7 @@ pub struct RecipeDeclaration {
 
 // ---- Attribute ----
 
-/// An attribute, e.g. `@application`.
+/// An attribute such as `@application` or `@body`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attribute {
     pub span: Span,
@@ -65,10 +79,13 @@ pub struct Attribute {
 
 // ---- Function ----
 
-/// A standalone function declaration.
+/// A function declaration.
+///
+/// Functions may be declared at the top level or inside a component.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDeclaration {
     pub span: Span,
+    pub attributes: Vec<Attribute>,
     pub name: String,
     pub params: Vec<crate::patterns::Pattern>,
     pub body: Option<crate::statements::BlockStatement>,
@@ -77,10 +94,11 @@ pub struct FunctionDeclaration {
 
 // ---- Binding (state / let / const) ----
 
-/// A variable binding: `state`, `let`, or `const`.
+/// A variable binding declared with `state`, `let`, or `const`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub span: Span,
+    pub attributes: Vec<Attribute>,
     pub pattern: crate::patterns::Pattern,
     pub init: Option<crate::expressions::Expression>,
     pub type_annotation: Option<crate::types::Type>,
@@ -91,8 +109,8 @@ pub struct Binding {
 /// A `use` import.
 ///
 /// ```kome
-/// use *;
-/// use viewkit;
+/// use *
+/// use viewKit
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseDeclaration {
@@ -110,7 +128,7 @@ pub enum UseSpecifier {
 
 // ---- Module ----
 
-/// A source file: a list of declarations.
+/// A source file containing a list of declarations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     pub span: Span,
@@ -123,21 +141,76 @@ impl Module {
     }
 }
 
+// ---- AstNode implementations ----
+
 impl AstNode for Module {
     fn span(&self) -> Span {
         self.span
     }
 }
 
-// ---- AstNode implementation ----
-
 impl AstNode for Declaration {
     fn span(&self) -> Span {
         match self {
-            Declaration::Component(d) => d.span,
-            Declaration::Function(d) => d.span,
-            Declaration::Let(d) | Declaration::Constant(d) => d.span,
-            Declaration::Use(d) => d.span,
+            Declaration::Component(declaration) => declaration.span,
+            Declaration::Function(declaration) => declaration.span,
+            Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
+            Declaration::Use(declaration) => declaration.span,
+        }
+    }
+}
+
+impl AstNode for ComponentDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for ComponentMember {
+    fn span(&self) -> Span {
+        match self {
+            ComponentMember::State(binding) => binding.span,
+            ComponentMember::Let(binding) => binding.span,
+            ComponentMember::Recipe(declaration) => declaration.span,
+            ComponentMember::Function(declaration) => declaration.span,
+        }
+    }
+}
+
+impl AstNode for RecipeDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for Attribute {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for FunctionDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for Binding {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for UseDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for UseSpecifier {
+    fn span(&self) -> Span {
+        match self {
+            UseSpecifier::Wildcard { span } | UseSpecifier::Named { span, .. } => *span,
         }
     }
 }
