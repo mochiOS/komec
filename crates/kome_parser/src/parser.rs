@@ -1,11 +1,13 @@
 use kome_ast::{
     AstNode, Span,
     declarations::{
-        Attribute, ComponentDeclaration, Declaration, Module, UseDeclaration, UseSpecifier,
+        Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, Module,
+        UseDeclaration, UseSpecifier,
     },
     expressions::{
         DotIdentifierExpression, Expression, LiteralKind, NumberLiteral,
     },
+    patterns::{IdentifierPattern, Pattern},
     types::{
         NamedType, Parameter, PrimitiveType, PrimitiveTypeKind, Type,
     },
@@ -54,27 +56,28 @@ impl Parser {
     fn parse_declaration(&mut self) -> Result<Declaration, ParseError> {
         let attributes = self.parse_attributes()?;
 
-        match &self.current().kind {
-            TokenKind::Component => self
+        if self.at(|kind| matches!(kind, TokenKind::Component)) {
+            return self
                 .parse_component_declaration(attributes)
-                .map(Declaration::Component),
+                .map(Declaration::Component);
+        }
 
-            TokenKind::Use if attributes.is_empty() => {
-                self.parse_use_declaration()
-                    .map(Declaration::Use)
+        if self.at(|kind| matches!(kind, TokenKind::Use)) {
+            if attributes.is_empty() {
+                return self
+                    .parse_use_declaration()
+                    .map(Declaration::Use);
             }
 
-            TokenKind::Use => {
-                Err(self.expected(
-                    "a component or function declaration after attributes",
-                ))
-            }
+            return Err(self.expected(
+                "a component or function declaration after attributes",
+            ));
+        }
 
-            _ if attributes.is_empty() => {
-                Err(self.expected("a top-level declaration"))
-            }
-
-            _ => Err(self.expected("a declaration after attributes")),
+        if attributes.is_empty() {
+            Err(self.expected("a top-level declaration"))
+        } else {
+            Err(self.expected("a declaration after attributes"))
         }
     }
 
@@ -139,6 +142,16 @@ impl Parser {
             |kind| matches!(kind, TokenKind::LBrace),
         )?;
 
+        let mut body = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            body.push(self.parse_component_member()?);
+        }
+
         let closing_brace = self.expect(
             "`}`",
             |kind| matches!(kind, TokenKind::RBrace),
@@ -149,7 +162,7 @@ impl Parser {
             name,
             params,
             attributes,
-            body: Vec::new(),
+            body,
         })
     }
 
@@ -197,20 +210,157 @@ impl Parser {
             matches!(kind, TokenKind::Assign)
         }) {
             self.advance();
-            Some(self.parse_parameter_default()?)
+
+            Some(self.parse_value_expression(
+                "a parameter default value",
+            )?)
         } else {
             None
         };
 
         let end = default
             .as_ref()
-            .map_or(type_end, |expression| expression.span().end);
+            .map_or(type_end, |expression| {
+                expression.span().end
+            });
 
         Ok(Parameter {
             span: Span::new(name_span.start, end),
             name,
             type_,
             default,
+        })
+    }
+
+    fn parse_component_member(
+        &mut self,
+    ) -> Result<ComponentMember, ParseError> {
+        let attributes = self.parse_attributes()?;
+
+        if self.at(|kind| matches!(kind, TokenKind::State)) {
+            return self
+                .parse_state_binding(attributes)
+                .map(|binding| {
+                    ComponentMember::State(Box::new(binding))
+                });
+        }
+
+        if self.at(|kind| matches!(kind, TokenKind::Let)) {
+            return self
+                .parse_let_binding(attributes)
+                .map(|binding| {
+                    ComponentMember::Let(Box::new(binding))
+                });
+        }
+
+        if attributes.is_empty() {
+            Err(self.expected("a component member"))
+        } else {
+            Err(self.expected(
+                "a component member after attributes",
+            ))
+        }
+    }
+
+    fn parse_state_binding(
+        &mut self,
+        attributes: Vec<Attribute>,
+    ) -> Result<Binding, ParseError> {
+        let keyword = self.expect(
+            "`state`",
+            |kind| matches!(kind, TokenKind::State),
+        )?;
+
+        self.parse_binding_after_keyword(
+            attributes,
+            keyword.span.start,
+            false,
+        )
+    }
+
+    fn parse_let_binding(
+        &mut self,
+        attributes: Vec<Attribute>,
+    ) -> Result<Binding, ParseError> {
+        let keyword = self.expect(
+            "`let`",
+            |kind| matches!(kind, TokenKind::Let),
+        )?;
+
+        let mutable = if self.at(|kind| {
+            matches!(kind, TokenKind::Mut)
+        }) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        self.parse_binding_after_keyword(
+            attributes,
+            keyword.span.start,
+            mutable,
+        )
+    }
+
+    fn parse_binding_after_keyword(
+        &mut self,
+        attributes: Vec<Attribute>,
+        keyword_start: usize,
+        mutable: bool,
+    ) -> Result<Binding, ParseError> {
+        let (name, name_span) =
+            self.expect_identifier("a binding name")?;
+
+        let type_annotation = if self.at(|kind| {
+            matches!(kind, TokenKind::Colon)
+        }) {
+            self.advance();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let init = if self.at(|kind| {
+            matches!(kind, TokenKind::Assign)
+        }) {
+            self.advance();
+
+            Some(self.parse_value_expression(
+                "an initializer expression",
+            )?)
+        } else {
+            None
+        };
+
+        let end = init
+            .as_ref()
+            .map(|expression| expression.span().end)
+            .or_else(|| {
+                type_annotation
+                    .as_ref()
+                    .map(|type_| type_.span().end)
+            })
+            .unwrap_or(name_span.end);
+
+        let start = attributes
+            .first()
+            .map_or(keyword_start, |attribute| {
+                attribute.span.start
+            });
+
+        Ok(Binding {
+            span: Span::new(start, end),
+            attributes,
+            mutable,
+            pattern: Pattern::Ident(IdentifierPattern {
+                span: name_span,
+                name,
+                type_annotation: None,
+                default: None,
+            }),
+            init,
+            type_annotation,
         })
     }
 
@@ -249,11 +399,13 @@ impl Parser {
         Ok(type_)
     }
 
-    fn parse_parameter_default(
+    fn parse_value_expression(
         &mut self,
+        expected: &'static str,
     ) -> Result<Expression, ParseError> {
         if self.at(|kind| matches!(kind, TokenKind::Dot)) {
             let dot = self.advance();
+
             let (name, name_span) =
                 self.expect_identifier(
                     "an identifier after `.`",
@@ -283,14 +435,18 @@ impl Parser {
 
             TokenKind::Number(value) => {
                 Expression::literal(
-                    LiteralKind::Number(NumberLiteral(value)),
+                    LiteralKind::Number(
+                        NumberLiteral(value),
+                    ),
                     span,
                 )
             }
 
             TokenKind::Percent(value) => {
                 Expression::literal(
-                    LiteralKind::Percent(NumberLiteral(value)),
+                    LiteralKind::Percent(
+                        NumberLiteral(value),
+                    ),
                     span,
                 )
             }
@@ -323,7 +479,7 @@ impl Parser {
             found => {
                 return Err(ParseError::new(
                     ParseErrorKind::Expected {
-                        expected: "a parameter default value",
+                        expected,
                         found,
                     },
                     span,
