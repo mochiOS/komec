@@ -32,7 +32,7 @@ pub struct ComponentDeclaration {
 /// An item inside a component body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentMember {
-    State(Binding),
+    State(Box<Binding>),
     Recipe(RecipeDeclaration),
     Attribute(Attribute),
 }
