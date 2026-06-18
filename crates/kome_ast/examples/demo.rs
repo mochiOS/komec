@@ -8,8 +8,10 @@
 //!     state counter = 0
 //!
 //!     @body
-//!     let body: View = VStack {
-//!         Text("Hello")
+//!     let body: View = {
+//!         VStack {
+//!             Text("Hello")
+//!         }
 //!     }
 //!
 //!     recipe increment {
@@ -29,16 +31,12 @@ use kome_ast::{
         FunctionDeclaration, Module, RecipeDeclaration,
     },
     expressions::{
-        AssignOp, AssignmentExpression, BinaryOp, CallArg, CallExpression,
+        AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
         ComponentExpression, Expression, LiteralKind, NumberLiteral,
     },
     patterns::{IdentifierPattern, Pattern},
-    statements::{
-        BlockStatement, ExpressionStatement, ReturnStatement, Statement,
-    },
-    types::{
-        NamedType, PrimitiveType, PrimitiveTypeKind, Type,
-    },
+    statements::{BlockStatement, ExpressionStatement, ReturnStatement, Statement},
+    types::{NamedType, PrimitiveType, PrimitiveTypeKind, Type},
 };
 
 const SOURCE: &str = r#"@application
@@ -46,8 +44,10 @@ component App() {
     state counter = 0
 
     @body
-    let body: View = VStack {
-        Text("Hello")
+    let body: View = {
+        VStack {
+            Text("Hello")
+        }
     }
 
     recipe increment {
@@ -60,7 +60,7 @@ component App() {
 }"#;
 
 fn main() {
-    // Component attribute: @application
+    // Attribute: @application
 
     let application_attribute = Attribute {
         span: Span::new(0, 12),
@@ -91,7 +91,7 @@ fn main() {
         type_annotation: None,
     }));
 
-    // Body attribute: @body
+    // Attribute: @body
 
     let body_attribute = Attribute {
         span: Span::new(58, 63),
@@ -103,16 +103,16 @@ fn main() {
 
     let text_callee = Expression::ident(
         "Text",
-        Span::new(102, 106),
+        Span::new(116, 120),
     );
 
     let text_argument = Expression::literal(
         LiteralKind::String("Hello".into()),
-        Span::new(107, 114),
+        Span::new(121, 128),
     );
 
     let text_expression = Expression::Call(CallExpression {
-        span: Span::new(102, 115),
+        span: Span::new(116, 129),
         callee: Box::new(text_callee),
         args: vec![
             CallArg::Positional(text_argument),
@@ -121,8 +121,8 @@ fn main() {
 
     // VStack { Text("Hello") }
 
-    let body_initial_value = Expression::Component(ComponentExpression {
-        span: Span::new(85, 121),
+    let vstack_expression = Expression::Component(ComponentExpression {
+        span: Span::new(95, 139),
         name: "VStack".into(),
         args: Vec::new(),
         children: vec![
@@ -130,7 +130,15 @@ fn main() {
         ],
     });
 
-    // @body let body: View = VStack { ... }
+    // { VStack { Text("Hello") } }
+
+    let body_block = Expression::Block(BlockExpression {
+        span: Span::new(85, 145),
+        statements: Vec::new(),
+        tail: Some(Box::new(vstack_expression)),
+    });
+
+    // let body: View = { ... }
 
     let body_pattern = Pattern::Ident(IdentifierPattern {
         span: Span::new(72, 76),
@@ -146,76 +154,74 @@ fn main() {
     });
 
     let body_binding = ComponentMember::Let(Box::new(Binding {
-        span: Span::new(68, 121),
+        span: Span::new(68, 145),
         attributes: vec![
             body_attribute,
         ],
         mutable: false,
         pattern: body_pattern,
-        init: Some(body_initial_value),
+        init: Some(body_block),
         type_annotation: Some(body_type),
     }));
 
-    // Recipe: counter = counter + 1
+    // Recipe expression: counter = counter + 1
 
     let assignment_target = Expression::ident(
         "counter",
-        Span::new(154, 161),
+        Span::new(178, 185),
     );
 
     let addition_left = Expression::ident(
         "counter",
-        Span::new(164, 171),
+        Span::new(188, 195),
     );
 
     let addition_right = Expression::literal(
         LiteralKind::Number(NumberLiteral("1".into())),
-        Span::new(174, 175),
+        Span::new(198, 199),
     );
 
     let addition = Expression::binary(
         addition_left,
         BinaryOp::Add,
         addition_right,
-        Span::new(164, 175),
+        Span::new(188, 199),
     );
 
     let assignment = Expression::Assign(AssignmentExpression {
-        span: Span::new(154, 175),
+        span: Span::new(178, 199),
         op: AssignOp::Assign,
         target: Box::new(assignment_target),
         value: Box::new(addition),
     });
 
-    let assignment_statement = Statement::Expression(
-        ExpressionStatement {
-            span: Span::new(154, 175),
-            expression: assignment,
-        },
-    );
+    let assignment_statement = Statement::Expression(ExpressionStatement {
+        span: Span::new(178, 199),
+        expression: assignment,
+    });
 
-    let increment_recipe = ComponentMember::Recipe(
-        RecipeDeclaration {
-            span: Span::new(127, 181),
-            attributes: Vec::new(),
-            name: "increment".into(),
-            event_source: None,
-            body: BlockStatement {
-                span: Span::new(144, 181),
-                statements: vec![
-                    assignment_statement,
-                ],
-            },
+    // recipe increment { ... }
+
+    let increment_recipe = ComponentMember::Recipe(RecipeDeclaration {
+        span: Span::new(151, 205),
+        attributes: Vec::new(),
+        name: "increment".into(),
+        event_source: None,
+        body: BlockStatement {
+            span: Span::new(168, 205),
+            statements: vec![
+                assignment_statement,
+            ],
         },
-    );
+    });
 
     // Function parameter: name: String
 
     let name_parameter = Pattern::Ident(IdentifierPattern {
-        span: Span::new(196, 208),
+        span: Span::new(220, 232),
         name: "name".into(),
         type_annotation: Some(Type::Primitive(PrimitiveType {
-            span: Span::new(202, 208),
+            span: Span::new(226, 232),
             kind: PrimitiveTypeKind::String,
         })),
         default: None,
@@ -225,47 +231,45 @@ fn main() {
 
     let hello_expression = Expression::literal(
         LiteralKind::String("Hello, ".into()),
-        Span::new(227, 236),
+        Span::new(251, 260),
     );
 
     let name_expression = Expression::ident(
         "name",
-        Span::new(239, 243),
+        Span::new(263, 267),
     );
 
     let greeting_expression = Expression::binary(
         hello_expression,
         BinaryOp::Add,
         name_expression,
-        Span::new(227, 243),
+        Span::new(251, 267),
     );
 
     let return_statement = Statement::Return(ReturnStatement {
-        span: Span::new(220, 243),
+        span: Span::new(244, 267),
         argument: Some(greeting_expression),
     });
 
-    // Component function: greet
+    // fn greet(name: String) { ... }
 
-    let greet_function = ComponentMember::Function(
-        FunctionDeclaration {
-            span: Span::new(187, 249),
-            attributes: Vec::new(),
-            name: "greet".into(),
-            params: vec![
-                name_parameter,
+    let greet_function = ComponentMember::Function(FunctionDeclaration {
+        span: Span::new(211, 273),
+        attributes: Vec::new(),
+        name: "greet".into(),
+        params: vec![
+            name_parameter,
+        ],
+        body: Some(BlockStatement {
+            span: Span::new(234, 273),
+            statements: vec![
+                return_statement,
             ],
-            body: Some(BlockStatement {
-                span: Span::new(210, 249),
-                statements: vec![
-                    return_statement,
-                ],
-            }),
-            return_type: None,
-        },
-    );
+        }),
+        return_type: None,
+    });
 
-    // Component
+    // component App
 
     let component = Declaration::Component(ComponentDeclaration {
         span: Span::new(0, SOURCE.len()),
@@ -305,17 +309,32 @@ fn main() {
     );
 
     debug_assert_eq!(
-        &SOURCE[68..121],
-        "let body: View = VStack {\n        Text(\"Hello\")\n    }",
+        &SOURCE[58..63],
+        "@body",
     );
 
     debug_assert_eq!(
-        &SOURCE[127..181],
+        &SOURCE[68..145],
+        "let body: View = {\n        VStack {\n            Text(\"Hello\")\n        }\n    }",
+    );
+
+    debug_assert_eq!(
+        &SOURCE[85..145],
+        "{\n        VStack {\n            Text(\"Hello\")\n        }\n    }",
+    );
+
+    debug_assert_eq!(
+        &SOURCE[95..139],
+        "VStack {\n            Text(\"Hello\")\n        }",
+    );
+
+    debug_assert_eq!(
+        &SOURCE[151..205],
         "recipe increment {\n        counter = counter + 1\n    }",
     );
 
     debug_assert_eq!(
-        &SOURCE[187..249],
+        &SOURCE[211..273],
         "fn greet(name: String) {\n        return \"Hello, \" + name\n    }",
     );
 }
