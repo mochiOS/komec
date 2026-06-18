@@ -1,8 +1,9 @@
-//! Declarations: `component`, `function`, `recipe`, `state`, `let`, `const`, `use`.
+//! Declarations for `component`, `function`, `recipe`, `state`,
+//! `let`, `const`, and `use`.
 
 use crate::{AstNode, Span};
 
-/// A top-level declaration.
+/// A declaration placed at the top level of a source file.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Declaration {
     Component(ComponentDeclaration),
@@ -26,8 +27,12 @@ pub enum Declaration {
 ///         Text("count: {counter}")
 ///     }
 ///
-///     fn increment() {
+///     recipe update {
 ///         counter = counter + 1
+///     }
+///
+///     fn reset() {
+///         counter = 0
 ///     }
 /// }
 /// ```
@@ -40,7 +45,7 @@ pub struct ComponentDeclaration {
     pub body: Vec<ComponentMember>,
 }
 
-/// An item declared inside a component body.
+/// A declaration placed inside a component body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComponentMember {
     State(Box<Binding>),
@@ -51,7 +56,10 @@ pub enum ComponentMember {
 
 // ---- Recipe ----
 
-/// A `recipe` event handler or lifecycle declaration inside a component.
+/// A `recipe` declaration inside a component.
+///
+/// A recipe may represent an event handler, a reactive operation,
+/// or a lifecycle operation.
 ///
 /// ```kome
 /// recipe load_article: id_input {
@@ -69,7 +77,12 @@ pub struct RecipeDeclaration {
 
 // ---- Attribute ----
 
-/// An attribute such as `@application` or `@body`.
+/// An attribute attached to a declaration.
+///
+/// ```kome
+/// @application
+/// @body
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attribute {
     pub span: Span,
@@ -81,7 +94,13 @@ pub struct Attribute {
 
 /// A function declaration.
 ///
-/// Functions may be declared at the top level or inside a component.
+/// Functions may be placed at the top level or inside a component.
+///
+/// ```kome
+/// fn greet(name: String) {
+///     return "Hello, " + name
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDeclaration {
     pub span: Span,
@@ -92,13 +111,21 @@ pub struct FunctionDeclaration {
     pub return_type: Option<crate::types::Type>,
 }
 
-// ---- Binding (state / let / const) ----
+// ---- Binding ----
 
 /// A variable binding declared with `state`, `let`, or `const`.
+///
+/// The kind of binding is determined by the containing enum variant:
+///
+/// - [`ComponentMember::State`]
+/// - [`ComponentMember::Let`]
+/// - [`Declaration::Let`]
+/// - [`Declaration::Constant`]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub span: Span,
     pub attributes: Vec<Attribute>,
+    pub mutable: bool,
     pub pattern: crate::patterns::Pattern,
     pub init: Option<crate::expressions::Expression>,
     pub type_annotation: Option<crate::types::Type>,
@@ -122,13 +149,18 @@ pub struct UseDeclaration {
 /// One specifier inside a `use` declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UseSpecifier {
-    Wildcard { span: Span },
-    Named { name: String, span: Span },
+    Wildcard {
+        span: Span,
+    },
+    Named {
+        name: String,
+        span: Span,
+    },
 }
 
 // ---- Module ----
 
-/// A source file containing a list of declarations.
+/// A Kome source file containing a list of declarations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     pub span: Span,
