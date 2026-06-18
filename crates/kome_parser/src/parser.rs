@@ -5,11 +5,13 @@ use kome_ast::{
         UseDeclaration, UseSpecifier,
     },
     expressions::{
-        AssignOp, AssignmentExpression, BinaryOp, CallArg, CallExpression,
-        DotIdentifierExpression, Expression, GroupExpression, IndexExpression, ListExpression,
-        LiteralKind, MemberExpression, NumberLiteral, UnaryExpression, UnaryOp,
+        AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
+        ComponentExpression, DotIdentifierExpression, Expression, GroupExpression,
+        IndexExpression, ListExpression, LiteralKind, MemberExpression, NumberLiteral,
+        UnaryExpression, UnaryOp,
     },
     patterns::{IdentifierPattern, Pattern},
+    statements::{ExpressionStatement, Statement},
     types::{
         NamedType, Parameter, PrimitiveType, PrimitiveTypeKind, Type,
     },
@@ -55,7 +57,6 @@ impl Parser {
         ))
     }
 
-    /// Parses one expression and requires the token stream to end after it.
     pub fn parse_expression(&mut self) -> Result<Expression, ParseError> {
         let expression = self.parse_assignment_expression()?;
 
@@ -642,6 +643,15 @@ impl Parser {
                 continue;
             }
 
+            if self.at(|kind| matches!(kind, TokenKind::LBrace))
+                && Self::is_component_head(&expression)
+            {
+                expression =
+                    self.parse_component_expression(expression)?;
+
+                continue;
+            }
+
             if self.at(|kind| matches!(kind, TokenKind::Dot)) {
                 expression =
                     self.parse_member_expression(expression)?;
@@ -736,6 +746,51 @@ impl Parser {
         ))
     }
 
+    fn parse_component_expression(
+        &mut self,
+        head: Expression,
+    ) -> Result<Expression, ParseError> {
+        let start = head.span().start;
+
+        let (name, args) = match head {
+            Expression::Ident(identifier) => {
+                (identifier.name, Vec::new())
+            }
+
+            Expression::Call(call) => {
+                let CallExpression {
+                    callee,
+                    args,
+                    ..
+                } = call;
+
+                let Expression::Ident(identifier) = *callee else {
+                    return Err(self.expected(
+                        "a component name before `{`",
+                    ));
+                };
+
+                (identifier.name, args)
+            }
+
+            _ => {
+                return Err(self.expected(
+                    "a component name before `{`",
+                ));
+            }
+        };
+
+        let (brace_span, children) =
+            self.parse_braced_expressions()?;
+
+        Ok(Expression::Component(ComponentExpression {
+            span: Span::new(start, brace_span.end),
+            name,
+            args,
+            children,
+        }))
+    }
+
     fn parse_member_expression(
         &mut self,
         object: Expression,
@@ -803,6 +858,10 @@ impl Parser {
 
         if self.at(|kind| matches!(kind, TokenKind::LBracket)) {
             return self.parse_list_expression();
+        }
+
+        if self.at(|kind| matches!(kind, TokenKind::LBrace)) {
+            return self.parse_block_expression();
         }
 
         let token = self.advance();
@@ -959,6 +1018,76 @@ impl Parser {
         }))
     }
 
+    fn parse_block_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let (span, mut expressions) =
+            self.parse_braced_expressions()?;
+
+        let tail = expressions.pop().map(Box::new);
+
+        let statements = expressions
+            .into_iter()
+            .map(|expression| {
+                let span = expression.span();
+
+                Statement::Expression(ExpressionStatement {
+                    span,
+                    expression,
+                })
+            })
+            .collect();
+
+        Ok(Expression::Block(BlockExpression {
+            span,
+            statements,
+            tail,
+        }))
+    }
+
+    fn parse_braced_expressions(
+        &mut self,
+    ) -> Result<(Span, Vec<Expression>), ParseError> {
+        let opening = self.expect(
+            "`{`",
+            |kind| matches!(kind, TokenKind::LBrace),
+        )?;
+
+        let mut expressions = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+                continue;
+            }
+
+            expressions.push(
+                self.parse_assignment_expression()?,
+            );
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            }
+        }
+
+        let closing = self.expect(
+            "`}`",
+            |kind| matches!(kind, TokenKind::RBrace),
+        )?;
+
+        Ok((
+            Span::new(
+                opening.span.start,
+                closing.span.end,
+            ),
+            expressions,
+        ))
+    }
+
     fn parse_use_declaration(
         &mut self,
     ) -> Result<UseDeclaration, ParseError> {
@@ -1019,6 +1148,21 @@ impl Parser {
         }
     }
 
+    fn is_component_head(expression: &Expression) -> bool {
+        match expression {
+            Expression::Ident(_) => true,
+
+            Expression::Call(call) => {
+                matches!(
+                    call.callee.as_ref(),
+                    Expression::Ident(_)
+                )
+            }
+
+            _ => false,
+        }
+    }
+
     fn is_named_argument(&self) -> bool {
         matches!(
             (&self.current().kind, &self.next().kind),
@@ -1069,7 +1213,9 @@ impl Parser {
             .unwrap_or_else(|| {
                 self.tokens
                     .last()
-                    .expect("parser token stream must contain EOF")
+                    .expect(
+                        "parser token stream must contain EOF",
+                    )
             })
     }
 
