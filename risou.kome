@@ -1,0 +1,55 @@
+use viewKit
+
+@application
+component App(title: String = "Kome") {
+    state name = "world"
+    state counter = 0
+    state input = ""
+
+    @body
+    recipe body {
+        VStack(
+            spacing: .large,
+            alignment: .center,
+        ) {
+            Text(
+                "Hello, {name}",
+                weight: .bold,
+            )
+
+            Text(
+                "count: {counter}",
+            )
+
+            Button(
+                "increment",
+                color: .blue,
+                radius: 50%,
+                onClick: handle_click,
+            )
+
+            TextInput(
+                value: input,
+                onChange: handle_input,
+                onSubmit: submit_input,
+            )
+        }
+        .padding(24)
+    }
+
+    fn handle_click(event: ButtonEvent) {
+        counter = counter + 1
+
+        if counter > 10 {
+            counter = 0
+        }
+    }
+
+    fn handle_input(event: TextInputEvent) {
+        input = event.value
+    }
+
+    fn submit_input(event: TextInputEvent) {
+        print("input: {event.value}")
+    }
+}
