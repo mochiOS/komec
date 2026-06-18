@@ -11,7 +11,10 @@ use kome_ast::{
         UnaryExpression, UnaryOp,
     },
     patterns::{IdentifierPattern, Pattern},
-    statements::{ExpressionStatement, Statement},
+    statements::{
+        BlockStatement, BreakStatement, ContinueStatement, ExpressionStatement, IfStatement,
+        ReturnStatement, Statement, WhileStatement,
+    },
     types::{
         NamedType, Parameter, PrimitiveType, PrimitiveTypeKind, Type,
     },
@@ -22,10 +25,10 @@ use crate::{
     token::{Token, TokenKind},
 };
 
-/// Converts Kome tokens into an AST.
 pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
+    allow_component_children: bool,
 }
 
 impl Parser {
@@ -41,6 +44,7 @@ impl Parser {
         Self {
             tokens,
             position: 0,
+            allow_component_children: true,
         }
     }
 
@@ -407,6 +411,237 @@ impl Parser {
         Ok(type_)
     }
 
+    fn parse_statement(&mut self) -> Result<Statement, ParseError> {
+        match &self.current().kind {
+            TokenKind::Let => {
+                self.parse_let_binding(Vec::new())
+                    .map(Statement::Let)
+            }
+
+            TokenKind::If => self.parse_if_statement(),
+
+            TokenKind::While => self.parse_while_statement(),
+
+            TokenKind::Return => self.parse_return_statement(),
+
+            TokenKind::Break => self.parse_break_statement(),
+
+            TokenKind::Continue => self.parse_continue_statement(),
+
+            TokenKind::LBrace => {
+                self.parse_statement_block()
+                    .map(Statement::Block)
+            }
+
+            _ => self.parse_expression_statement(),
+        }
+    }
+
+    fn parse_statement_block(
+        &mut self,
+    ) -> Result<BlockStatement, ParseError> {
+        let opening = self.expect(
+            "`{`",
+            |kind| matches!(kind, TokenKind::LBrace),
+        )?;
+
+        let mut statements = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+                continue;
+            }
+
+            statements.push(self.parse_statement()?);
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            }
+        }
+
+        let closing = self.expect(
+            "`}`",
+            |kind| matches!(kind, TokenKind::RBrace),
+        )?;
+
+        Ok(BlockStatement {
+            span: Span::new(
+                opening.span.start,
+                closing.span.end,
+            ),
+            statements,
+        })
+    }
+
+    fn parse_if_statement(
+        &mut self,
+    ) -> Result<Statement, ParseError> {
+        let keyword = self.expect(
+            "`if`",
+            |kind| matches!(kind, TokenKind::If),
+        )?;
+
+        let test = self.parse_condition_expression()?;
+
+        let consequent = Statement::Block(
+            self.parse_statement_block()?,
+        );
+
+        let mut end = consequent.span().end;
+
+        let alternative = if self.at(|kind| {
+            matches!(kind, TokenKind::Else)
+        }) {
+            self.advance();
+
+            let statement = if self.at(|kind| {
+                matches!(kind, TokenKind::If)
+            }) {
+                self.parse_if_statement()?
+            } else if self.at(|kind| {
+                matches!(kind, TokenKind::LBrace)
+            }) {
+                Statement::Block(
+                    self.parse_statement_block()?,
+                )
+            } else {
+                return Err(self.expected(
+                    "`if` or `{` after `else`",
+                ));
+            };
+
+            end = statement.span().end;
+
+            Some(Box::new(statement))
+        } else {
+            None
+        };
+
+        Ok(Statement::If(IfStatement {
+            span: Span::new(keyword.span.start, end),
+            test,
+            consequent: Box::new(consequent),
+            alternative,
+        }))
+    }
+
+    fn parse_while_statement(
+        &mut self,
+    ) -> Result<Statement, ParseError> {
+        let keyword = self.expect(
+            "`while`",
+            |kind| matches!(kind, TokenKind::While),
+        )?;
+
+        let test = self.parse_condition_expression()?;
+
+        let body = Statement::Block(
+            self.parse_statement_block()?,
+        );
+
+        let span = Span::new(
+            keyword.span.start,
+            body.span().end,
+        );
+
+        Ok(Statement::While(WhileStatement {
+            span,
+            test,
+            body: Box::new(body),
+        }))
+    }
+
+    fn parse_return_statement(
+        &mut self,
+    ) -> Result<Statement, ParseError> {
+        let keyword = self.expect(
+            "`return`",
+            |kind| matches!(kind, TokenKind::Return),
+        )?;
+
+        let argument = if self.at(|kind| {
+            matches!(
+                kind,
+                TokenKind::RBrace
+                    | TokenKind::Comma
+                    | TokenKind::Eof
+            )
+        }) {
+            None
+        } else {
+            Some(self.parse_assignment_expression()?)
+        };
+
+        let end = argument
+            .as_ref()
+            .map_or(keyword.span.end, |expression| {
+                expression.span().end
+            });
+
+        Ok(Statement::Return(ReturnStatement {
+            span: Span::new(keyword.span.start, end),
+            argument,
+        }))
+    }
+
+    fn parse_break_statement(
+        &mut self,
+    ) -> Result<Statement, ParseError> {
+        let keyword = self.expect(
+            "`break`",
+            |kind| matches!(kind, TokenKind::Break),
+        )?;
+
+        Ok(Statement::Break(BreakStatement {
+            span: keyword.span,
+            label: None,
+        }))
+    }
+
+    fn parse_continue_statement(
+        &mut self,
+    ) -> Result<Statement, ParseError> {
+        let keyword = self.expect(
+            "`continue`",
+            |kind| matches!(kind, TokenKind::Continue),
+        )?;
+
+        Ok(Statement::Continue(ContinueStatement {
+            span: keyword.span,
+            label: None,
+        }))
+    }
+
+    fn parse_expression_statement(
+        &mut self,
+    ) -> Result<Statement, ParseError> {
+        let expression = self.parse_assignment_expression()?;
+        let span = expression.span();
+
+        Ok(Statement::Expression(ExpressionStatement {
+            span,
+            expression,
+        }))
+    }
+
+    fn parse_condition_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let previous = self.allow_component_children;
+        self.allow_component_children = false;
+
+        let result = self.parse_assignment_expression();
+
+        self.allow_component_children = previous;
+
+        result
+    }
+
     fn parse_assignment_expression(
         &mut self,
     ) -> Result<Expression, ParseError> {
@@ -421,7 +656,10 @@ impl Parser {
         self.advance();
 
         let right = self.parse_assignment_expression()?;
-        let span = Span::new(left.span().start, right.span().end);
+        let span = Span::new(
+            left.span().start,
+            right.span().end,
+        );
 
         Ok(Expression::Assign(AssignmentExpression {
             span,
@@ -643,7 +881,10 @@ impl Parser {
                 continue;
             }
 
-            if self.at(|kind| matches!(kind, TokenKind::LBrace))
+            if self.allow_component_children
+                && self.at(|kind| {
+                matches!(kind, TokenKind::LBrace)
+            })
                 && Self::is_component_head(&expression)
             {
                 expression =
@@ -1021,25 +1262,66 @@ impl Parser {
     fn parse_block_expression(
         &mut self,
     ) -> Result<Expression, ParseError> {
-        let (span, mut expressions) =
-            self.parse_braced_expressions()?;
+        let opening = self.expect(
+            "`{`",
+            |kind| matches!(kind, TokenKind::LBrace),
+        )?;
 
-        let tail = expressions.pop().map(Box::new);
+        let mut statements = Vec::new();
+        let mut tail = None;
 
-        let statements = expressions
-            .into_iter()
-            .map(|expression| {
-                let span = expression.span();
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
 
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+                continue;
+            }
+
+            if self.starts_statement() {
+                statements.push(self.parse_statement()?);
+
+                if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                    self.advance();
+                }
+
+                continue;
+            }
+
+            let expression =
+                self.parse_assignment_expression()?;
+
+            if self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+                tail = Some(Box::new(expression));
+                break;
+            }
+
+            let span = expression.span();
+
+            statements.push(
                 Statement::Expression(ExpressionStatement {
                     span,
                     expression,
-                })
-            })
-            .collect();
+                }),
+            );
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            }
+        }
+
+        let closing = self.expect(
+            "`}`",
+            |kind| matches!(kind, TokenKind::RBrace),
+        )?;
 
         Ok(Expression::Block(BlockExpression {
-            span,
+            span: Span::new(
+                opening.span.start,
+                closing.span.end,
+            ),
             statements,
             tail,
         }))
@@ -1146,6 +1428,18 @@ impl Parser {
                 token.span,
             )),
         }
+    }
+
+    fn starts_statement(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::Let
+                | TokenKind::If
+                | TokenKind::While
+                | TokenKind::Return
+                | TokenKind::Break
+                | TokenKind::Continue
+        )
     }
 
     fn is_component_head(expression: &Expression) -> bool {
