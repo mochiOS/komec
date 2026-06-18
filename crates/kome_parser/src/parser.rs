@@ -1,7 +1,13 @@
 use kome_ast::{
-    Span,
+    AstNode, Span,
     declarations::{
         Attribute, ComponentDeclaration, Declaration, Module, UseDeclaration, UseSpecifier,
+    },
+    expressions::{
+        DotIdentifierExpression, Expression, LiteralKind, NumberLiteral,
+    },
+    types::{
+        NamedType, Parameter, PrimitiveType, PrimitiveTypeKind, Type,
     },
 };
 
@@ -19,7 +25,10 @@ pub struct Parser {
 impl Parser {
     pub fn new(mut tokens: Vec<Token>) -> Self {
         if !tokens.last().is_some_and(Token::is_eof) {
-            let offset = tokens.last().map_or(0, |token| token.span.end);
+            let offset = tokens
+                .last()
+                .map_or(0, |token| token.span.end);
+
             tokens.push(Token::eof(offset));
         }
 
@@ -51,14 +60,19 @@ impl Parser {
                 .map(Declaration::Component),
 
             TokenKind::Use if attributes.is_empty() => {
-                self.parse_use_declaration().map(Declaration::Use)
+                self.parse_use_declaration()
+                    .map(Declaration::Use)
             }
 
             TokenKind::Use => {
-                Err(self.expected("a component or function declaration after attributes"))
+                Err(self.expected(
+                    "a component or function declaration after attributes",
+                ))
             }
 
-            _ if attributes.is_empty() => Err(self.expected("a top-level declaration")),
+            _ if attributes.is_empty() => {
+                Err(self.expected("a top-level declaration"))
+            }
 
             _ => Err(self.expected("a declaration after attributes")),
         }
@@ -80,7 +94,8 @@ impl Parser {
             |kind| matches!(kind, TokenKind::At),
         )?;
 
-        let (name, name_span) = self.expect_identifier("an attribute name")?;
+        let (name, name_span) =
+            self.expect_identifier("an attribute name")?;
 
         Ok(Attribute {
             span: Span::new(at.span.start, name_span.end),
@@ -100,14 +115,19 @@ impl Parser {
 
         let start = attributes
             .first()
-            .map_or(component.span.start, |attribute| attribute.span.start);
+            .map_or(component.span.start, |attribute| {
+                attribute.span.start
+            });
 
-        let (name, _) = self.expect_identifier("a component name")?;
+        let (name, _) =
+            self.expect_identifier("a component name")?;
 
         self.expect(
             "`(`",
             |kind| matches!(kind, TokenKind::LParen),
         )?;
+
+        let params = self.parse_component_parameters()?;
 
         self.expect(
             "`)`",
@@ -127,21 +147,206 @@ impl Parser {
         Ok(ComponentDeclaration {
             span: Span::new(start, closing_brace.span.end),
             name,
-            params: Vec::new(),
+            params,
             attributes,
             body: Vec::new(),
         })
     }
 
-    fn parse_use_declaration(&mut self) -> Result<UseDeclaration, ParseError> {
-        let start = self.expect(
-            "`use`",
-            |kind| matches!(kind, TokenKind::Use),
-        )?
+    fn parse_component_parameters(
+        &mut self,
+    ) -> Result<Vec<Parameter>, ParseError> {
+        let mut parameters = Vec::new();
+
+        if self.at(|kind| matches!(kind, TokenKind::RParen)) {
+            return Ok(parameters);
+        }
+
+        loop {
+            parameters.push(self.parse_component_parameter()?);
+
+            if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                break;
+            }
+
+            self.advance();
+
+            if self.at(|kind| matches!(kind, TokenKind::RParen)) {
+                break;
+            }
+        }
+
+        Ok(parameters)
+    }
+
+    fn parse_component_parameter(
+        &mut self,
+    ) -> Result<Parameter, ParseError> {
+        let (name, name_span) =
+            self.expect_identifier("a parameter name")?;
+
+        self.expect(
+            "`:`",
+            |kind| matches!(kind, TokenKind::Colon),
+        )?;
+
+        let type_ = self.parse_type()?;
+        let type_end = type_.span().end;
+
+        let default = if self.at(|kind| {
+            matches!(kind, TokenKind::Assign)
+        }) {
+            self.advance();
+            Some(self.parse_parameter_default()?)
+        } else {
+            None
+        };
+
+        let end = default
+            .as_ref()
+            .map_or(type_end, |expression| expression.span().end);
+
+        Ok(Parameter {
+            span: Span::new(name_span.start, end),
+            name,
+            type_,
+            default,
+        })
+    }
+
+    fn parse_type(&mut self) -> Result<Type, ParseError> {
+        let (name, span) =
+            self.expect_identifier("a type name")?;
+
+        let type_ = match name.as_str() {
+            "String" => Type::Primitive(PrimitiveType {
+                span,
+                kind: PrimitiveTypeKind::String,
+            }),
+
+            "Number" => Type::Primitive(PrimitiveType {
+                span,
+                kind: PrimitiveTypeKind::Number,
+            }),
+
+            "Boolean" => Type::Primitive(PrimitiveType {
+                span,
+                kind: PrimitiveTypeKind::Boolean,
+            }),
+
+            "Null" => Type::Primitive(PrimitiveType {
+                span,
+                kind: PrimitiveTypeKind::Null,
+            }),
+
+            _ => Type::Named(NamedType {
+                span,
+                name,
+                type_arguments: Vec::new(),
+            }),
+        };
+
+        Ok(type_)
+    }
+
+    fn parse_parameter_default(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        if self.at(|kind| matches!(kind, TokenKind::Dot)) {
+            let dot = self.advance();
+            let (name, name_span) =
+                self.expect_identifier(
+                    "an identifier after `.`",
+                )?;
+
+            return Ok(Expression::DotIdent(
+                DotIdentifierExpression {
+                    span: Span::new(
+                        dot.span.start,
+                        name_span.end,
+                    ),
+                    name,
+                },
+            ));
+        }
+
+        let token = self.advance();
+        let span = token.span;
+
+        let expression = match token.kind {
+            TokenKind::String(value) => {
+                Expression::literal(
+                    LiteralKind::String(value),
+                    span,
+                )
+            }
+
+            TokenKind::Number(value) => {
+                Expression::literal(
+                    LiteralKind::Number(NumberLiteral(value)),
+                    span,
+                )
+            }
+
+            TokenKind::Percent(value) => {
+                Expression::literal(
+                    LiteralKind::Percent(NumberLiteral(value)),
+                    span,
+                )
+            }
+
+            TokenKind::True => {
+                Expression::literal(
+                    LiteralKind::Boolean(true),
+                    span,
+                )
+            }
+
+            TokenKind::False => {
+                Expression::literal(
+                    LiteralKind::Boolean(false),
+                    span,
+                )
+            }
+
+            TokenKind::Null => {
+                Expression::literal(
+                    LiteralKind::Null,
+                    span,
+                )
+            }
+
+            TokenKind::Ident(name) => {
+                Expression::ident(name, span)
+            }
+
+            found => {
+                return Err(ParseError::new(
+                    ParseErrorKind::Expected {
+                        expected: "a parameter default value",
+                        found,
+                    },
+                    span,
+                ));
+            }
+        };
+
+        Ok(expression)
+    }
+
+    fn parse_use_declaration(
+        &mut self,
+    ) -> Result<UseDeclaration, ParseError> {
+        let start = self
+            .expect(
+                "`use`",
+                |kind| matches!(kind, TokenKind::Use),
+            )?
             .span
             .start;
 
-        let mut specifiers = vec![self.parse_use_specifier()?];
+        let mut specifiers =
+            vec![self.parse_use_specifier()?];
 
         while self.at(|kind| matches!(kind, TokenKind::Comma)) {
             self.advance();
@@ -160,18 +365,24 @@ impl Parser {
         })
     }
 
-    fn parse_use_specifier(&mut self) -> Result<UseSpecifier, ParseError> {
+    fn parse_use_specifier(
+        &mut self,
+    ) -> Result<UseSpecifier, ParseError> {
         let token = self.advance();
 
         match token.kind {
-            TokenKind::Star => Ok(UseSpecifier::Wildcard {
-                span: token.span,
-            }),
+            TokenKind::Star => {
+                Ok(UseSpecifier::Wildcard {
+                    span: token.span,
+                })
+            }
 
-            TokenKind::Ident(name) => Ok(UseSpecifier::Named {
-                name,
-                span: token.span,
-            }),
+            TokenKind::Ident(name) => {
+                Ok(UseSpecifier::Named {
+                    name,
+                    span: token.span,
+                })
+            }
 
             found => Err(ParseError::new(
                 ParseErrorKind::Expected {
@@ -202,7 +413,9 @@ impl Parser {
         let token = self.advance();
 
         match token.kind {
-            TokenKind::Ident(name) => Ok((name, token.span)),
+            TokenKind::Ident(name) => {
+                Ok((name, token.span))
+            }
 
             found => Err(ParseError::new(
                 ParseErrorKind::Expected {
@@ -235,7 +448,10 @@ impl Parser {
         predicate(&self.current().kind)
     }
 
-    fn expected(&self, expected: &'static str) -> ParseError {
+    fn expected(
+        &self,
+        expected: &'static str,
+    ) -> ParseError {
         ParseError::new(
             ParseErrorKind::Expected {
                 expected,
