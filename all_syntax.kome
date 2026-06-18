@@ -1,21 +1,13 @@
-// ============================================================
-// all_syntax.kome  —  kome_ast でカバーされている全構文の網羅
-// ============================================================
+use viewKit
 
-// ---- use ----
-use devkit
-
-// ---- fntion ----
 fn greet(name: String, greeting: String) -> String {
     return greeting + ", " + name
 }
 fn add(a: Number, b: Number = 0) -> Number { a + b }
 fn log(value: String) { print(value) }
 
-// ---- component ----
 @application
 component App(title: String = "Kome") {
-    // ---- state ----
     state items = [1, 2, 3]
     state name = "world"
     state flag = true
@@ -34,7 +26,7 @@ component App(title: String = "Kome") {
     state active = true
     state total = (1 + 2) * 3
 
-    // ---- body recipe ----
+    @body
     recipe body {
         VStack {
             Text("Hello, {name}", weight: .bold),
@@ -43,7 +35,6 @@ component App(title: String = "Kome") {
         }
     }
 
-    // ---- recipe with event source ----
     recipe handle_click: button {
         counter = counter + 1
 
@@ -55,7 +46,6 @@ component App(title: String = "Kome") {
     }
 
     recipe on_input: input {
-        // ---- is statement (single-arm) ----
         is input.event .entered => {
             for item in items {
                 print(item)
@@ -100,10 +90,10 @@ component App(title: String = "Kome") {
     }
 }
 
-// ---- component with block children ----
 component ListView() {
     state items = ["a", "b"]
 
+    @body
     recipe body {
         VStack {
             Text("Items"),
