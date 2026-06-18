@@ -5,7 +5,9 @@ use kome_ast::{
         UseDeclaration, UseSpecifier,
     },
     expressions::{
-        DotIdentifierExpression, Expression, LiteralKind, NumberLiteral,
+        AssignOp, AssignmentExpression, BinaryOp, CallArg, CallExpression,
+        DotIdentifierExpression, Expression, GroupExpression, IndexExpression, ListExpression,
+        LiteralKind, MemberExpression, NumberLiteral, UnaryExpression, UnaryOp,
     },
     patterns::{IdentifierPattern, Pattern},
     types::{
@@ -51,6 +53,17 @@ impl Parser {
             declarations,
             Span::new(0, self.current().span.end),
         ))
+    }
+
+    /// Parses one expression and requires the token stream to end after it.
+    pub fn parse_expression(&mut self) -> Result<Expression, ParseError> {
+        let expression = self.parse_assignment_expression()?;
+
+        if !self.current().is_eof() {
+            return Err(self.expected("the end of the expression"));
+        }
+
+        Ok(expression)
     }
 
     fn parse_declaration(&mut self) -> Result<Declaration, ParseError> {
@@ -210,10 +223,7 @@ impl Parser {
             matches!(kind, TokenKind::Assign)
         }) {
             self.advance();
-
-            Some(self.parse_value_expression(
-                "a parameter default value",
-            )?)
+            Some(self.parse_assignment_expression()?)
         } else {
             None
         };
@@ -325,10 +335,7 @@ impl Parser {
             matches!(kind, TokenKind::Assign)
         }) {
             self.advance();
-
-            Some(self.parse_value_expression(
-                "an initializer expression",
-            )?)
+            Some(self.parse_assignment_expression()?)
         } else {
             None
         };
@@ -399,95 +406,557 @@ impl Parser {
         Ok(type_)
     }
 
-    fn parse_value_expression(
+    fn parse_assignment_expression(
         &mut self,
-        expected: &'static str,
+    ) -> Result<Expression, ParseError> {
+        let left = self.parse_or_expression()?;
+
+        let op = match self.current().kind {
+            TokenKind::Assign => AssignOp::Assign,
+            TokenKind::PlusAssign => AssignOp::AddAssign,
+            _ => return Ok(left),
+        };
+
+        self.advance();
+
+        let right = self.parse_assignment_expression()?;
+        let span = Span::new(left.span().start, right.span().end);
+
+        Ok(Expression::Assign(AssignmentExpression {
+            span,
+            op,
+            target: Box::new(left),
+            value: Box::new(right),
+        }))
+    }
+
+    fn parse_or_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_and_expression()?;
+
+        while self.at(|kind| matches!(kind, TokenKind::Or)) {
+            self.advance();
+
+            let right = self.parse_and_expression()?;
+            let span = Span::new(
+                expression.span().start,
+                right.span().end,
+            );
+
+            expression = Expression::binary(
+                expression,
+                BinaryOp::Or,
+                right,
+                span,
+            );
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_and_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_equality_expression()?;
+
+        while self.at(|kind| matches!(kind, TokenKind::And)) {
+            self.advance();
+
+            let right = self.parse_equality_expression()?;
+            let span = Span::new(
+                expression.span().start,
+                right.span().end,
+            );
+
+            expression = Expression::binary(
+                expression,
+                BinaryOp::And,
+                right,
+                span,
+            );
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_equality_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_comparison_expression()?;
+
+        loop {
+            let op = match self.current().kind {
+                TokenKind::Eq => BinaryOp::Eq,
+                TokenKind::NotEq => BinaryOp::NotEq,
+                _ => break,
+            };
+
+            self.advance();
+
+            let right = self.parse_comparison_expression()?;
+            let span = Span::new(
+                expression.span().start,
+                right.span().end,
+            );
+
+            expression = Expression::binary(
+                expression,
+                op,
+                right,
+                span,
+            );
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_comparison_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_additive_expression()?;
+
+        loop {
+            let op = match self.current().kind {
+                TokenKind::Lt => BinaryOp::Lt,
+                TokenKind::Lte => BinaryOp::Lte,
+                TokenKind::Gt => BinaryOp::Gt,
+                TokenKind::Gte => BinaryOp::Gte,
+                _ => break,
+            };
+
+            self.advance();
+
+            let right = self.parse_additive_expression()?;
+            let span = Span::new(
+                expression.span().start,
+                right.span().end,
+            );
+
+            expression = Expression::binary(
+                expression,
+                op,
+                right,
+                span,
+            );
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_additive_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let mut expression =
+            self.parse_multiplicative_expression()?;
+
+        loop {
+            let op = match self.current().kind {
+                TokenKind::Plus => BinaryOp::Add,
+                TokenKind::Minus => BinaryOp::Sub,
+                _ => break,
+            };
+
+            self.advance();
+
+            let right =
+                self.parse_multiplicative_expression()?;
+
+            let span = Span::new(
+                expression.span().start,
+                right.span().end,
+            );
+
+            expression = Expression::binary(
+                expression,
+                op,
+                right,
+                span,
+            );
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_multiplicative_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_unary_expression()?;
+
+        loop {
+            let op = match self.current().kind {
+                TokenKind::Star => BinaryOp::Mul,
+                TokenKind::Slash => BinaryOp::Div,
+                _ => break,
+            };
+
+            self.advance();
+
+            let right = self.parse_unary_expression()?;
+            let span = Span::new(
+                expression.span().start,
+                right.span().end,
+            );
+
+            expression = Expression::binary(
+                expression,
+                op,
+                right,
+                span,
+            );
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_unary_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        if self.at(|kind| matches!(kind, TokenKind::Not)) {
+            let operator = self.advance();
+            let argument = self.parse_unary_expression()?;
+
+            return Ok(Expression::Unary(UnaryExpression {
+                span: Span::new(
+                    operator.span.start,
+                    argument.span().end,
+                ),
+                op: UnaryOp::Not,
+                argument: Box::new(argument),
+            }));
+        }
+
+        self.parse_postfix_expression()
+    }
+
+    fn parse_postfix_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_primary_expression()?;
+
+        loop {
+            if self.at(|kind| matches!(kind, TokenKind::LParen)) {
+                expression =
+                    self.parse_call_expression(expression)?;
+
+                continue;
+            }
+
+            if self.at(|kind| matches!(kind, TokenKind::Dot)) {
+                expression =
+                    self.parse_member_expression(expression)?;
+
+                continue;
+            }
+
+            if self.at(|kind| matches!(kind, TokenKind::LBracket)) {
+                expression =
+                    self.parse_index_expression(expression)?;
+
+                continue;
+            }
+
+            break;
+        }
+
+        Ok(expression)
+    }
+
+    fn parse_call_expression(
+        &mut self,
+        callee: Expression,
+    ) -> Result<Expression, ParseError> {
+        self.expect(
+            "`(`",
+            |kind| matches!(kind, TokenKind::LParen),
+        )?;
+
+        let mut args = Vec::new();
+
+        if !self.at(|kind| matches!(kind, TokenKind::RParen)) {
+            loop {
+                args.push(self.parse_call_argument()?);
+
+                if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                    break;
+                }
+
+                self.advance();
+
+                if self.at(|kind| matches!(kind, TokenKind::RParen)) {
+                    break;
+                }
+            }
+        }
+
+        let closing = self.expect(
+            "`)`",
+            |kind| matches!(kind, TokenKind::RParen),
+        )?;
+
+        let span = Span::new(
+            callee.span().start,
+            closing.span.end,
+        );
+
+        Ok(Expression::Call(CallExpression {
+            span,
+            callee: Box::new(callee),
+            args,
+        }))
+    }
+
+    fn parse_call_argument(
+        &mut self,
+    ) -> Result<CallArg, ParseError> {
+        if self.is_named_argument() {
+            let (name, name_span) =
+                self.expect_identifier("an argument name")?;
+
+            self.expect(
+                "`:`",
+                |kind| matches!(kind, TokenKind::Colon),
+            )?;
+
+            let value = self.parse_assignment_expression()?;
+            let span = Span::new(
+                name_span.start,
+                value.span().end,
+            );
+
+            return Ok(CallArg::Named {
+                name,
+                value: Box::new(value),
+                span,
+            });
+        }
+
+        Ok(CallArg::Positional(
+            self.parse_assignment_expression()?,
+        ))
+    }
+
+    fn parse_member_expression(
+        &mut self,
+        object: Expression,
+    ) -> Result<Expression, ParseError> {
+        self.expect(
+            "`.`",
+            |kind| matches!(kind, TokenKind::Dot),
+        )?;
+
+        let (property, property_span) =
+            self.expect_identifier(
+                "a property name after `.`",
+            )?;
+
+        let span = Span::new(
+            object.span().start,
+            property_span.end,
+        );
+
+        Ok(Expression::Member(MemberExpression {
+            span,
+            object: Box::new(object),
+            property,
+        }))
+    }
+
+    fn parse_index_expression(
+        &mut self,
+        object: Expression,
+    ) -> Result<Expression, ParseError> {
+        self.expect(
+            "`[`",
+            |kind| matches!(kind, TokenKind::LBracket),
+        )?;
+
+        let index = self.parse_assignment_expression()?;
+
+        let closing = self.expect(
+            "`]`",
+            |kind| matches!(kind, TokenKind::RBracket),
+        )?;
+
+        let span = Span::new(
+            object.span().start,
+            closing.span.end,
+        );
+
+        Ok(Expression::Index(IndexExpression {
+            span,
+            object: Box::new(object),
+            index: Box::new(index),
+        }))
+    }
+
+    fn parse_primary_expression(
+        &mut self,
     ) -> Result<Expression, ParseError> {
         if self.at(|kind| matches!(kind, TokenKind::Dot)) {
-            let dot = self.advance();
+            return self.parse_dot_identifier_expression();
+        }
 
-            let (name, name_span) =
-                self.expect_identifier(
-                    "an identifier after `.`",
-                )?;
+        if self.at(|kind| matches!(kind, TokenKind::LParen)) {
+            return self.parse_group_expression();
+        }
 
-            return Ok(Expression::DotIdent(
-                DotIdentifierExpression {
-                    span: Span::new(
-                        dot.span.start,
-                        name_span.end,
-                    ),
-                    name,
-                },
-            ));
+        if self.at(|kind| matches!(kind, TokenKind::LBracket)) {
+            return self.parse_list_expression();
         }
 
         let token = self.advance();
         let span = token.span;
 
-        let expression = match token.kind {
+        match token.kind {
             TokenKind::String(value) => {
-                Expression::literal(
+                Ok(Expression::literal(
                     LiteralKind::String(value),
                     span,
-                )
+                ))
             }
 
             TokenKind::Number(value) => {
-                Expression::literal(
-                    LiteralKind::Number(
-                        NumberLiteral(value),
-                    ),
+                Ok(Expression::literal(
+                    LiteralKind::Number(NumberLiteral(value)),
                     span,
-                )
+                ))
             }
 
             TokenKind::Percent(value) => {
-                Expression::literal(
-                    LiteralKind::Percent(
-                        NumberLiteral(value),
-                    ),
+                Ok(Expression::literal(
+                    LiteralKind::Percent(NumberLiteral(value)),
                     span,
-                )
+                ))
             }
 
             TokenKind::True => {
-                Expression::literal(
+                Ok(Expression::literal(
                     LiteralKind::Boolean(true),
                     span,
-                )
+                ))
             }
 
             TokenKind::False => {
-                Expression::literal(
+                Ok(Expression::literal(
                     LiteralKind::Boolean(false),
                     span,
-                )
+                ))
             }
 
             TokenKind::Null => {
-                Expression::literal(
+                Ok(Expression::literal(
                     LiteralKind::Null,
                     span,
-                )
+                ))
             }
 
             TokenKind::Ident(name) => {
-                Expression::ident(name, span)
+                Ok(Expression::ident(name, span))
             }
 
-            found => {
-                return Err(ParseError::new(
-                    ParseErrorKind::Expected {
-                        expected,
-                        found,
-                    },
-                    span,
-                ));
-            }
-        };
+            found => Err(ParseError::new(
+                ParseErrorKind::Expected {
+                    expected: "an expression",
+                    found,
+                },
+                span,
+            )),
+        }
+    }
 
-        Ok(expression)
+    fn parse_dot_identifier_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let dot = self.expect(
+            "`.`",
+            |kind| matches!(kind, TokenKind::Dot),
+        )?;
+
+        let (name, name_span) =
+            self.expect_identifier(
+                "an identifier after `.`",
+            )?;
+
+        Ok(Expression::DotIdent(
+            DotIdentifierExpression {
+                span: Span::new(
+                    dot.span.start,
+                    name_span.end,
+                ),
+                name,
+            },
+        ))
+    }
+
+    fn parse_group_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let opening = self.expect(
+            "`(`",
+            |kind| matches!(kind, TokenKind::LParen),
+        )?;
+
+        let expression = self.parse_assignment_expression()?;
+
+        let closing = self.expect(
+            "`)`",
+            |kind| matches!(kind, TokenKind::RParen),
+        )?;
+
+        Ok(Expression::Group(GroupExpression {
+            span: Span::new(
+                opening.span.start,
+                closing.span.end,
+            ),
+            expression: Box::new(expression),
+        }))
+    }
+
+    fn parse_list_expression(
+        &mut self,
+    ) -> Result<Expression, ParseError> {
+        let opening = self.expect(
+            "`[`",
+            |kind| matches!(kind, TokenKind::LBracket),
+        )?;
+
+        let mut elems = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBracket)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`]`"));
+            }
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                elems.push(None);
+                self.advance();
+                continue;
+            }
+
+            elems.push(Some(
+                self.parse_assignment_expression()?,
+            ));
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let closing = self.expect(
+            "`]`",
+            |kind| matches!(kind, TokenKind::RBracket),
+        )?;
+
+        Ok(Expression::List(ListExpression {
+            span: Span::new(
+                opening.span.start,
+                closing.span.end,
+            ),
+            elems,
+        }))
     }
 
     fn parse_use_declaration(
@@ -550,6 +1019,13 @@ impl Parser {
         }
     }
 
+    fn is_named_argument(&self) -> bool {
+        matches!(
+            (&self.current().kind, &self.next().kind),
+            (TokenKind::Ident(_), TokenKind::Colon)
+        )
+    }
+
     fn expect(
         &mut self,
         expected: &'static str,
@@ -585,6 +1061,16 @@ impl Parser {
 
     fn current(&self) -> &Token {
         &self.tokens[self.position]
+    }
+
+    fn next(&self) -> &Token {
+        self.tokens
+            .get(self.position + 1)
+            .unwrap_or_else(|| {
+                self.tokens
+                    .last()
+                    .expect("parser token stream must contain EOF")
+            })
     }
 
     fn advance(&mut self) -> Token {

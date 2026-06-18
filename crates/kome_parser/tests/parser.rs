@@ -596,7 +596,7 @@ fn rejects_parameter_without_default_value() {
     assert_eq!(
         error.kind,
         ParseErrorKind::Expected {
-            expected: "a parameter default value",
+            expected: "an expression",
             found: TokenKind::RParen,
         },
     );
@@ -634,7 +634,7 @@ fn rejects_missing_binding_initializer() {
     assert_eq!(
         error.kind,
         ParseErrorKind::Expected {
-            expected: "an initializer expression",
+            expected: "an expression",
             found: TokenKind::RBrace,
         },
     );
