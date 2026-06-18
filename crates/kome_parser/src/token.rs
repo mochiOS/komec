@@ -1,6 +1,6 @@
 use kome_ast::Span;
 
-/// A lexical token kind in Kome source code.
+/// Kome source code token.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Fn,
@@ -8,6 +8,7 @@ pub enum TokenKind {
     Recipe,
     State,
     Let,
+    Mut,
     Const,
     Use,
     If,
@@ -22,16 +23,19 @@ pub enum TokenKind {
     True,
     False,
     Null,
+
     Ident(String),
     String(String),
     Number(String),
     Percent(String),
+
     LParen,
     RParen,
     LBrace,
     RBrace,
     LBracket,
     RBracket,
+
     Comma,
     Dot,
     Colon,
@@ -40,12 +44,16 @@ pub enum TokenKind {
 
     /// `->`
     ThinArrow,
+
     /// `=>`
     FatArrow,
+
     /// `=`
     Assign,
+
     /// `+=`
     PlusAssign,
+
     Plus,
     Minus,
     Star,
@@ -75,8 +83,6 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
-    /// Converts an identifier into a keyword token when it matches a
-    /// reserved Kome keyword.
     pub fn from_identifier(identifier: String) -> Self {
         match identifier.as_str() {
             "fn" => Self::Fn,
@@ -84,25 +90,21 @@ impl TokenKind {
             "recipe" => Self::Recipe,
             "state" => Self::State,
             "let" => Self::Let,
+            "mut" => Self::Mut,
             "const" => Self::Const,
             "use" => Self::Use,
-
             "if" => Self::If,
             "else" => Self::Else,
             "while" => Self::While,
             "for" => Self::For,
             "in" => Self::In,
-
             "return" => Self::Return,
             "break" => Self::Break,
             "continue" => Self::Continue,
-
             "is" => Self::Is,
-
             "true" => Self::True,
             "false" => Self::False,
             "null" => Self::Null,
-
             _ => Self::Ident(identifier),
         }
     }
@@ -120,7 +122,6 @@ impl Token {
         Self { kind, span }
     }
 
-    /// Creates the end-of-input token.
     pub const fn eof(offset: usize) -> Self {
         Self {
             kind: TokenKind::Eof,
