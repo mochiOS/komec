@@ -11,6 +11,7 @@ pub enum Declaration {
     Let(Binding),
     Constant(Binding),
     Use(UseDeclaration),
+    Enum(EnumDeclaration),
 }
 
 // ---- Component ----
@@ -153,6 +154,31 @@ pub enum UseSpecifier {
     Named { name: String, span: Span },
 }
 
+// ---- Enum ----
+
+/// An enum declaration.
+///
+/// ```kome
+/// enum Color {
+///     blue,
+///     red,
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDeclaration {
+    pub span: Span,
+    pub attributes: Vec<Attribute>,
+    pub name: String,
+    pub cases: Vec<EnumCase>,
+}
+
+/// One case declared inside an enum.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumCase {
+    pub span: Span,
+    pub name: String,
+}
+
 // ---- Module ----
 
 /// A Kome source file containing a list of declarations.
@@ -183,6 +209,7 @@ impl AstNode for Declaration {
             Declaration::Function(declaration) => declaration.span,
             Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
             Declaration::Use(declaration) => declaration.span,
+            Declaration::Enum(declaration) => declaration.span,
         }
     }
 }
@@ -223,6 +250,18 @@ impl AstNode for FunctionDeclaration {
 }
 
 impl AstNode for Binding {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for EnumDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for EnumCase {
     fn span(&self) -> Span {
         self.span
     }
