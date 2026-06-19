@@ -250,3 +250,40 @@ fn lexes_question_mark() {
         ],
     );
 }
+
+#[test]
+fn tokenizes_extension_declaration() {
+    let source = r#"
+extension View {
+    fn padding(value: Number) -> View
+}
+"#;
+
+    let tokens =
+        Lexer::new(source).tokenize().unwrap();
+
+    let kinds: Vec<_> = tokens
+        .into_iter()
+        .map(|token| token.kind)
+        .collect();
+
+    assert_eq!(
+        kinds,
+        vec![
+            TokenKind::Extension,
+            TokenKind::Ident("View".into()),
+            TokenKind::LBrace,
+            TokenKind::Fn,
+            TokenKind::Ident("padding".into()),
+            TokenKind::LParen,
+            TokenKind::Ident("value".into()),
+            TokenKind::Colon,
+            TokenKind::Ident("Number".into()),
+            TokenKind::RParen,
+            TokenKind::ThinArrow,
+            TokenKind::Ident("View".into()),
+            TokenKind::RBrace,
+            TokenKind::Eof,
+        ],
+    );
+}
