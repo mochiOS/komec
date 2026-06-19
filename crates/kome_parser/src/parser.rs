@@ -1,7 +1,13 @@
+use crate::token::TemplateTokenPart;
+use crate::{
+    error::{ParseError, ParseErrorKind},
+    token::{Token, TokenKind},
+};
+use kome_ast::declarations::EnumCase;
 use kome_ast::{
     AstNode, Span,
     declarations::{
-        Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration,
+        Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumDeclaration,
         FunctionDeclaration, Module, RecipeDeclaration, UseDeclaration, UseSpecifier,
     },
     expressions::{
@@ -17,12 +23,6 @@ use kome_ast::{
         IfStatement, IsStatement, ReturnStatement, Statement, WhileStatement,
     },
     types::{NamedType, OptionalType, Parameter, PrimitiveType, PrimitiveTypeKind, Type},
-};
-
-use crate::token::TemplateTokenPart;
-use crate::{
-    error::{ParseError, ParseErrorKind},
-    token::{Token, TokenKind},
 };
 
 pub struct Parser {
@@ -78,6 +78,12 @@ impl Parser {
                 .map(Declaration::Component);
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::Enum)) {
+            return self
+                .parse_enum_declaration(attributes)
+                .map(Declaration::Enum);
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Fn)) {
             return self
                 .parse_function_declaration(attributes)
@@ -93,7 +99,9 @@ impl Parser {
                 return self.parse_use_declaration().map(Declaration::Use);
             }
 
-            return Err(self.expected("a component, function, or let declaration after attributes"));
+            return Err(
+                self.expected("a component, enum, function, or let declaration after attributes")
+            );
         }
 
         if attributes.is_empty() {
@@ -101,6 +109,54 @@ impl Parser {
         } else {
             Err(self.expected("a declaration after attributes"))
         }
+    }
+
+    fn parse_enum_declaration(
+        &mut self,
+        attributes: Vec<Attribute>,
+    ) -> Result<EnumDeclaration, ParseError> {
+        let enum_token = self.expect("`enum`", |kind| matches!(kind, TokenKind::Enum))?;
+
+        let start = attributes
+            .first()
+            .map_or(enum_token.span.start, |attribute| attribute.span.start);
+
+        let (name, _) = self.expect_identifier("an enum name")?;
+
+        self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
+
+        let mut cases = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            let (case_name, case_span) = self.expect_identifier("an enum case name")?;
+
+            cases.push(EnumCase {
+                span: case_span,
+                name: case_name,
+            });
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+                continue;
+            }
+
+            if !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+                return Err(self.expected("`,` or `}` after an enum case"));
+            }
+        }
+
+        let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
+
+        Ok(EnumDeclaration {
+            span: Span::new(start, closing.span.end),
+            attributes,
+            name,
+            cases,
+        })
     }
 
     fn parse_attributes(&mut self) -> Result<Vec<Attribute>, ParseError> {
