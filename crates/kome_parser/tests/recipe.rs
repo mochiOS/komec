@@ -19,11 +19,7 @@ fn parses_empty_recipe() {
         panic!("expected component declaration");
     };
 
-
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     assert_eq!(body.len(), 1);
 
@@ -57,10 +53,7 @@ fn parses_recipe_body() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
@@ -103,10 +96,7 @@ fn parses_recipe_event_source() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
@@ -135,10 +125,7 @@ fn parses_attributed_recipe() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
@@ -173,10 +160,7 @@ fn parses_multiple_recipes() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     assert_eq!(body.len(), 2);
 
@@ -275,10 +259,7 @@ fn recipe_span_includes_attribute_and_body() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");

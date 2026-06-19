@@ -287,20 +287,13 @@ fn parses_general_expression_in_state_binding() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
-    let ComponentMember::State(binding) =
-        &body[0]
-    else {
+    let ComponentMember::State(binding) = &body[0] else {
         panic!("expected state member");
     };
 

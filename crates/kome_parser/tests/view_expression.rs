@@ -234,11 +234,8 @@ component App() {
     };
 
     assert_eq!(component.attributes.len(), 1);
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
-    
+    let body = component.body.as_ref().expect("expected component body");
+
     assert_eq!(body.len(), 1);
 
     let ComponentMember::Let(binding) = &body[0] else {

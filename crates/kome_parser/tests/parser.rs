@@ -243,10 +243,7 @@ fn parses_component_state_and_let_bindings() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     assert_eq!(body.len(), 3);
 
@@ -333,10 +330,7 @@ fn parses_mutable_let_binding() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     let ComponentMember::Let(binding) = &body[0] else {
         panic!("expected let binding");
@@ -370,10 +364,7 @@ fn parses_attributed_let_binding() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     let ComponentMember::Let(binding) = &body[0] else {
         panic!("expected let binding");
@@ -414,10 +405,7 @@ fn parses_binding_without_initializer() {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
     let ComponentMember::Let(binding) = &body[0] else {
         panic!("expected let binding");

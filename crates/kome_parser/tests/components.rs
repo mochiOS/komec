@@ -1,12 +1,8 @@
 use kome_ast::{
     AstNode,
     declarations::Declaration,
-    expressions::{
-        Expression, LiteralKind,
-    },
-    types::{
-        PrimitiveTypeKind, Type,
-    },
+    expressions::{Expression, LiteralKind},
+    types::{PrimitiveTypeKind, Type},
 };
 
 use kome_parser::parse;
@@ -21,11 +17,9 @@ fn parses_bodyless_component() {
         )
         "#,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
@@ -44,26 +38,18 @@ fn parses_attributed_bodyless_component() {
         )
         "#,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
     assert_eq!(component.name, "Text");
     assert!(component.body.is_none());
 
-    assert_eq!(
-        component.attributes.len(),
-        1,
-    );
+    assert_eq!(component.attributes.len(), 1,);
 
-    assert_eq!(
-        component.attributes[0].name,
-        "nativeComponent",
-    );
+    assert_eq!(component.attributes[0].name, "nativeComponent",);
 
     assert!(matches!(
         &component.attributes[0].args[0],
@@ -84,17 +70,13 @@ fn distinguishes_empty_body_from_no_body() {
         component Empty() {}
         "#,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Component(native) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(native) = &module.declarations[0] else {
         panic!("expected first component");
     };
 
-    let Declaration::Component(empty) =
-        &module.declarations[1]
-    else {
+    let Declaration::Component(empty) = &module.declarations[1] else {
         panic!("expected second component");
     };
 
@@ -120,7 +102,7 @@ fn parses_declaration_after_bodyless_component() {
         }
         "#,
     )
-        .unwrap();
+    .unwrap();
 
     assert_eq!(module.declarations.len(), 2);
 
@@ -130,34 +112,22 @@ fn parses_declaration_after_bodyless_component() {
             if component.body.is_none()
     ));
 
-    assert!(matches!(
-        &module.declarations[1],
-        Declaration::Enum(_)
-    ));
+    assert!(matches!(&module.declarations[1], Declaration::Enum(_)));
 }
 
 #[test]
 fn bodyless_component_span_ends_at_parenthesis() {
-    let source =
-        "component Text(content: String)";
+    let source = "component Text(content: String)";
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component");
     };
 
-    assert_eq!(
-        component.span().start,
-        0,
-    );
+    assert_eq!(component.span().start, 0,);
 
-    assert_eq!(
-        component.span().end,
-        source.len(),
-    );
+    assert_eq!(component.span().end, source.len(),);
 }
 
 #[test]
@@ -170,20 +140,15 @@ fn bodyless_component_preserves_parameters() {
         )
         "#,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component");
     };
 
     assert_eq!(component.params.len(), 2);
 
-    assert_eq!(
-        component.params[0].name,
-        "title",
-    );
+    assert_eq!(component.params[0].name, "title",);
 
     assert!(matches!(
         &component.params[0].type_,
@@ -192,14 +157,9 @@ fn bodyless_component_preserves_parameters() {
                 == PrimitiveTypeKind::String
     ));
 
-    assert_eq!(
-        component.params[1].name,
-        "enabled",
-    );
+    assert_eq!(component.params[1].name, "enabled",);
 
-    assert!(component.params[1]
-        .default
-        .is_some());
+    assert!(component.params[1].default.is_some());
 
     assert!(component.body.is_none());
 }

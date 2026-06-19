@@ -274,20 +274,13 @@ fn parses_if_statement_in_body_binding() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let body = component
-        .body
-        .as_ref()
-        .expect("expected component body");
+    let body = component.body.as_ref().expect("expected component body");
 
-    let ComponentMember::Let(binding) =
-        &body[0]
-    else {
+    let ComponentMember::Let(binding) = &body[0] else {
         panic!("expected let member");
     };
 
