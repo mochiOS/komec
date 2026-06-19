@@ -1,21 +1,14 @@
 use kome_ast::{
     AstNode, Span,
-    declarations::{
-        ComponentMember, Declaration, UseSpecifier,
-    },
+    declarations::{ComponentMember, Declaration, UseSpecifier},
     expressions::{
-        DotIdentifierExpression, Expression,
-        LiteralExpression, LiteralKind, NumberLiteral,
+        DotIdentifierExpression, Expression, LiteralExpression, LiteralKind, NumberLiteral,
     },
     patterns::{IdentifierPattern, Pattern},
-    types::{
-        NamedType, PrimitiveType, PrimitiveTypeKind, Type,
-    },
+    types::{NamedType, PrimitiveType, PrimitiveTypeKind, Type},
 };
 
-use kome_parser::{
-    FrontendError, ParseErrorKind, TokenKind, parse,
-};
+use kome_parser::{FrontendError, ParseErrorKind, TokenKind, parse};
 
 #[test]
 fn parses_empty_module() {
@@ -30,34 +23,24 @@ fn parses_named_use_declaration() {
     let source = "use viewKit";
     let module = parse(source).unwrap();
 
-    assert_eq!(
-        module.span,
-        Span::new(0, source.len()),
-    );
+    assert_eq!(module.span, Span::new(0, source.len()),);
 
     assert_eq!(module.declarations.len(), 1);
 
-    let Declaration::Use(declaration) =
-        &module.declarations[0]
-    else {
+    let Declaration::Use(declaration) = &module.declarations[0] else {
         panic!("expected use declaration");
     };
 
-    assert_eq!(
-        declaration.span,
-        Span::new(0, source.len()),
-    );
+    assert_eq!(declaration.span, Span::new(0, source.len()),);
 
     assert_eq!(declaration.source, None);
 
     assert_eq!(
         declaration.specifiers,
-        vec![
-            UseSpecifier::Named {
-                name: "viewKit".into(),
-                span: Span::new(4, 11),
-            },
-        ],
+        vec![UseSpecifier::Named {
+            name: "viewKit".into(),
+            span: Span::new(4, 11),
+        },],
     );
 }
 
@@ -65,19 +48,15 @@ fn parses_named_use_declaration() {
 fn parses_wildcard_use_declaration() {
     let module = parse("use *").unwrap();
 
-    let Declaration::Use(declaration) =
-        &module.declarations[0]
-    else {
+    let Declaration::Use(declaration) = &module.declarations[0] else {
         panic!("expected use declaration");
     };
 
     assert_eq!(
         declaration.specifiers,
-        vec![
-            UseSpecifier::Wildcard {
-                span: Span::new(4, 5),
-            },
-        ],
+        vec![UseSpecifier::Wildcard {
+            span: Span::new(4, 5),
+        },],
     );
 }
 
@@ -92,9 +71,7 @@ use collections, io"#;
     assert_eq!(module.declarations.len(), 3);
     assert_eq!(module.span().end, source.len());
 
-    let Declaration::Use(declaration) =
-        &module.declarations[2]
-    else {
+    let Declaration::Use(declaration) = &module.declarations[2] else {
         panic!("expected use declaration");
     };
 
@@ -121,16 +98,11 @@ fn parses_empty_component() {
     let source = "component App() {}";
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    assert_eq!(
-        component.span,
-        Span::new(0, source.len()),
-    );
+    assert_eq!(component.span, Span::new(0, source.len()),);
 
     assert_eq!(component.name, "App");
     assert!(component.params.is_empty());
@@ -145,38 +117,24 @@ component App() {}"#;
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    assert_eq!(
-        component.span,
-        Span::new(0, source.len()),
-    );
+    assert_eq!(component.span, Span::new(0, source.len()),);
 
     assert_eq!(component.attributes.len(), 1);
-    assert_eq!(
-        component.attributes[0].span,
-        Span::new(0, 12),
-    );
-    assert_eq!(
-        component.attributes[0].name,
-        "application",
-    );
+    assert_eq!(component.attributes[0].span, Span::new(0, 12),);
+    assert_eq!(component.attributes[0].name, "application",);
 }
 
 #[test]
 fn parses_component_parameter_with_default() {
-    let source =
-        r#"component App(title: String = "Kome") {}"#;
+    let source = r#"component App(title: String = "Kome") {}"#;
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
@@ -184,10 +142,7 @@ fn parses_component_parameter_with_default() {
 
     let parameter = &component.params[0];
 
-    assert_eq!(
-        parameter.span,
-        Span::new(14, 36),
-    );
+    assert_eq!(parameter.span, Span::new(14, 36),);
 
     assert_eq!(parameter.name, "title");
 
@@ -201,51 +156,36 @@ fn parses_component_parameter_with_default() {
 
     assert_eq!(
         parameter.default,
-        Some(Expression::Literal(
-            LiteralExpression {
-                span: Span::new(30, 36),
-                kind: LiteralKind::String(
-                    "Kome".into(),
-                ),
-            },
-        )),
+        Some(Expression::Literal(LiteralExpression {
+            span: Span::new(30, 36),
+            kind: LiteralKind::String("Kome".into(),),
+        },)),
     );
 }
 
 #[test]
 fn parses_multiple_component_parameters() {
     let source = concat!(
-    "component Button(",
-    "title: String, ",
-    "count: Number = 0, ",
-    "enabled: Boolean = true,",
-    ") {}",
+        "component Button(",
+        "title: String, ",
+        "count: Number = 0, ",
+        "enabled: Boolean = true,",
+        ") {}",
     );
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
     assert_eq!(component.params.len(), 3);
 
-    assert_eq!(
-        component.params[0].span,
-        Span::new(17, 30),
-    );
+    assert_eq!(component.params[0].span, Span::new(17, 30),);
 
-    assert_eq!(
-        component.params[1].span,
-        Span::new(32, 49),
-    );
+    assert_eq!(component.params[1].span, Span::new(32, 49),);
 
-    assert_eq!(
-        component.params[2].span,
-        Span::new(51, 74),
-    );
+    assert_eq!(component.params[2].span, Span::new(51, 74),);
 }
 
 #[test]
@@ -253,9 +193,7 @@ fn parses_named_component_parameter_type() {
     let source = "component App(content: View) {}";
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
@@ -271,25 +209,20 @@ fn parses_named_component_parameter_type() {
 
 #[test]
 fn parses_dot_identifier_parameter_default() {
-    let source =
-        "component Stack(spacing: Spacing = .large) {}";
+    let source = "component Stack(spacing: Spacing = .large) {}";
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
     assert_eq!(
         component.params[0].default,
-        Some(Expression::DotIdent(
-            DotIdentifierExpression {
-                span: Span::new(35, 41),
-                name: "large".into(),
-            },
-        )),
+        Some(Expression::DotIdent(DotIdentifierExpression {
+            span: Span::new(35, 41),
+            name: "large".into(),
+        },)),
     );
 }
 
@@ -303,17 +236,13 @@ fn parses_component_state_and_let_bindings() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
     assert_eq!(component.body.len(), 3);
 
-    let ComponentMember::State(name) =
-        &component.body[0]
-    else {
+    let ComponentMember::State(name) = &component.body[0] else {
         panic!("expected state binding");
     };
 
@@ -334,26 +263,17 @@ fn parses_component_state_and_let_bindings() {
 
     assert_eq!(
         name.init,
-        Some(Expression::Literal(
-            LiteralExpression {
-                span: Span::new(35, 42),
-                kind: LiteralKind::String(
-                    "world".into(),
-                ),
-            },
-        )),
+        Some(Expression::Literal(LiteralExpression {
+            span: Span::new(35, 42),
+            kind: LiteralKind::String("world".into(),),
+        },)),
     );
 
-    let ComponentMember::State(counter) =
-        &component.body[1]
-    else {
+    let ComponentMember::State(counter) = &component.body[1] else {
         panic!("expected state binding");
     };
 
-    assert_eq!(
-        counter.span,
-        Span::new(47, 72),
-    );
+    assert_eq!(counter.span, Span::new(47, 72),);
 
     assert_eq!(
         counter.type_annotation,
@@ -365,26 +285,17 @@ fn parses_component_state_and_let_bindings() {
 
     assert_eq!(
         counter.init,
-        Some(Expression::Literal(
-            LiteralExpression {
-                span: Span::new(71, 72),
-                kind: LiteralKind::Number(
-                    NumberLiteral("0".into()),
-                ),
-            },
-        )),
+        Some(Expression::Literal(LiteralExpression {
+            span: Span::new(71, 72),
+            kind: LiteralKind::Number(NumberLiteral("0".into()),),
+        },)),
     );
 
-    let ComponentMember::Let(title) =
-        &component.body[2]
-    else {
+    let ComponentMember::Let(title) = &component.body[2] else {
         panic!("expected let binding");
     };
 
-    assert_eq!(
-        title.span,
-        Span::new(77, 103),
-    );
+    assert_eq!(title.span, Span::new(77, 103),);
 
     assert!(!title.mutable);
 
@@ -397,10 +308,7 @@ fn parses_component_state_and_let_bindings() {
     );
 
     assert_eq!(
-        &source[
-            title.span.start
-                ..title.span.end
-        ],
+        &source[title.span.start..title.span.end],
         r#"let title: String = "Kome""#,
     );
 }
@@ -413,22 +321,15 @@ fn parses_mutable_let_binding() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Let(binding) =
-        &component.body[0]
-    else {
+    let ComponentMember::Let(binding) = &component.body[0] else {
         panic!("expected let binding");
     };
 
-    assert_eq!(
-        binding.span,
-        Span::new(22, 39),
-    );
+    assert_eq!(binding.span, Span::new(22, 39),);
 
     assert!(binding.mutable);
 
@@ -452,34 +353,21 @@ fn parses_attributed_let_binding() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Let(binding) =
-        &component.body[0]
-    else {
+    let ComponentMember::Let(binding) = &component.body[0] else {
         panic!("expected let binding");
     };
 
-    assert_eq!(
-        binding.span,
-        Span::new(22, 53),
-    );
+    assert_eq!(binding.span, Span::new(22, 53),);
 
     assert_eq!(binding.attributes.len(), 1);
 
-    assert_eq!(
-        binding.attributes[0].span,
-        Span::new(22, 27),
-    );
+    assert_eq!(binding.attributes[0].span, Span::new(22, 27),);
 
-    assert_eq!(
-        binding.attributes[0].name,
-        "body",
-    );
+    assert_eq!(binding.attributes[0].name, "body",);
 
     assert_eq!(
         binding.type_annotation,
@@ -492,10 +380,7 @@ fn parses_attributed_let_binding() {
 
     assert_eq!(
         binding.init,
-        Some(Expression::ident(
-            "root",
-            Span::new(49, 53),
-        )),
+        Some(Expression::ident("root", Span::new(49, 53),)),
     );
 }
 
@@ -507,15 +392,11 @@ fn parses_binding_without_initializer() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Let(binding) =
-        &component.body[0]
-    else {
+    let ComponentMember::Let(binding) = &component.body[0] else {
         panic!("expected let binding");
     };
 
@@ -566,8 +447,7 @@ fn rejects_attribute_without_declaration() {
 
 #[test]
 fn rejects_parameter_without_type_annotation() {
-    let error =
-        parse("component App(title) {}").unwrap_err();
+    let error = parse("component App(title) {}").unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -584,10 +464,7 @@ fn rejects_parameter_without_type_annotation() {
 
 #[test]
 fn rejects_parameter_without_default_value() {
-    let error = parse(
-        "component App(title: String = ) {}",
-    )
-        .unwrap_err();
+    let error = parse("component App(title: String = ) {}").unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -604,9 +481,7 @@ fn rejects_parameter_without_default_value() {
 
 #[test]
 fn rejects_missing_binding_name() {
-    let error =
-        parse("component App() { state = 1 }")
-            .unwrap_err();
+    let error = parse("component App() { state = 1 }").unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -623,9 +498,7 @@ fn rejects_missing_binding_name() {
 
 #[test]
 fn rejects_missing_binding_initializer() {
-    let error =
-        parse("component App() { state value = }")
-            .unwrap_err();
+    let error = parse("component App() { state value = }").unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -642,9 +515,7 @@ fn rejects_missing_binding_initializer() {
 
 #[test]
 fn rejects_attribute_without_component_member() {
-    let error =
-        parse("component App() { @body }")
-            .unwrap_err();
+    let error = parse("component App() { @body }").unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -653,8 +524,7 @@ fn rejects_attribute_without_component_member() {
     assert_eq!(
         error.kind,
         ParseErrorKind::Expected {
-            expected:
-                "a component member after attributes",
+            expected: "a component member after attributes",
             found: TokenKind::RBrace,
         },
     );

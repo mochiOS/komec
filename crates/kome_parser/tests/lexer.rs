@@ -1,7 +1,5 @@
 use kome_ast::Span;
-use kome_parser::{
-    LexErrorKind, Lexer, Token, TokenKind,
-};
+use kome_parser::{LexErrorKind, Lexer, Token, TokenKind};
 
 #[test]
 fn tokenizes_component_source() {
@@ -17,10 +15,7 @@ component App() {
 
     let tokens = Lexer::new(source).tokenize().unwrap();
 
-    let kinds: Vec<_> = tokens
-        .into_iter()
-        .map(|token| token.kind)
-        .collect();
+    let kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
 
     assert_eq!(
         kinds,
@@ -68,10 +63,7 @@ fn skips_comments_and_whitespace() {
 
     let tokens = Lexer::new(source).tokenize().unwrap();
 
-    let kinds: Vec<_> = tokens
-        .into_iter()
-        .map(|token| token.kind)
-        .collect();
+    let kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
 
     assert_eq!(
         kinds,
@@ -97,22 +89,10 @@ fn tokenizes_numbers_and_percentages() {
     assert_eq!(
         tokens,
         vec![
-            Token::new(
-                TokenKind::Number("10".into()),
-                Span::new(0, 2),
-            ),
-            Token::new(
-                TokenKind::Number("12.5".into()),
-                Span::new(3, 7),
-            ),
-            Token::new(
-                TokenKind::Percent("50".into()),
-                Span::new(8, 11),
-            ),
-            Token::new(
-                TokenKind::Percent("0.25".into()),
-                Span::new(12, 17),
-            ),
+            Token::new(TokenKind::Number("10".into()), Span::new(0, 2),),
+            Token::new(TokenKind::Number("12.5".into()), Span::new(3, 7),),
+            Token::new(TokenKind::Percent("50".into()), Span::new(8, 11),),
+            Token::new(TokenKind::Percent("0.25".into()), Span::new(12, 17),),
             Token::eof(17),
         ],
     );
@@ -154,20 +134,11 @@ fn keeps_utf8_byte_spans() {
 
     let tokens = Lexer::new(source).tokenize().unwrap();
 
-    assert_eq!(
-        tokens[1].kind,
-        TokenKind::Ident("名前".into()),
-    );
+    assert_eq!(tokens[1].kind, TokenKind::Ident("名前".into()),);
 
-    assert_eq!(
-        &source[tokens[1].span.start..tokens[1].span.end],
-        "名前",
-    );
+    assert_eq!(&source[tokens[1].span.start..tokens[1].span.end], "名前",);
 
-    assert_eq!(
-        &source[tokens[3].span.start..tokens[3].span.end],
-        "\"米\"",
-    );
+    assert_eq!(&source[tokens[3].span.start..tokens[3].span.end], "\"米\"",);
 }
 
 #[test]
@@ -176,10 +147,7 @@ fn tokenizes_multi_character_operators() {
 
     let tokens = Lexer::new(source).tokenize().unwrap();
 
-    let kinds: Vec<_> = tokens
-        .into_iter()
-        .map(|token| token.kind)
-        .collect();
+    let kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
 
     assert_eq!(
         kinds,
@@ -210,53 +178,29 @@ fn tokenizes_multi_character_operators() {
 
 #[test]
 fn rejects_single_ampersand() {
-    let error = Lexer::new("a & b")
-        .tokenize()
-        .unwrap_err();
+    let error = Lexer::new("a & b").tokenize().unwrap_err();
 
-    assert_eq!(
-        error.kind,
-        LexErrorKind::UnexpectedCharacter('&'),
-    );
+    assert_eq!(error.kind, LexErrorKind::UnexpectedCharacter('&'),);
 
-    assert_eq!(
-        error.span,
-        Span::new(2, 3),
-    );
+    assert_eq!(error.span, Span::new(2, 3),);
 }
 
 #[test]
 fn rejects_invalid_escape_sequence() {
-    let error = Lexer::new(r#""hello\q""#)
-        .tokenize()
-        .unwrap_err();
+    let error = Lexer::new(r#""hello\q""#).tokenize().unwrap_err();
 
-    assert_eq!(
-        error.kind,
-        LexErrorKind::InvalidEscape('q'),
-    );
+    assert_eq!(error.kind, LexErrorKind::InvalidEscape('q'),);
 
-    assert_eq!(
-        error.span,
-        Span::new(6, 8),
-    );
+    assert_eq!(error.span, Span::new(6, 8),);
 }
 
 #[test]
 fn rejects_unterminated_string() {
     let source = "\"hello";
 
-    let error = Lexer::new(source)
-        .tokenize()
-        .unwrap_err();
+    let error = Lexer::new(source).tokenize().unwrap_err();
 
-    assert_eq!(
-        error.kind,
-        LexErrorKind::UnterminatedString,
-    );
+    assert_eq!(error.kind, LexErrorKind::UnterminatedString,);
 
-    assert_eq!(
-        error.span,
-        Span::new(0, source.len()),
-    );
+    assert_eq!(error.span, Span::new(0, source.len()),);
 }

@@ -1,21 +1,14 @@
+use kome_ast::expressions::NumberLiteral;
 use kome_ast::{
     AstNode, Span,
     declarations::{ComponentMember, Declaration},
-    expressions::{
-        AssignOp, BinaryOp, CallArg, Expression, LiteralKind,
-        UnaryOp,
-    },
+    expressions::{AssignOp, BinaryOp, CallArg, Expression, LiteralKind, UnaryOp},
 };
-use kome_ast::expressions::NumberLiteral;
-use kome_parser::{
-    FrontendError, ParseErrorKind, TokenKind, parse,
-    parse_expression,
-};
+use kome_parser::{FrontendError, ParseErrorKind, TokenKind, parse, parse_expression};
 
 #[test]
 fn parses_binary_operator_precedence() {
-    let expression =
-        parse_expression("a + b * c").unwrap();
+    let expression = parse_expression("a + b * c").unwrap();
 
     let Expression::Binary(addition) = expression else {
         panic!("expected addition expression");
@@ -30,9 +23,7 @@ fn parses_binary_operator_precedence() {
             if identifier.name == "a"
     ));
 
-    let Expression::Binary(multiplication) =
-        addition.right.as_ref()
-    else {
+    let Expression::Binary(multiplication) = addition.right.as_ref() else {
         panic!("expected multiplication expression");
     };
 
@@ -54,10 +45,7 @@ fn parses_binary_operator_precedence() {
 
 #[test]
 fn parses_logical_and_comparison_precedence() {
-    let expression = parse_expression(
-        "a > 0 && b < 10 || enabled",
-    )
-        .unwrap();
+    let expression = parse_expression("a > 0 && b < 10 || enabled").unwrap();
 
     let Expression::Binary(or) = expression else {
         panic!("expected or expression");
@@ -86,8 +74,7 @@ fn parses_logical_and_comparison_precedence() {
 
 #[test]
 fn parses_right_associative_assignment() {
-    let expression =
-        parse_expression("a = b = 1").unwrap();
+    let expression = parse_expression("a = b = 1").unwrap();
 
     let Expression::Assign(first) = expression else {
         panic!("expected assignment expression");
@@ -123,8 +110,7 @@ fn parses_right_associative_assignment() {
 
 #[test]
 fn parses_add_assignment() {
-    let expression =
-        parse_expression("counter += 1").unwrap();
+    let expression = parse_expression("counter += 1").unwrap();
 
     let Expression::Assign(assignment) = expression else {
         panic!("expected assignment expression");
@@ -136,8 +122,7 @@ fn parses_add_assignment() {
 
 #[test]
 fn parses_unary_not() {
-    let expression =
-        parse_expression("!!enabled").unwrap();
+    let expression = parse_expression("!!enabled").unwrap();
 
     let Expression::Unary(first) = expression else {
         panic!("expected unary expression");
@@ -156,8 +141,7 @@ fn parses_unary_not() {
 
 #[test]
 fn parses_group_expression() {
-    let expression =
-        parse_expression("(a + b) * c").unwrap();
+    let expression = parse_expression("(a + b) * c").unwrap();
 
     let Expression::Binary(multiplication) = expression else {
         panic!("expected multiplication expression");
@@ -165,17 +149,13 @@ fn parses_group_expression() {
 
     assert_eq!(multiplication.op, BinaryOp::Mul);
 
-    let Expression::Group(group) =
-        multiplication.left.as_ref()
-    else {
+    let Expression::Group(group) = multiplication.left.as_ref() else {
         panic!("expected group expression");
     };
 
     assert_eq!(group.span, Span::new(0, 7));
 
-    let Expression::Binary(addition) =
-        group.expression.as_ref()
-    else {
+    let Expression::Binary(addition) = group.expression.as_ref() else {
         panic!("expected addition expression");
     };
 
@@ -184,10 +164,8 @@ fn parses_group_expression() {
 
 #[test]
 fn parses_function_call() {
-    let expression = parse_expression(
-        r#"Button("increment", color: .blue, onClick: handle_click)"#,
-    )
-        .unwrap();
+    let expression =
+        parse_expression(r#"Button("increment", color: .blue, onClick: handle_click)"#).unwrap();
 
     let Expression::Call(call) = expression else {
         panic!("expected call expression");
@@ -208,12 +186,7 @@ fn parses_function_call() {
                 == LiteralKind::String("increment".into())
     ));
 
-    let CallArg::Named {
-        name,
-        value,
-        ..
-    } = &call.args[1]
-    else {
+    let CallArg::Named { name, value, .. } = &call.args[1] else {
         panic!("expected named argument");
     };
 
@@ -225,12 +198,7 @@ fn parses_function_call() {
             if identifier.name == "blue"
     ));
 
-    let CallArg::Named {
-        name,
-        value,
-        ..
-    } = &call.args[2]
-    else {
+    let CallArg::Named { name, value, .. } = &call.args[2] else {
         panic!("expected named argument");
     };
 
@@ -245,8 +213,7 @@ fn parses_function_call() {
 
 #[test]
 fn parses_chained_postfix_expression() {
-    let expression =
-        parse_expression("items[index].title.trim()").unwrap();
+    let expression = parse_expression("items[index].title.trim()").unwrap();
 
     let Expression::Call(call) = expression else {
         panic!("expected call expression");
@@ -283,8 +250,7 @@ fn parses_chained_postfix_expression() {
 
 #[test]
 fn parses_list_expression() {
-    let expression =
-        parse_expression("[1, value, .large,]").unwrap();
+    let expression = parse_expression("[1, value, .large,]").unwrap();
 
     let Expression::List(list) = expression else {
         panic!("expected list expression");
@@ -321,15 +287,11 @@ fn parses_general_expression_in_state_binding() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::State(binding) =
-        &component.body[0]
-    else {
+    let ComponentMember::State(binding) = &component.body[0] else {
         panic!("expected state binding");
     };
 
@@ -339,9 +301,7 @@ fn parses_general_expression_in_state_binding() {
 
     assert_eq!(addition.op, BinaryOp::Add);
 
-    let Expression::Binary(multiplication) =
-        addition.right.as_ref()
-    else {
+    let Expression::Binary(multiplication) = addition.right.as_ref() else {
         panic!("expected multiplication expression");
     };
 
@@ -350,20 +310,15 @@ fn parses_general_expression_in_state_binding() {
 
 #[test]
 fn parses_expression_as_component_default() {
-    let source =
-        "component App(count: Number = initial + 1) {}";
+    let source = "component App(count: Number = initial + 1) {}";
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let Some(Expression::Binary(addition)) =
-        &component.params[0].default
-    else {
+    let Some(Expression::Binary(addition)) = &component.params[0].default else {
         panic!("expected addition default value");
     };
 
@@ -372,8 +327,7 @@ fn parses_expression_as_component_default() {
 
 #[test]
 fn rejects_incomplete_binary_expression() {
-    let error =
-        parse_expression("value +").unwrap_err();
+    let error = parse_expression("value +").unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -390,9 +344,7 @@ fn rejects_incomplete_binary_expression() {
 
 #[test]
 fn rejects_missing_call_argument() {
-    let error =
-        parse_expression("call(value,) extra")
-            .unwrap_err();
+    let error = parse_expression("call(value,) extra").unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -409,14 +361,9 @@ fn rejects_missing_call_argument() {
 
 #[test]
 fn expression_span_covers_source() {
-    let source =
-        "items[index].title.trim()";
+    let source = "items[index].title.trim()";
 
-    let expression =
-        parse_expression(source).unwrap();
+    let expression = parse_expression(source).unwrap();
 
-    assert_eq!(
-        expression.span(),
-        Span::new(0, source.len()),
-    );
+    assert_eq!(expression.span(), Span::new(0, source.len()),);
 }

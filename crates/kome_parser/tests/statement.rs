@@ -4,10 +4,7 @@ use kome_ast::{
     statements::Statement,
 };
 
-use kome_parser::{
-    FrontendError, ParseErrorKind, TokenKind, parse,
-    parse_expression,
-};
+use kome_parser::{FrontendError, ParseErrorKind, TokenKind, parse, parse_expression};
 
 #[test]
 fn parses_let_statement_and_block_tail() {
@@ -17,7 +14,7 @@ fn parses_let_statement_and_block_tail() {
             value + 2
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
@@ -51,7 +48,7 @@ fn parses_if_statement() {
             }
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
@@ -70,9 +67,7 @@ fn parses_if_statement() {
             if identifier.name == "enabled"
     ));
 
-    let Statement::Block(consequent) =
-        statement.consequent.as_ref()
-    else {
+    let Statement::Block(consequent) = statement.consequent.as_ref() else {
         panic!("expected consequent block");
     };
 
@@ -100,7 +95,7 @@ fn parses_if_else_statement() {
             }
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
@@ -116,9 +111,7 @@ fn parses_if_else_statement() {
         panic!("expected alternative");
     };
 
-    let Statement::Block(alternative) =
-        alternative.as_ref()
-    else {
+    let Statement::Block(alternative) = alternative.as_ref() else {
         panic!("expected alternative block");
     };
 
@@ -138,7 +131,7 @@ fn parses_else_if_statement() {
             }
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
@@ -175,7 +168,7 @@ fn parses_while_statement_with_break() {
             }
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
@@ -191,15 +184,9 @@ fn parses_while_statement_with_break() {
 
     assert_eq!(body.statements.len(), 2);
 
-    assert!(matches!(
-        &body.statements[0],
-        Statement::Expression(_)
-    ));
+    assert!(matches!(&body.statements[0], Statement::Expression(_)));
 
-    assert!(matches!(
-        &body.statements[1],
-        Statement::Break(_)
-    ));
+    assert!(matches!(&body.statements[1], Statement::Break(_)));
 }
 
 #[test]
@@ -211,7 +198,7 @@ fn parses_continue_statement() {
             }
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
@@ -225,10 +212,7 @@ fn parses_continue_statement() {
         panic!("expected while block");
     };
 
-    assert!(matches!(
-        &body.statements[0],
-        Statement::Continue(_)
-    ));
+    assert!(matches!(&body.statements[0], Statement::Continue(_)));
 }
 
 #[test]
@@ -238,15 +222,13 @@ fn parses_return_with_value() {
             return value + 1
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
     };
 
-    let Statement::Return(statement) =
-        &block.statements[0]
-    else {
+    let Statement::Return(statement) = &block.statements[0] else {
         panic!("expected return statement");
     };
 
@@ -264,15 +246,13 @@ fn parses_return_without_value() {
             return
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
     };
 
-    let Statement::Return(statement) =
-        &block.statements[0]
-    else {
+    let Statement::Return(statement) = &block.statements[0] else {
         panic!("expected return statement");
     };
 
@@ -294,15 +274,11 @@ fn parses_if_statement_in_body_binding() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Let(binding) =
-        &component.body[0]
-    else {
+    let ComponentMember::Let(binding) = &component.body[0] else {
         panic!("expected body binding");
     };
 
@@ -311,15 +287,9 @@ fn parses_if_statement_in_body_binding() {
     };
 
     assert_eq!(block.statements.len(), 1);
-    assert!(matches!(
-        &block.statements[0],
-        Statement::If(_)
-    ));
+    assert!(matches!(&block.statements[0], Statement::If(_)));
 
-    assert!(matches!(
-        block.tail.as_deref(),
-        Some(Expression::Call(_))
-    ));
+    assert!(matches!(block.tail.as_deref(), Some(Expression::Call(_))));
 }
 
 #[test]
@@ -331,7 +301,7 @@ fn condition_does_not_consume_statement_block_as_component() {
             }
         }"#,
     )
-        .unwrap();
+    .unwrap();
 
     let Expression::Block(block) = expression else {
         panic!("expected block expression");
@@ -357,7 +327,7 @@ fn rejects_else_without_block_or_if() {
             } else value
         }"#,
     )
-        .unwrap_err();
+    .unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -380,7 +350,7 @@ fn rejects_unclosed_statement_block() {
                 update()
         }"#,
     )
-        .unwrap_err();
+    .unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");

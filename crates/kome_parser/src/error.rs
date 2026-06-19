@@ -31,20 +31,17 @@ impl fmt::Display for LexError {
             LexErrorKind::UnexpectedCharacter(character) => write!(
                 formatter,
                 "unexpected character {character:?} at byte range {}..{}",
-                self.span.start,
-                self.span.end,
+                self.span.start, self.span.end,
             ),
             LexErrorKind::UnterminatedString => write!(
                 formatter,
                 "unterminated string literal at byte range {}..{}",
-                self.span.start,
-                self.span.end,
+                self.span.start, self.span.end,
             ),
             LexErrorKind::InvalidEscape(character) => write!(
                 formatter,
                 "invalid escape sequence \\{character} at byte range {}..{}",
-                self.span.start,
-                self.span.end,
+                self.span.start, self.span.end,
             ),
         }
     }
@@ -80,8 +77,7 @@ impl fmt::Display for ParseError {
             ParseErrorKind::Expected { expected, found } => write!(
                 formatter,
                 "expected {expected}, found {found:?} at byte range {}..{}",
-                self.span.start,
-                self.span.end,
+                self.span.start, self.span.end,
             ),
         }
     }

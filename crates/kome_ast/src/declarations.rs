@@ -149,13 +149,8 @@ pub struct UseDeclaration {
 /// One specifier inside a `use` declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UseSpecifier {
-    Wildcard {
-        span: Span,
-    },
-    Named {
-        name: String,
-        span: Span,
-    },
+    Wildcard { span: Span },
+    Named { name: String, span: Span },
 }
 
 // ---- Module ----

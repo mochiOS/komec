@@ -567,12 +567,7 @@ impl Expression {
     }
 
     /// Creates a binary operator expression.
-    pub fn binary(
-        left: Expression,
-        op: BinaryOp,
-        right: Expression,
-        span: Span,
-    ) -> Self {
+    pub fn binary(left: Expression, op: BinaryOp, right: Expression, span: Span) -> Self {
         Self::Binary(BinaryExpression {
             span,
             op,
@@ -595,10 +590,7 @@ impl Expression {
     }
 
     /// Creates a list expression.
-    pub fn list(
-        elems: Vec<Option<Expression>>,
-        span: Span,
-    ) -> Self {
+    pub fn list(elems: Vec<Option<Expression>>, span: Span) -> Self {
         Self::List(ListExpression { span, elems })
     }
 }

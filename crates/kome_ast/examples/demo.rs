@@ -101,22 +101,15 @@ fn main() {
 
     // Text("Hello")
 
-    let text_callee = Expression::ident(
-        "Text",
-        Span::new(116, 120),
-    );
+    let text_callee = Expression::ident("Text", Span::new(116, 120));
 
-    let text_argument = Expression::literal(
-        LiteralKind::String("Hello".into()),
-        Span::new(121, 128),
-    );
+    let text_argument =
+        Expression::literal(LiteralKind::String("Hello".into()), Span::new(121, 128));
 
     let text_expression = Expression::Call(CallExpression {
         span: Span::new(116, 129),
         callee: Box::new(text_callee),
-        args: vec![
-            CallArg::Positional(text_argument),
-        ],
+        args: vec![CallArg::Positional(text_argument)],
     });
 
     // VStack { Text("Hello") }
@@ -125,9 +118,7 @@ fn main() {
         span: Span::new(95, 139),
         name: "VStack".into(),
         args: Vec::new(),
-        children: vec![
-            text_expression,
-        ],
+        children: vec![text_expression],
     });
 
     // { VStack { Text("Hello") } }
@@ -155,9 +146,7 @@ fn main() {
 
     let body_binding = ComponentMember::Let(Box::new(Binding {
         span: Span::new(68, 145),
-        attributes: vec![
-            body_attribute,
-        ],
+        attributes: vec![body_attribute],
         mutable: false,
         pattern: body_pattern,
         init: Some(body_block),
@@ -166,15 +155,9 @@ fn main() {
 
     // Recipe expression: counter = counter + 1
 
-    let assignment_target = Expression::ident(
-        "counter",
-        Span::new(178, 185),
-    );
+    let assignment_target = Expression::ident("counter", Span::new(178, 185));
 
-    let addition_left = Expression::ident(
-        "counter",
-        Span::new(188, 195),
-    );
+    let addition_left = Expression::ident("counter", Span::new(188, 195));
 
     let addition_right = Expression::literal(
         LiteralKind::Number(NumberLiteral("1".into())),
@@ -209,9 +192,7 @@ fn main() {
         event_source: None,
         body: BlockStatement {
             span: Span::new(168, 205),
-            statements: vec![
-                assignment_statement,
-            ],
+            statements: vec![assignment_statement],
         },
     });
 
@@ -229,15 +210,10 @@ fn main() {
 
     // Function expression: "Hello, " + name
 
-    let hello_expression = Expression::literal(
-        LiteralKind::String("Hello, ".into()),
-        Span::new(251, 260),
-    );
+    let hello_expression =
+        Expression::literal(LiteralKind::String("Hello, ".into()), Span::new(251, 260));
 
-    let name_expression = Expression::ident(
-        "name",
-        Span::new(263, 267),
-    );
+    let name_expression = Expression::ident("name", Span::new(263, 267));
 
     let greeting_expression = Expression::binary(
         hello_expression,
@@ -257,14 +233,10 @@ fn main() {
         span: Span::new(211, 273),
         attributes: Vec::new(),
         name: "greet".into(),
-        params: vec![
-            name_parameter,
-        ],
+        params: vec![name_parameter],
         body: Some(BlockStatement {
             span: Span::new(234, 273),
-            statements: vec![
-                return_statement,
-            ],
+            statements: vec![return_statement],
         }),
         return_type: None,
     });
@@ -275,9 +247,7 @@ fn main() {
         span: Span::new(0, SOURCE.len()),
         name: "App".into(),
         params: Vec::new(),
-        attributes: vec![
-            application_attribute,
-        ],
+        attributes: vec![application_attribute],
         body: vec![
             counter_state,
             body_binding,
@@ -288,30 +258,18 @@ fn main() {
 
     // Module
 
-    let module = Module::new(
-        vec![component],
-        Span::new(0, SOURCE.len()),
-    );
+    let module = Module::new(vec![component], Span::new(0, SOURCE.len()));
 
     println!("{module:#?}");
     print_span("module", &module);
 
     // Span verification
 
-    debug_assert_eq!(
-        &SOURCE[0..12],
-        "@application",
-    );
+    debug_assert_eq!(&SOURCE[0..12], "@application",);
 
-    debug_assert_eq!(
-        &SOURCE[35..52],
-        "state counter = 0",
-    );
+    debug_assert_eq!(&SOURCE[35..52], "state counter = 0",);
 
-    debug_assert_eq!(
-        &SOURCE[58..63],
-        "@body",
-    );
+    debug_assert_eq!(&SOURCE[58..63], "@body",);
 
     debug_assert_eq!(
         &SOURCE[68..145],
@@ -343,9 +301,5 @@ fn main() {
 fn print_span(label: &str, node: &impl AstNode) {
     let span = node.span();
 
-    println!(
-        "{label}: [{:>3}..{:>3})",
-        span.start,
-        span.end,
-    );
+    println!("{label}: [{:>3}..{:>3})", span.start, span.end,);
 }

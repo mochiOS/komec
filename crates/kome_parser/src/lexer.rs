@@ -122,8 +122,8 @@ impl<'source> Lexer<'source> {
 
         if self.peek_char() == Some('.')
             && self
-            .peek_next_char()
-            .is_some_and(|character| character.is_ascii_digit())
+                .peek_next_char()
+                .is_some_and(|character| character.is_ascii_digit())
         {
             self.advance_char();
 
@@ -212,10 +212,7 @@ impl<'source> Lexer<'source> {
             }
 
             if self.starts_with("//") {
-                while self
-                    .peek_char()
-                    .is_some_and(|character| character != '\n')
-                {
+                while self.peek_char().is_some_and(|character| character != '\n') {
                     self.advance_char();
                 }
 
