@@ -82,6 +82,7 @@ impl<'source> Lexer<'source> {
             ',' => TokenKind::Comma,
             '.' => TokenKind::Dot,
             ':' => TokenKind::Colon,
+            '?' => TokenKind::Question,
             '@' => TokenKind::At,
 
             '|' if self.consume_char('|') => TokenKind::Or,

@@ -10,6 +10,7 @@ pub enum Type {
     List(ListType),
     Object(ObjectType),
     Named(NamedType),
+    Optional(OptionalType),
 }
 
 /// `String`, `Number`, `Boolean`, etc.
@@ -74,14 +75,22 @@ pub struct NamedType {
     pub type_arguments: Vec<Type>,
 }
 
+/// `Type?`
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptionalType {
+    pub span: Span,
+    pub inner: Box<Type>,
+}
+
 impl AstNode for Type {
     fn span(&self) -> Span {
         match self {
-            Type::Primitive(t) => t.span,
-            Type::Function(t) => t.span,
-            Type::List(t) => t.span,
-            Type::Object(t) => t.span,
-            Type::Named(t) => t.span,
+            Type::Primitive(type_) => type_.span,
+            Type::Function(type_) => type_.span,
+            Type::List(type_) => type_.span,
+            Type::Object(type_) => type_.span,
+            Type::Named(type_) => type_.span,
+            Type::Optional(type_) => type_.span,
         }
     }
 }

@@ -236,3 +236,17 @@ fn rejects_unterminated_string() {
 
     assert_eq!(error.span, Span::new(0, source.len()),);
 }
+
+#[test]
+fn lexes_question_mark() {
+    let tokens = tokenize("String?").unwrap();
+
+    assert_eq!(
+        tokens,
+        vec![
+            Token::new(TokenKind::Ident("String".into(),), Span::new(0, 6),),
+            Token::new(TokenKind::Question, Span::new(6, 7),),
+            Token::eof(7),
+        ],
+    );
+}

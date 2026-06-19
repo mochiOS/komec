@@ -43,6 +43,10 @@ pub enum TokenKind {
     Comma,
     Dot,
     Colon,
+
+    /// `?`
+    Question,
+
     Pipe,
     At,
 

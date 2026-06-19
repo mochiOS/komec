@@ -4,7 +4,10 @@ use kome_ast::{
     expressions::{BinaryOp, Expression, LiteralKind, TemplatePart},
 };
 
-use kome_parser::{FrontendError, LexErrorKind, ParseErrorKind, TokenKind, parse, parse_expression, tokenize, Token};
+use kome_parser::{
+    FrontendError, LexErrorKind, ParseErrorKind, Token, TokenKind, parse, parse_expression,
+    tokenize,
+};
 
 #[test]
 fn plain_string_remains_string_literal() {
@@ -275,9 +278,7 @@ fn preserves_escaped_template_braces_in_string_token() {
         tokens,
         vec![
             Token::new(
-                TokenKind::String(
-                    "Hello, {name}".into(),
-                ),
+                TokenKind::String("Hello, {name}".into(),),
                 Span::new(0, source.len()),
             ),
             Token::eof(source.len()),

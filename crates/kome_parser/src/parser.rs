@@ -16,7 +16,7 @@ use kome_ast::{
         BlockStatement, BreakStatement, ContinueStatement, ExpressionStatement, ForInStatement,
         IfStatement, IsStatement, ReturnStatement, Statement, WhileStatement,
     },
-    types::{NamedType, Parameter, PrimitiveType, PrimitiveTypeKind, Type},
+    types::{NamedType, OptionalType, Parameter, PrimitiveType, PrimitiveTypeKind, Type},
 };
 
 use crate::token::TemplateTokenPart;
@@ -487,37 +487,81 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, ParseError> {
-        let (name, span) = self.expect_identifier("a type name")?;
+        let mut type_ = self.parse_primary_type()?;
 
-        let type_ = match name.as_str() {
-            "String" => Type::Primitive(PrimitiveType {
-                span,
-                kind: PrimitiveTypeKind::String,
-            }),
+        if self.at(|kind| matches!(kind, TokenKind::Question)) {
+            let question = self.advance();
+            let start = type_.span().start;
 
-            "Number" => Type::Primitive(PrimitiveType {
-                span,
-                kind: PrimitiveTypeKind::Number,
-            }),
-
-            "Boolean" => Type::Primitive(PrimitiveType {
-                span,
-                kind: PrimitiveTypeKind::Boolean,
-            }),
-
-            "Null" => Type::Primitive(PrimitiveType {
-                span,
-                kind: PrimitiveTypeKind::Null,
-            }),
-
-            _ => Type::Named(NamedType {
-                span,
-                name,
-                type_arguments: Vec::new(),
-            }),
-        };
+            type_ = Type::Optional(OptionalType {
+                span: Span::new(start, question.span.end),
+                inner: Box::new(type_),
+            });
+        }
 
         Ok(type_)
+    }
+
+    fn parse_primary_type(&mut self) -> Result<Type, ParseError> {
+        let (name, name_span) = self.expect_identifier("a type name")?;
+
+        let primitive_kind = match name.as_str() {
+            "String" => Some(PrimitiveTypeKind::String),
+
+            "Number" => Some(PrimitiveTypeKind::Number),
+
+            "Boolean" => Some(PrimitiveTypeKind::Boolean),
+
+            "Null" => Some(PrimitiveTypeKind::Null),
+
+            _ => None,
+        };
+
+        if let Some(kind) = primitive_kind {
+            if self.at(|kind| matches!(kind, TokenKind::Lt)) {
+                return Err(self.expected("the end of a primitive type"));
+            }
+
+            return Ok(Type::Primitive(PrimitiveType {
+                span: name_span,
+                kind,
+            }));
+        }
+
+        let mut type_arguments = Vec::new();
+        let mut end = name_span.end;
+
+        if self.at(|kind| matches!(kind, TokenKind::Lt)) {
+            self.advance();
+
+            if self.at(|kind| matches!(kind, TokenKind::Gt)) {
+                return Err(self.expected("a type argument"));
+            }
+
+            loop {
+                type_arguments.push(self.parse_type()?);
+
+                if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                    break;
+                }
+
+                self.advance();
+
+                if self.at(|kind| matches!(kind, TokenKind::Gt)) {
+                    break;
+                }
+            }
+
+            let closing = self.expect("`>`", |kind| matches!(kind, TokenKind::Gt))?;
+
+            end = closing.span.end;
+        }
+
+        Ok(Type::Named(NamedType {
+            span: Span::new(name_span.start, end),
+            name,
+            type_arguments,
+        }))
     }
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
