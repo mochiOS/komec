@@ -26,6 +26,10 @@ pub enum TokenKind {
 
     Ident(String),
     String(String),
+
+    /// A string containing one or more interpolations.
+    Template(Vec<TemplateTokenPart>),
+
     Number(String),
     Percent(String),
 
@@ -80,6 +84,21 @@ pub enum TokenKind {
     Not,
 
     Eof,
+}
+
+/// One lexed part of a template string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemplateTokenPart {
+    /// Plain decoded string content.
+    String { value: String, span: Span },
+
+    /// Tokens contained inside `{ ... }`.
+    Expression {
+        tokens: Vec<Token>,
+
+        /// Span including the opening and closing braces.
+        span: Span,
+    },
 }
 
 impl TokenKind {

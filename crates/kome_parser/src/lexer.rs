@@ -1,19 +1,38 @@
+use std::mem;
+
 use kome_ast::Span;
 
 use crate::{
     error::{LexError, LexErrorKind},
-    token::{Token, TokenKind},
+    token::{TemplateTokenPart, Token, TokenKind},
 };
 
 /// Converts Kome source code into tokens.
 pub struct Lexer<'source> {
     source: &'source str,
+
+    /// Offset relative to `source`.
     offset: usize,
+
+    /// Absolute byte offset of `source` in the original file.
+    base_offset: usize,
 }
 
 impl<'source> Lexer<'source> {
     pub const fn new(source: &'source str) -> Self {
-        Self { source, offset: 0 }
+        Self {
+            source,
+            offset: 0,
+            base_offset: 0,
+        }
+    }
+
+    const fn with_base_offset(source: &'source str, base_offset: usize) -> Self {
+        Self {
+            source,
+            offset: 0,
+            base_offset,
+        }
     }
 
     pub fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
@@ -37,7 +56,7 @@ impl<'source> Lexer<'source> {
         let start = self.offset;
 
         let Some(character) = self.advance_char() else {
-            return Ok(Token::eof(self.offset));
+            return Ok(Token::eof(self.absolute_offset(self.offset)));
         };
 
         if is_identifier_start(character) {
@@ -49,7 +68,9 @@ impl<'source> Lexer<'source> {
         }
 
         let kind = match character {
-            '"' => return self.lex_string(start),
+            '"' => {
+                return self.lex_string(start);
+            }
 
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
@@ -64,28 +85,35 @@ impl<'source> Lexer<'source> {
             '@' => TokenKind::At,
 
             '|' if self.consume_char('|') => TokenKind::Or,
+
             '|' => TokenKind::Pipe,
 
             '-' if self.consume_char('>') => TokenKind::ThinArrow,
+
             '-' => TokenKind::Minus,
 
             '=' if self.consume_char('=') => TokenKind::Eq,
+
             '=' if self.consume_char('>') => TokenKind::FatArrow,
+
             '=' => TokenKind::Assign,
 
             '+' if self.consume_char('=') => TokenKind::PlusAssign,
-            '+' => TokenKind::Plus,
 
+            '+' => TokenKind::Plus,
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
 
             '!' if self.consume_char('=') => TokenKind::NotEq,
+
             '!' => TokenKind::Not,
 
             '<' if self.consume_char('=') => TokenKind::Lte,
+
             '<' => TokenKind::Lt,
 
             '>' if self.consume_char('=') => TokenKind::Gte,
+
             '>' => TokenKind::Gt,
 
             '&' if self.consume_char('&') => TokenKind::And,
@@ -93,12 +121,12 @@ impl<'source> Lexer<'source> {
             unexpected => {
                 return Err(LexError::new(
                     LexErrorKind::UnexpectedCharacter(unexpected),
-                    Span::new(start, self.offset),
+                    self.span(start, self.offset),
                 ));
             }
         };
 
-        Ok(Token::new(kind, Span::new(start, self.offset)))
+        Ok(Token::new(kind, self.span(start, self.offset)))
     }
 
     fn lex_identifier(&mut self, start: usize) -> Token {
@@ -107,9 +135,10 @@ impl<'source> Lexer<'source> {
         }
 
         let identifier = self.source[start..self.offset].to_owned();
+
         let kind = TokenKind::from_identifier(identifier);
 
-        Token::new(kind, Span::new(start, self.offset))
+        Token::new(kind, self.span(start, self.offset))
     }
 
     fn lex_number(&mut self, start: usize) -> Token {
@@ -136,6 +165,7 @@ impl<'source> Lexer<'source> {
         }
 
         let number_end = self.offset;
+
         let value = self.source[start..number_end].to_owned();
 
         let kind = if self.consume_char('%') {
@@ -144,19 +174,32 @@ impl<'source> Lexer<'source> {
             TokenKind::Number(value)
         };
 
-        Token::new(kind, Span::new(start, self.offset))
+        Token::new(kind, self.span(start, self.offset))
     }
 
     fn lex_string(&mut self, start: usize) -> Result<Token, LexError> {
-        let mut value = String::new();
+        let mut text = String::new();
+        let mut parts = Vec::new();
+
+        let mut has_interpolation = false;
+
+        // Opening quote has already been consumed.
+        let mut text_start = self.offset;
 
         while let Some(character) = self.advance_char() {
             match character {
                 '"' => {
-                    return Ok(Token::new(
-                        TokenKind::String(value),
-                        Span::new(start, self.offset),
-                    ));
+                    let token_span = self.span(start, self.offset);
+
+                    if !has_interpolation {
+                        return Ok(Token::new(TokenKind::String(text), token_span));
+                    }
+
+                    let closing_quote = self.offset - '"'.len_utf8();
+
+                    self.push_template_text(&mut parts, &mut text, text_start, closing_quote);
+
+                    return Ok(Token::new(TokenKind::Template(parts), token_span));
                 }
 
                 '\\' => {
@@ -165,7 +208,7 @@ impl<'source> Lexer<'source> {
                     let Some(escaped) = self.advance_char() else {
                         return Err(LexError::new(
                             LexErrorKind::UnterminatedString,
-                            Span::new(start, self.offset),
+                            self.span(start, self.offset),
                         ));
                     };
 
@@ -177,32 +220,175 @@ impl<'source> Lexer<'source> {
                         't' => '\t',
                         '0' => '\0',
 
+                        // Literal template braces.
+                        '{' => '{',
+                        '}' => '}',
+
                         invalid => {
                             return Err(LexError::new(
                                 LexErrorKind::InvalidEscape(invalid),
-                                Span::new(escape_start, self.offset),
+                                self.span(escape_start, self.offset),
                             ));
                         }
                     };
 
-                    value.push(escaped);
+                    text.push(escaped);
+                }
+
+                '{' => {
+                    has_interpolation = true;
+
+                    let opening_brace = self.offset - '{'.len_utf8();
+
+                    self.push_template_text(&mut parts, &mut text, text_start, opening_brace);
+
+                    let expression_start = self.offset;
+
+                    let Some(closing_brace) = self.find_interpolation_end(expression_start) else {
+                        return Err(LexError::new(
+                            LexErrorKind::UnterminatedInterpolation,
+                            self.span(opening_brace, self.source.len()),
+                        ));
+                    };
+
+                    let expression_source = &self.source[expression_start..closing_brace];
+
+                    let expression_tokens = Lexer::with_base_offset(
+                        expression_source,
+                        self.absolute_offset(expression_start),
+                    )
+                    .tokenize()?;
+
+                    parts.push(TemplateTokenPart::Expression {
+                        tokens: expression_tokens,
+                        span: self.span(opening_brace, closing_brace + 1),
+                    });
+
+                    self.offset = closing_brace + 1;
+                    text_start = self.offset;
                 }
 
                 '\n' | '\r' => {
                     return Err(LexError::new(
                         LexErrorKind::UnterminatedString,
-                        Span::new(start, self.offset),
+                        self.span(start, self.offset),
                     ));
                 }
 
-                other => value.push(other),
+                other => {
+                    text.push(other);
+                }
             }
         }
 
         Err(LexError::new(
             LexErrorKind::UnterminatedString,
-            Span::new(start, self.offset),
+            self.span(start, self.offset),
         ))
+    }
+
+    fn push_template_text(
+        &self,
+        parts: &mut Vec<TemplateTokenPart>,
+        text: &mut String,
+        start: usize,
+        end: usize,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+
+        parts.push(TemplateTokenPart::String {
+            value: mem::take(text),
+            span: self.span(start, end),
+        });
+    }
+
+    fn find_interpolation_end(&self, start: usize) -> Option<usize> {
+        let mut index = start;
+        let mut brace_depth = 1usize;
+
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut in_line_comment = false;
+
+        while index < self.source.len() {
+            if in_line_comment {
+                let character = self.source[index..].chars().next()?;
+
+                if matches!(character, '\n' | '\r') {
+                    return None;
+                }
+
+                index += character.len_utf8();
+                continue;
+            }
+
+            if in_string {
+                let character = self.source[index..].chars().next()?;
+
+                index += character.len_utf8();
+
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+
+                match character {
+                    '\\' => {
+                        escaped = true;
+                    }
+
+                    '"' => {
+                        in_string = false;
+                    }
+
+                    '\n' | '\r' => {
+                        return None;
+                    }
+
+                    _ => {}
+                }
+
+                continue;
+            }
+
+            if self.source[index..].starts_with("//") {
+                in_line_comment = true;
+                index += 2;
+                continue;
+            }
+
+            let character = self.source[index..].chars().next()?;
+
+            match character {
+                '"' => {
+                    in_string = true;
+                }
+
+                '{' => {
+                    brace_depth += 1;
+                }
+
+                '}' => {
+                    brace_depth -= 1;
+
+                    if brace_depth == 0 {
+                        return Some(index);
+                    }
+                }
+
+                '\n' | '\r' => {
+                    return None;
+                }
+
+                _ => {}
+            }
+
+            index += character.len_utf8();
+        }
+
+        None
     }
 
     fn skip_ignored(&mut self) {
@@ -221,6 +407,14 @@ impl<'source> Lexer<'source> {
 
             return;
         }
+    }
+
+    fn absolute_offset(&self, local_offset: usize) -> usize {
+        self.base_offset + local_offset
+    }
+
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span::new(self.absolute_offset(start), self.absolute_offset(end))
     }
 
     fn peek_char(&self) -> Option<char> {
@@ -248,7 +442,6 @@ impl<'source> Lexer<'source> {
         }
 
         self.advance_char();
-
         true
     }
 

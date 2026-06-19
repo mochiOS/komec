@@ -1,5 +1,6 @@
 use kome_ast::Span;
-use kome_parser::{LexErrorKind, Lexer, Token, TokenKind};
+use kome_parser::token::TemplateTokenPart;
+use kome_parser::{LexErrorKind, Lexer, Token, TokenKind, tokenize};
 
 #[test]
 fn tokenizes_component_source() {
@@ -114,18 +115,49 @@ fn decodes_string_escapes() {
 }
 
 #[test]
-fn preserves_template_text_in_string_token() {
+fn lexes_template_string() {
     let source = r#""Hello, {name}""#;
 
-    let tokens = Lexer::new(source).tokenize().unwrap();
+    let tokens = tokenize(source).unwrap();
+
+    assert_eq!(tokens.len(), 2);
+
+    let TokenKind::Template(parts) = &tokens[0].kind else {
+        panic!("expected template token, got {:?}", tokens[0].kind);
+    };
+
+    assert_eq!(tokens[0].span, Span::new(0, source.len()),);
+
+    assert_eq!(parts.len(), 2);
+
+    assert!(matches!(
+        &parts[0],
+        TemplateTokenPart::String {
+            value,
+            span,
+        } if value == "Hello, "
+            && *span == Span::new(1, 8)
+    ));
+
+    let TemplateTokenPart::Expression {
+        tokens: expression_tokens,
+        span,
+    } = &parts[1]
+    else {
+        panic!("expected template expression part");
+    };
+
+    assert_eq!(*span, Span::new(8, 14),);
 
     assert_eq!(
-        tokens[0],
-        Token::new(
-            TokenKind::String("Hello, {name}".into()),
-            Span::new(0, source.len()),
-        ),
+        expression_tokens,
+        &[
+            Token::new(TokenKind::Ident("name".into()), Span::new(9, 13),),
+            Token::eof(13),
+        ],
     );
+
+    assert_eq!(tokens[1], Token::eof(source.len()),);
 }
 
 #[test]

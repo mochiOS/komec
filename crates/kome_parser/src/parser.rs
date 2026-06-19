@@ -9,7 +9,7 @@ use kome_ast::{
         ClosureExpression, ComponentExpression, DotIdentifierExpression, Expression,
         GroupExpression, IndexExpression, KeyValueProperty, ListExpression, LiteralKind,
         MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty, PropertyKey,
-        UnaryExpression, UnaryOp,
+        TemplateExpression, TemplatePart, UnaryExpression, UnaryOp,
     },
     patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
@@ -19,6 +19,7 @@ use kome_ast::{
     types::{NamedType, Parameter, PrimitiveType, PrimitiveTypeKind, Type},
 };
 
+use crate::token::TemplateTokenPart;
 use crate::{
     error::{ParseError, ParseErrorKind},
     token::{Token, TokenKind},
@@ -1242,6 +1243,8 @@ impl Parser {
         match token.kind {
             TokenKind::String(value) => Ok(Expression::literal(LiteralKind::String(value), span)),
 
+            TokenKind::Template(parts) => self.parse_template_expression(parts, span),
+
             TokenKind::Number(value) => Ok(Expression::literal(
                 LiteralKind::Number(NumberLiteral(value)),
                 span,
@@ -1268,6 +1271,35 @@ impl Parser {
                 span,
             )),
         }
+    }
+
+    fn parse_template_expression(
+        &mut self,
+        token_parts: Vec<TemplateTokenPart>,
+        span: Span,
+    ) -> Result<Expression, ParseError> {
+        let mut parts = Vec::new();
+
+        for token_part in token_parts {
+            match token_part {
+                TemplateTokenPart::String { value, span } => {
+                    parts.push(TemplatePart::String { value, span });
+                }
+
+                TemplateTokenPart::Expression { tokens, span } => {
+                    let mut parser = Parser::new(tokens);
+
+                    let expression = parser.parse_expression()?;
+
+                    parts.push(TemplatePart::Expression {
+                        expression: Box::new(expression),
+                        span,
+                    });
+                }
+            }
+        }
+
+        Ok(Expression::Template(TemplateExpression { span, parts }))
     }
 
     fn parse_closure_expression(&mut self) -> Result<Expression, ParseError> {

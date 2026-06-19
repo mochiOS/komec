@@ -22,27 +22,48 @@ impl LexError {
 pub enum LexErrorKind {
     UnexpectedCharacter(char),
     UnterminatedString,
+
+    /// A template interpolation was opened with `{`
+    /// but no matching `}` was found.
+    UnterminatedInterpolation,
+
     InvalidEscape(char),
 }
 
 impl fmt::Display for LexError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            LexErrorKind::UnexpectedCharacter(character) => write!(
-                formatter,
-                "unexpected character {character:?} at byte range {}..{}",
-                self.span.start, self.span.end,
-            ),
-            LexErrorKind::UnterminatedString => write!(
-                formatter,
-                "unterminated string literal at byte range {}..{}",
-                self.span.start, self.span.end,
-            ),
-            LexErrorKind::InvalidEscape(character) => write!(
-                formatter,
-                "invalid escape sequence \\{character} at byte range {}..{}",
-                self.span.start, self.span.end,
-            ),
+            LexErrorKind::UnexpectedCharacter(character) => {
+                write!(
+                    formatter,
+                    "unexpected character {character:?} at byte range {}..{}",
+                    self.span.start, self.span.end,
+                )
+            }
+
+            LexErrorKind::UnterminatedString => {
+                write!(
+                    formatter,
+                    "unterminated string literal at byte range {}..{}",
+                    self.span.start, self.span.end,
+                )
+            }
+
+            LexErrorKind::UnterminatedInterpolation => {
+                write!(
+                    formatter,
+                    "unterminated template interpolation at byte range {}..{}",
+                    self.span.start, self.span.end,
+                )
+            }
+
+            LexErrorKind::InvalidEscape(character) => {
+                write!(
+                    formatter,
+                    "invalid escape sequence \\{character} at byte range {}..{}",
+                    self.span.start, self.span.end,
+                )
+            }
         }
     }
 }
@@ -74,11 +95,13 @@ pub enum ParseErrorKind {
 impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ParseErrorKind::Expected { expected, found } => write!(
-                formatter,
-                "expected {expected}, found {found:?} at byte range {}..{}",
-                self.span.start, self.span.end,
-            ),
+            ParseErrorKind::Expected { expected, found } => {
+                write!(
+                    formatter,
+                    "expected {expected}, found {found:?} at byte range {}..{}",
+                    self.span.start, self.span.end,
+                )
+            }
         }
     }
 }
