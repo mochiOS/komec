@@ -1,0 +1,32 @@
+enum Color {
+    primary,
+    text = "#000000",
+}
+
+@nativeComponent("Text")
+component Text(
+    content: String,
+    color: Color = .primary,
+)
+
+extension View {
+    @nativeModifier("Padding")
+    fn padding(
+        value: Number,
+    ) -> View
+}
+
+@application
+component App() {
+    state count = 0
+
+    let title = "Count: {count}"
+
+    fn increment() {
+        count += 1
+    }
+
+    recipe update {
+        increment()
+    }
+}
