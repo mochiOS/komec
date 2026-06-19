@@ -6,9 +6,10 @@ use kome_ast::{
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
-        ComponentExpression, DotIdentifierExpression, Expression, GroupExpression, IndexExpression,
-        KeyValueProperty, ListExpression, LiteralKind, MemberExpression, NumberLiteral,
-        ObjectExpression, ObjectProperty, PropertyKey, UnaryExpression, UnaryOp,
+        ClosureExpression, ComponentExpression, DotIdentifierExpression, Expression,
+        GroupExpression, IndexExpression, KeyValueProperty, ListExpression, LiteralKind,
+        MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty, PropertyKey,
+        UnaryExpression, UnaryOp,
     },
     patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
@@ -1211,6 +1212,10 @@ impl Parser {
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
+        if self.at(|kind| matches!(kind, TokenKind::Pipe)) {
+            return self.parse_closure_expression();
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Dot)) {
             return self.parse_dot_identifier_expression();
         }
@@ -1263,6 +1268,64 @@ impl Parser {
                 span,
             )),
         }
+    }
+
+    fn parse_closure_expression(&mut self) -> Result<Expression, ParseError> {
+        let opening = self.expect("`|`", |kind| matches!(kind, TokenKind::Pipe))?;
+
+        if self.at(|kind| matches!(kind, TokenKind::Pipe)) {
+            return Err(self.expected("a closure parameter"));
+        }
+
+        let mut params = Vec::new();
+
+        loop {
+            params.push(self.parse_closure_parameter()?);
+
+            if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                break;
+            }
+
+            self.advance();
+
+            if self.at(|kind| matches!(kind, TokenKind::Pipe)) {
+                return Err(self.expected("a closure parameter after `,`"));
+            }
+        }
+
+        self.expect("the closing `|`", |kind| matches!(kind, TokenKind::Pipe))?;
+
+        let body = self.parse_assignment_expression()?;
+
+        let span = Span::new(opening.span.start, body.span().end);
+
+        Ok(Expression::Closure(ClosureExpression {
+            span,
+            params,
+            body: Box::new(body),
+        }))
+    }
+
+    fn parse_closure_parameter(&mut self) -> Result<Pattern, ParseError> {
+        let (name, name_span) = self.expect_identifier("a closure parameter")?;
+
+        let type_annotation = if self.at(|kind| matches!(kind, TokenKind::Colon)) {
+            self.advance();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        let end = type_annotation
+            .as_ref()
+            .map_or(name_span.end, |type_| type_.span().end);
+
+        Ok(Pattern::Ident(IdentifierPattern {
+            span: Span::new(name_span.start, end),
+            name,
+            type_annotation,
+            default: None,
+        }))
     }
 
     fn parse_object_expression(&mut self) -> Result<Expression, ParseError> {
