@@ -81,12 +81,16 @@ impl Parser {
                 .map(Declaration::Function);
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::Let)) {
+            return self.parse_let_binding(attributes).map(Declaration::Let);
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Use)) {
             if attributes.is_empty() {
                 return self.parse_use_declaration().map(Declaration::Use);
             }
 
-            return Err(self.expected("a component or function declaration after attributes"));
+            return Err(self.expected("a component, function, or let declaration after attributes"));
         }
 
         if attributes.is_empty() {
@@ -111,11 +115,43 @@ impl Parser {
 
         let (name, name_span) = self.expect_identifier("an attribute name")?;
 
+        let (args, end) = if self.at(|kind| matches!(kind, TokenKind::LParen)) {
+            self.parse_attribute_arguments()?
+        } else {
+            (Vec::new(), name_span.end)
+        };
+
         Ok(Attribute {
-            span: Span::new(at.span.start, name_span.end),
+            span: Span::new(at.span.start, end),
             name,
-            args: Vec::new(),
+            args,
         })
+    }
+
+    fn parse_attribute_arguments(&mut self) -> Result<(Vec<Expression>, usize), ParseError> {
+        self.expect("`(`", |kind| matches!(kind, TokenKind::LParen))?;
+
+        let mut args = Vec::new();
+
+        if !self.at(|kind| matches!(kind, TokenKind::RParen)) {
+            loop {
+                args.push(self.parse_assignment_expression()?);
+
+                if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                    break;
+                }
+
+                self.advance();
+
+                if self.at(|kind| matches!(kind, TokenKind::RParen)) {
+                    break;
+                }
+            }
+        }
+
+        let closing = self.expect("`)`", |kind| matches!(kind, TokenKind::RParen))?;
+
+        Ok((args, closing.span.end))
     }
 
     fn parse_component_declaration(
