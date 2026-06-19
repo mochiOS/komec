@@ -259,13 +259,9 @@ extension View {
 }
 "#;
 
-    let tokens =
-        Lexer::new(source).tokenize().unwrap();
+    let tokens = Lexer::new(source).tokenize().unwrap();
 
-    let kinds: Vec<_> = tokens
-        .into_iter()
-        .map(|token| token.kind)
-        .collect();
+    let kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
 
     assert_eq!(
         kinds,

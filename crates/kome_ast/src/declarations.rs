@@ -216,9 +216,24 @@ pub struct ExtensionDeclaration {
     pub members: Vec<ExtensionMember>,
 }
 
+// TODO: enumも生やす
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExtensionMember {
     Function(FunctionDeclaration),
+}
+
+impl AstNode for ExtensionDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for ExtensionMember {
+    fn span(&self) -> Span {
+        match self {
+            ExtensionMember::Function(declaration) => declaration.span,
+        }
+    }
 }
 
 // ---- Module ----

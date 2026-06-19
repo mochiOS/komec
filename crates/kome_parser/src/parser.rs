@@ -3,12 +3,12 @@ use crate::{
     error::{ParseError, ParseErrorKind},
     token::{Token, TokenKind},
 };
-use kome_ast::declarations::EnumCase;
 use kome_ast::{
     AstNode, Span,
     declarations::{
-        Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumDeclaration,
-        FunctionDeclaration, Module, RecipeDeclaration, UseDeclaration, UseSpecifier,
+        Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
+        EnumDeclaration, ExtensionDeclaration, ExtensionMember, FunctionDeclaration, Module,
+        RecipeDeclaration, UseDeclaration, UseSpecifier,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
@@ -84,6 +84,12 @@ impl Parser {
                 .map(Declaration::Enum);
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::Extension)) {
+            return self
+                .parse_extension_declaration(attributes)
+                .map(Declaration::Extension);
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Fn)) {
             return self
                 .parse_function_declaration(attributes)
@@ -99,15 +105,65 @@ impl Parser {
                 return self.parse_use_declaration().map(Declaration::Use);
             }
 
-            return Err(
-                self.expected("a component, enum, function, or let declaration after attributes")
-            );
+            return Err(self.expected(
+                "a component, enum, extension, function, or let declaration after attributes",
+            ));
         }
 
         if attributes.is_empty() {
             Err(self.expected("a top-level declaration"))
         } else {
             Err(self.expected("a declaration after attributes"))
+        }
+    }
+
+    fn parse_extension_declaration(
+        &mut self,
+        attributes: Vec<Attribute>,
+    ) -> Result<ExtensionDeclaration, ParseError> {
+        let keyword = self.expect("`extension`", |kind| matches!(kind, TokenKind::Extension))?;
+
+        let start = attributes
+            .first()
+            .map_or(keyword.span.start, |attribute| attribute.span.start);
+
+        let target = self.parse_type()?;
+
+        self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
+
+        let mut members = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            members.push(self.parse_extension_member()?);
+        }
+
+        let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
+
+        Ok(ExtensionDeclaration {
+            span: Span::new(start, closing.span.end),
+            attributes,
+            target,
+            members,
+        })
+    }
+
+    fn parse_extension_member(&mut self) -> Result<ExtensionMember, ParseError> {
+        let attributes = self.parse_attributes()?;
+
+        if self.at(|kind| matches!(kind, TokenKind::Fn)) {
+            return self
+                .parse_function_declaration(attributes)
+                .map(ExtensionMember::Function);
+        }
+
+        if attributes.is_empty() {
+            Err(self.expected("a function declaration in an extension"))
+        } else {
+            Err(self.expected("a function declaration after extension member attributes"))
         }
     }
 
