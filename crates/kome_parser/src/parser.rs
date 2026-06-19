@@ -7,7 +7,8 @@ use kome_ast::{
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
         ComponentExpression, DotIdentifierExpression, Expression, GroupExpression, IndexExpression,
-        ListExpression, LiteralKind, MemberExpression, NumberLiteral, UnaryExpression, UnaryOp,
+        KeyValueProperty, ListExpression, LiteralKind, MemberExpression, NumberLiteral,
+        ObjectExpression, ObjectProperty, PropertyKey, UnaryExpression, UnaryOp,
     },
     patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
@@ -1223,6 +1224,10 @@ impl Parser {
         }
 
         if self.at(|kind| matches!(kind, TokenKind::LBrace)) {
+            if self.is_object_literal_start() {
+                return self.parse_object_expression();
+            }
+
             return self.parse_block_expression();
         }
 
@@ -1253,6 +1258,92 @@ impl Parser {
             found => Err(ParseError::new(
                 ParseErrorKind::Expected {
                     expected: "an expression",
+                    found,
+                },
+                span,
+            )),
+        }
+    }
+
+    fn parse_object_expression(&mut self) -> Result<Expression, ParseError> {
+        let opening = self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
+
+        let mut props = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            props.push(self.parse_object_property()?);
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+
+                if self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+                    break;
+                }
+
+                continue;
+            }
+
+            if !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+                return Err(self.expected("`,` or `}` after an object property"));
+            }
+        }
+
+        let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
+
+        Ok(Expression::Object(ObjectExpression {
+            span: Span::new(opening.span.start, closing.span.end),
+            props,
+        }))
+    }
+
+    fn parse_object_property(&mut self) -> Result<ObjectProperty, ParseError> {
+        let key = self.parse_property_key()?;
+        let start = property_key_span(&key).start;
+
+        self.expect("`:`", |kind| matches!(kind, TokenKind::Colon))?;
+
+        let value = self.parse_assignment_expression()?;
+
+        let span = Span::new(start, value.span().end);
+
+        Ok(ObjectProperty::KeyValue(KeyValueProperty {
+            span,
+            key,
+            value: Box::new(value),
+        }))
+    }
+
+    fn parse_property_key(&mut self) -> Result<PropertyKey, ParseError> {
+        if self.at(|kind| matches!(kind, TokenKind::LBracket)) {
+            let opening = self.advance();
+
+            let expression = self.parse_assignment_expression()?;
+
+            let closing = self.expect("`]`", |kind| matches!(kind, TokenKind::RBracket))?;
+
+            return Ok(PropertyKey::Computed {
+                expression: Box::new(expression),
+                span: Span::new(opening.span.start, closing.span.end),
+            });
+        }
+
+        let token = self.advance();
+        let span = token.span;
+
+        match token.kind {
+            TokenKind::Ident(name) => Ok(PropertyKey::Ident { name, span }),
+
+            TokenKind::String(value) => Ok(PropertyKey::String { value, span }),
+
+            TokenKind::Number(value) => Ok(PropertyKey::Number { value, span }),
+
+            found => Err(ParseError::new(
+                ParseErrorKind::Expected {
+                    expected: "an object property key",
                     found,
                 },
                 span,
@@ -1535,11 +1626,71 @@ impl Parser {
             self.current().span,
         )
     }
+
+    fn is_object_literal_start(&self) -> bool {
+        let Some(first) = self.tokens.get(self.position + 1) else {
+            return false;
+        };
+
+        match &first.kind {
+            TokenKind::Ident(_) | TokenKind::String(_) | TokenKind::Number(_) => self
+                .tokens
+                .get(self.position + 2)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Colon)),
+
+            TokenKind::LBracket => self.computed_property_key_has_colon(self.position + 1),
+
+            _ => false,
+        }
+    }
+
+    fn computed_property_key_has_colon(&self, opening_index: usize) -> bool {
+        let mut depth = 0usize;
+        let mut index = opening_index;
+
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::LBracket => {
+                    depth += 1;
+                }
+
+                TokenKind::RBracket => {
+                    if depth == 1 {
+                        return self
+                            .tokens
+                            .get(index + 1)
+                            .is_some_and(|next| matches!(next.kind, TokenKind::Colon));
+                    }
+
+                    depth = depth.saturating_sub(1);
+                }
+
+                TokenKind::Eof => {
+                    return false;
+                }
+
+                _ => {}
+            }
+
+            index += 1;
+        }
+
+        false
+    }
 }
 
 fn use_specifier_end(specifier: &UseSpecifier) -> usize {
     match specifier {
         UseSpecifier::Wildcard { span } | UseSpecifier::Named { span, .. } => span.end,
+    }
+}
+
+fn property_key_span(key: &PropertyKey) -> Span {
+    match key {
+        PropertyKey::Ident { span, .. }
+        | PropertyKey::String { span, .. }
+        | PropertyKey::Number { span, .. }
+        | PropertyKey::Computed { span, .. } => *span,
     }
 }
 
