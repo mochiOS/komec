@@ -248,12 +248,12 @@ fn main() {
         name: "App".into(),
         params: Vec::new(),
         attributes: vec![application_attribute],
-        body: vec![
+        body: Option::from(vec![
             counter_state,
             body_binding,
             increment_recipe,
             greet_function,
-        ],
+        ]),
     });
 
     // Module
