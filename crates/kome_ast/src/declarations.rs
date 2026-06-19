@@ -12,6 +12,7 @@ pub enum Declaration {
     Constant(Binding),
     Use(UseDeclaration),
     Enum(EnumDeclaration),
+    Extension(ExtensionDeclaration),
 }
 
 // ---- Component ----
@@ -193,6 +194,33 @@ pub struct EnumCase {
     pub value: Option<crate::expressions::Expression>,
 }
 
+// ---- Extension ---
+
+/// A decalaration that adds members to an existing type
+///
+/// Extensions allow functions to be declared for a type without modifying
+/// the types original declaration.
+///
+/// ```kome
+/// extension View {
+///     fn padding(value: Int) {
+///         // ...
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtensionDeclaration {
+    pub span: Span,
+    pub attributes: Vec<Attribute>,
+    pub target: crate::types::Type,
+    pub members: Vec<ExtensionMember>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtensionMember {
+    Function(FunctionDeclaration),
+}
+
 // ---- Module ----
 
 /// A Kome source file containing a list of declarations.
@@ -224,6 +252,7 @@ impl AstNode for Declaration {
             Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
             Declaration::Use(declaration) => declaration.span,
             Declaration::Enum(declaration) => declaration.span,
+            Declaration::Extension(declaration) => declaration.span,
         }
     }
 }
