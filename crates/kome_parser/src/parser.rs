@@ -132,11 +132,24 @@ impl Parser {
                 return Err(self.expected("`}`"));
             }
 
-            let (case_name, case_span) = self.expect_identifier("an enum case name")?;
+            let (case_name, case_name_span) = self.expect_identifier("an enum case name")?;
+
+            let value = if self.at(|kind| matches!(kind, TokenKind::Assign)) {
+                self.advance();
+
+                Some(self.parse_assignment_expression()?)
+            } else {
+                None
+            };
+
+            let case_end = value
+                .as_ref()
+                .map_or(case_name_span.end, |expression| expression.span().end);
 
             cases.push(EnumCase {
-                span: case_span,
+                span: Span::new(case_name_span.start, case_end),
                 name: case_name,
+                value,
             });
 
             if self.at(|kind| matches!(kind, TokenKind::Comma)) {

@@ -171,12 +171,24 @@ pub struct EnumDeclaration {
     pub name: String,
     pub cases: Vec<EnumCase>,
 }
-
 /// One case declared inside an enum.
+///
+/// ```kome
+/// enum HttpStatus {
+///     ok = 200,
+///     notFound = 404,
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumCase {
     pub span: Span,
     pub name: String,
+
+    /// The optional raw value assigned to this case.
+    ///
+    /// `None` for `blue`.
+    /// `Some(...)` for `blue = "#007aff"`.
+    pub value: Option<crate::expressions::Expression>,
 }
 
 // ---- Module ----
