@@ -287,12 +287,21 @@ fn parses_general_expression_in_state_binding() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) = &module.declarations[0] else {
+    let Declaration::Component(component) =
+        &module.declarations[0]
+    else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::State(binding) = &component.body[0] else {
-        panic!("expected state binding");
+    let body = component
+        .body
+        .as_ref()
+        .expect("expected component body");
+
+    let ComponentMember::State(binding) =
+        &body[0]
+    else {
+        panic!("expected state member");
     };
 
     let Some(Expression::Binary(addition)) = &binding.init else {

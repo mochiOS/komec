@@ -242,18 +242,28 @@ impl Parser {
 
         let params = self.parse_component_parameters()?;
 
-        self.expect("`)`", |kind| matches!(kind, TokenKind::RParen))?;
+        let closing_parenthesis = self.expect("`)`", |kind| matches!(kind, TokenKind::RParen))?;
 
-        self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
+        if !self.at(|kind| matches!(kind, TokenKind::LBrace)) {
+            return Ok(ComponentDeclaration {
+                span: Span::new(start, closing_parenthesis.span.end),
+                name,
+                params,
+                attributes,
+                body: None,
+            });
+        }
 
-        let mut body = Vec::new();
+        self.advance();
+
+        let mut members = Vec::new();
 
         while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
             if self.current().is_eof() {
                 return Err(self.expected("`}`"));
             }
 
-            body.push(self.parse_component_member()?);
+            members.push(self.parse_component_member()?);
         }
 
         let closing_brace = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
@@ -263,7 +273,7 @@ impl Parser {
             name,
             params,
             attributes,
-            body,
+            body: Some(members),
         })
     }
 

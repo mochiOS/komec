@@ -19,9 +19,15 @@ fn parses_empty_recipe() {
         panic!("expected component declaration");
     };
 
-    assert_eq!(component.body.len(), 1);
 
-    let ComponentMember::Recipe(recipe) = &component.body[0] else {
+    let body = component
+        .body
+        .as_ref()
+        .expect("expected component body");
+
+    assert_eq!(body.len(), 1);
+
+    let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
     };
 
@@ -51,7 +57,12 @@ fn parses_recipe_body() {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) = &component.body[0] else {
+    let body = component
+        .body
+        .as_ref()
+        .expect("expected component body");
+
+    let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
     };
 
@@ -92,7 +103,12 @@ fn parses_recipe_event_source() {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) = &component.body[0] else {
+    let body = component
+        .body
+        .as_ref()
+        .expect("expected component body");
+
+    let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
     };
 
@@ -119,7 +135,12 @@ fn parses_attributed_recipe() {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) = &component.body[0] else {
+    let body = component
+        .body
+        .as_ref()
+        .expect("expected component body");
+
+    let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
     };
 
@@ -152,16 +173,21 @@ fn parses_multiple_recipes() {
         panic!("expected component declaration");
     };
 
-    assert_eq!(component.body.len(), 2);
+    let body = component
+        .body
+        .as_ref()
+        .expect("expected component body");
+
+    assert_eq!(body.len(), 2);
 
     assert!(matches!(
-        &component.body[0],
+        &body[0],
         ComponentMember::Recipe(recipe)
             if recipe.name == "load"
     ));
 
     assert!(matches!(
-        &component.body[1],
+        &body[1],
         ComponentMember::Recipe(recipe)
             if recipe.name == "submit"
     ));
@@ -249,7 +275,12 @@ fn recipe_span_includes_attribute_and_body() {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) = &component.body[0] else {
+    let body = component
+        .body
+        .as_ref()
+        .expect("expected component body");
+
+    let ComponentMember::Recipe(recipe) = &body[0] else {
         panic!("expected recipe declaration");
     };
 

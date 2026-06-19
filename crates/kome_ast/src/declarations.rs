@@ -18,24 +18,21 @@ pub enum Declaration {
 
 /// A `component` declaration.
 ///
+/// A component may either contain a Kome implementation:
+///
 /// ```kome
-/// @application
 /// component App() {
 ///     state counter = 0
-///
-///     @body
-///     let body: View = {
-///         Text("count: {counter}")
-///     }
-///
-///     recipe update {
-///         counter = counter + 1
-///     }
-///
-///     fn reset() {
-///         counter = 0
-///     }
 /// }
+/// ```
+///
+/// Or declare an externally implemented component:
+///
+/// ```kome
+/// @nativeComponent("Text")
+/// component Text(
+///     content: String,
+/// )
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComponentDeclaration {
@@ -43,7 +40,11 @@ pub struct ComponentDeclaration {
     pub name: String,
     pub params: Vec<crate::types::Parameter>,
     pub attributes: Vec<Attribute>,
-    pub body: Vec<ComponentMember>,
+
+    /// `None` when the declaration has no Kome body.
+    ///
+    /// `Some(Vec::new())` represents an explicitly empty body: `{}`.
+    pub body: Option<Vec<ComponentMember>>,
 }
 
 /// A declaration placed inside a component body.
@@ -171,6 +172,7 @@ pub struct EnumDeclaration {
     pub name: String,
     pub cases: Vec<EnumCase>,
 }
+
 /// One case declared inside an enum.
 ///
 /// ```kome

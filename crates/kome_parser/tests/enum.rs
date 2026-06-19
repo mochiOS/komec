@@ -1,12 +1,9 @@
+use kome_ast::types::Type;
 use kome_ast::{
     Span,
     declarations::Declaration,
-    expressions::{
-        BinaryOp, Expression, LiteralKind,
-        NumberLiteral,
-    },
+    expressions::{BinaryOp, Expression, LiteralKind, NumberLiteral},
 };
-use kome_ast::types::Type;
 use kome_parser::{FrontendError, ParseErrorKind, TokenKind, parse, tokenize};
 
 #[test]
@@ -238,11 +235,9 @@ fn parses_number_valued_enum() {
         }
         "#,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Enum(declaration) =
-        &module.declarations[0]
-    else {
+    let Declaration::Enum(declaration) = &module.declarations[0] else {
         panic!("expected enum declaration");
     };
 
@@ -262,8 +257,7 @@ fn parses_number_valued_enum() {
                 )
     ));
 
-    let not_found =
-        &declaration.cases[1];
+    let not_found = &declaration.cases[1];
 
     assert_eq!(not_found.name, "notFound");
 
@@ -287,11 +281,9 @@ fn parses_string_valued_enum() {
         }
         "##,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Enum(declaration) =
-        &module.declarations[0]
-    else {
+    let Declaration::Enum(declaration) = &module.declarations[0] else {
         panic!("expected enum declaration");
     };
 
@@ -325,11 +317,9 @@ fn parses_enum_value_expression() {
         }
         "#,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Enum(declaration) =
-        &module.declarations[0]
-    else {
+    let Declaration::Enum(declaration) = &module.declarations[0] else {
         panic!("expected enum declaration");
     };
 
@@ -357,33 +347,19 @@ fn parses_mixed_valued_and_plain_cases() {
         }
         "##,
     )
-        .unwrap();
+    .unwrap();
 
-    let Declaration::Enum(declaration) =
-        &module.declarations[0]
-    else {
+    let Declaration::Enum(declaration) = &module.declarations[0] else {
         panic!("expected enum declaration");
     };
 
     assert_eq!(declaration.cases.len(), 3);
 
-    assert!(
-        declaration.cases[0]
-            .value
-            .is_none()
-    );
+    assert!(declaration.cases[0].value.is_none());
 
-    assert!(
-        declaration.cases[1]
-            .value
-            .is_some()
-    );
+    assert!(declaration.cases[1].value.is_some());
 
-    assert!(
-        declaration.cases[2]
-            .value
-            .is_some()
-    );
+    assert!(declaration.cases[2].value.is_some());
 }
 
 #[test]
@@ -392,18 +368,13 @@ fn enum_case_span_includes_value() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Enum(declaration) =
-        &module.declarations[0]
-    else {
+    let Declaration::Enum(declaration) = &module.declarations[0] else {
         panic!("expected enum declaration");
     };
 
     let case = &declaration.cases[0];
 
-    assert_eq!(
-        &source[case.span.start..case.span.end],
-        "answer = 42",
-    );
+    assert_eq!(&source[case.span.start..case.span.end], "answer = 42",);
 }
 
 #[test]
@@ -415,7 +386,7 @@ fn rejects_missing_enum_case_value() {
         }
         "#,
     )
-        .unwrap_err();
+    .unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -440,7 +411,7 @@ fn rejects_missing_comma_after_valued_case() {
         }
         "#,
     )
-        .unwrap_err();
+    .unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -449,11 +420,8 @@ fn rejects_missing_comma_after_valued_case() {
     assert_eq!(
         error.kind,
         ParseErrorKind::Expected {
-            expected:
-                "`,` or `}` after an enum case",
-            found: TokenKind::Ident(
-                "notFound".into(),
-            ),
+            expected: "`,` or `}` after an enum case",
+            found: TokenKind::Ident("notFound".into(),),
         },
     );
 }
