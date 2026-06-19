@@ -9,10 +9,10 @@ use kome_ast::{
         ComponentExpression, DotIdentifierExpression, Expression, GroupExpression, IndexExpression,
         ListExpression, LiteralKind, MemberExpression, NumberLiteral, UnaryExpression, UnaryOp,
     },
-    patterns::{IdentifierPattern, Pattern},
+    patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
-        BlockStatement, BreakStatement, ContinueStatement, ExpressionStatement, IfStatement,
-        ReturnStatement, Statement, WhileStatement,
+        BlockStatement, BreakStatement, ContinueStatement, ExpressionStatement, ForInStatement,
+        IfStatement, IsStatement, ReturnStatement, Statement, WhileStatement,
     },
     types::{NamedType, Parameter, PrimitiveType, PrimitiveTypeKind, Type},
 };
@@ -193,7 +193,6 @@ impl Parser {
 
         let default = if self.at(|kind| matches!(kind, TokenKind::Assign)) {
             self.advance();
-
             Some(self.parse_assignment_expression()?)
         } else {
             None
@@ -418,7 +417,6 @@ impl Parser {
 
         let init = if self.at(|kind| matches!(kind, TokenKind::Assign)) {
             self.advance();
-
             Some(self.parse_assignment_expression()?)
         } else {
             None
@@ -490,6 +488,10 @@ impl Parser {
             TokenKind::If => self.parse_if_statement(),
 
             TokenKind::While => self.parse_while_statement(),
+
+            TokenKind::For => self.parse_for_in_statement(),
+
+            TokenKind::Is => self.parse_is_statement(),
 
             TokenKind::Return => self.parse_return_statement(),
 
@@ -584,6 +586,221 @@ impl Parser {
         }))
     }
 
+    fn parse_for_in_statement(&mut self) -> Result<Statement, ParseError> {
+        let keyword = self.expect("`for`", |kind| matches!(kind, TokenKind::For))?;
+
+        let (name, name_span) = self.expect_identifier("a loop binding")?;
+
+        let pattern = Pattern::Ident(IdentifierPattern {
+            span: name_span,
+            name,
+            type_annotation: None,
+            default: None,
+        });
+
+        self.expect("`in`", |kind| matches!(kind, TokenKind::In))?;
+
+        let right = self.parse_condition_expression()?;
+
+        let body = Statement::Block(self.parse_statement_block()?);
+
+        let span = Span::new(keyword.span.start, body.span().end);
+
+        Ok(Statement::ForIn(ForInStatement {
+            span,
+            pattern,
+            right,
+            body: Box::new(body),
+        }))
+    }
+
+    fn parse_is_statement(&mut self) -> Result<Statement, ParseError> {
+        let keyword = self.expect("`is`", |kind| matches!(kind, TokenKind::Is))?;
+
+        let arrow_index = self.find_is_arrow()?;
+        let pattern_start = self.find_is_pattern_start(arrow_index)?;
+
+        let value = if pattern_start > self.position {
+            let value_tokens = self.tokens[self.position..pattern_start].to_vec();
+
+            let mut value_parser = Parser::new(value_tokens);
+
+            value_parser.allow_component_children = false;
+
+            let value = value_parser.parse_expression()?;
+
+            self.position = pattern_start;
+
+            Some(value)
+        } else {
+            None
+        };
+
+        let pattern = self.parse_is_pattern()?;
+
+        self.expect("`=>`", |kind| matches!(kind, TokenKind::FatArrow))?;
+
+        let body = if self.at(|kind| matches!(kind, TokenKind::LBrace)) {
+            Statement::Block(self.parse_statement_block()?)
+        } else {
+            self.parse_statement()?
+        };
+
+        let span = Span::new(keyword.span.start, body.span().end);
+
+        Ok(Statement::Is(IsStatement {
+            span,
+            value,
+            pattern,
+            body: Box::new(body),
+        }))
+    }
+
+    fn find_is_arrow(&self) -> Result<usize, ParseError> {
+        let mut parentheses = 0usize;
+        let mut brackets = 0usize;
+        let mut braces = 0usize;
+        let mut index = self.position;
+
+        loop {
+            let token = &self.tokens[index];
+
+            match token.kind {
+                TokenKind::LParen => {
+                    parentheses += 1;
+                }
+
+                TokenKind::RParen => {
+                    parentheses = parentheses.saturating_sub(1);
+                }
+
+                TokenKind::LBracket => {
+                    brackets += 1;
+                }
+
+                TokenKind::RBracket => {
+                    brackets = brackets.saturating_sub(1);
+                }
+
+                TokenKind::LBrace => {
+                    braces += 1;
+                }
+
+                TokenKind::RBrace if braces > 0 => {
+                    braces -= 1;
+                }
+
+                TokenKind::FatArrow if parentheses == 0 && brackets == 0 && braces == 0 => {
+                    return Ok(index);
+                }
+
+                TokenKind::RBrace | TokenKind::Eof
+                    if parentheses == 0 && brackets == 0 && braces == 0 =>
+                {
+                    return Err(ParseError::new(
+                        ParseErrorKind::Expected {
+                            expected: "`=>`",
+                            found: token.kind.clone(),
+                        },
+                        token.span,
+                    ));
+                }
+
+                _ => {}
+            }
+
+            index += 1;
+        }
+    }
+
+    fn find_is_pattern_start(&self, arrow_index: usize) -> Result<usize, ParseError> {
+        if arrow_index == self.position {
+            let arrow = &self.tokens[arrow_index];
+
+            return Err(ParseError::new(
+                ParseErrorKind::Expected {
+                    expected: an_is_pattern(),
+                    found: arrow.kind.clone(),
+                },
+                arrow.span,
+            ));
+        }
+
+        let last_index = arrow_index - 1;
+
+        if matches!(self.tokens[last_index].kind, TokenKind::Ident(_))
+            && last_index > self.position
+            && matches!(self.tokens[last_index - 1].kind, TokenKind::Dot)
+        {
+            return Ok(last_index - 1);
+        }
+
+        Ok(last_index)
+    }
+
+    fn parse_is_pattern(&mut self) -> Result<IsPattern, ParseError> {
+        if self.at(|kind| matches!(kind, TokenKind::Dot)) {
+            let dot = self.advance();
+
+            let (name, name_span) = self.expect_identifier("an identifier after `.`")?;
+
+            return Ok(IsPattern::DotIdent(DotIdentPattern {
+                span: Span::new(dot.span.start, name_span.end),
+                name,
+            }));
+        }
+
+        let token = self.advance();
+        let span = token.span;
+
+        match token.kind {
+            TokenKind::Ident(name) => Ok(IsPattern::Ident(IdentifierPattern {
+                span,
+                name,
+                type_annotation: None,
+                default: None,
+            })),
+
+            TokenKind::String(value) => Ok(IsPattern::Literal(LiteralPattern {
+                span,
+                value: LiteralKind::String(value),
+            })),
+
+            TokenKind::Number(value) => Ok(IsPattern::Literal(LiteralPattern {
+                span,
+                value: LiteralKind::Number(NumberLiteral(value)),
+            })),
+
+            TokenKind::Percent(value) => Ok(IsPattern::Literal(LiteralPattern {
+                span,
+                value: LiteralKind::Percent(NumberLiteral(value)),
+            })),
+
+            TokenKind::True => Ok(IsPattern::Literal(LiteralPattern {
+                span,
+                value: LiteralKind::Boolean(true),
+            })),
+
+            TokenKind::False => Ok(IsPattern::Literal(LiteralPattern {
+                span,
+                value: LiteralKind::Boolean(false),
+            })),
+
+            TokenKind::Null => Ok(IsPattern::Literal(LiteralPattern {
+                span,
+                value: LiteralKind::Null,
+            })),
+
+            found => Err(ParseError::new(
+                ParseErrorKind::Expected {
+                    expected: an_is_pattern(),
+                    found,
+                },
+                span,
+            )),
+        }
+    }
+
     fn parse_return_statement(&mut self) -> Result<Statement, ParseError> {
         let keyword = self.expect("`return`", |kind| matches!(kind, TokenKind::Return))?;
 
@@ -625,7 +842,6 @@ impl Parser {
 
     fn parse_expression_statement(&mut self) -> Result<Statement, ParseError> {
         let expression = self.parse_assignment_expression()?;
-
         let span = expression.span();
 
         Ok(Statement::Expression(ExpressionStatement {
@@ -651,9 +867,7 @@ impl Parser {
 
         let op = match self.current().kind {
             TokenKind::Assign => AssignOp::Assign,
-
             TokenKind::PlusAssign => AssignOp::AddAssign,
-
             _ => return Ok(left),
         };
 
@@ -709,9 +923,7 @@ impl Parser {
         loop {
             let op = match self.current().kind {
                 TokenKind::Eq => BinaryOp::Eq,
-
                 TokenKind::NotEq => BinaryOp::NotEq,
-
                 _ => break,
             };
 
@@ -1200,6 +1412,8 @@ impl Parser {
             TokenKind::Let
                 | TokenKind::If
                 | TokenKind::While
+                | TokenKind::For
+                | TokenKind::Is
                 | TokenKind::Return
                 | TokenKind::Break
                 | TokenKind::Continue
@@ -1291,4 +1505,8 @@ fn use_specifier_end(specifier: &UseSpecifier) -> usize {
     match specifier {
         UseSpecifier::Wildcard { span } | UseSpecifier::Named { span, .. } => span.end,
     }
+}
+
+const fn an_is_pattern() -> &'static str {
+    "an `is` pattern"
 }

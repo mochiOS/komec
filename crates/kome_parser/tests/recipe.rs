@@ -1,18 +1,11 @@
 use kome_ast::{
-    declarations::{
-        ComponentMember, Declaration,
-    },
-    expressions::{
-        AssignOp, Expression,
-    },
-    statements::Statement,
     Span,
+    declarations::{ComponentMember, Declaration},
+    expressions::{AssignOp, Expression},
+    statements::Statement,
 };
 
-use kome_parser::{
-    FrontendError, ParseErrorKind, TokenKind,
-    parse,
-};
+use kome_parser::{FrontendError, ParseErrorKind, TokenKind, parse};
 
 #[test]
 fn parses_empty_recipe() {
@@ -22,17 +15,13 @@ fn parses_empty_recipe() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
     assert_eq!(component.body.len(), 1);
 
-    let ComponentMember::Recipe(recipe) =
-        &component.body[0]
-    else {
+    let ComponentMember::Recipe(recipe) = &component.body[0] else {
         panic!("expected recipe declaration");
     };
 
@@ -42,10 +31,7 @@ fn parses_empty_recipe() {
     assert!(recipe.body.statements.is_empty());
 
     assert_eq!(
-        &source[
-            recipe.span.start
-                ..recipe.span.end
-        ],
+        &source[recipe.span.start..recipe.span.end],
         "recipe initialize {}",
     );
 }
@@ -61,37 +47,26 @@ fn parses_recipe_body() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) =
-        &component.body[0]
-    else {
+    let ComponentMember::Recipe(recipe) = &component.body[0] else {
         panic!("expected recipe declaration");
     };
 
     assert_eq!(recipe.name, "update");
     assert_eq!(recipe.body.statements.len(), 2);
 
-    let Statement::Expression(statement) =
-        &recipe.body.statements[0]
-    else {
+    let Statement::Expression(statement) = &recipe.body.statements[0] else {
         panic!("expected assignment statement");
     };
 
-    let Expression::Assign(assignment) =
-        &statement.expression
-    else {
+    let Expression::Assign(assignment) = &statement.expression else {
         panic!("expected assignment expression");
     };
 
-    assert_eq!(
-        assignment.op,
-        AssignOp::AddAssign,
-    );
+    assert_eq!(assignment.op, AssignOp::AddAssign,);
 
     assert!(matches!(
         &recipe.body.statements[1],
@@ -113,29 +88,19 @@ fn parses_recipe_event_source() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) =
-        &component.body[0]
-    else {
+    let ComponentMember::Recipe(recipe) = &component.body[0] else {
         panic!("expected recipe declaration");
     };
 
     assert_eq!(recipe.name, "submit");
 
-    assert_eq!(
-        recipe.event_source.as_deref(),
-        Some("input"),
-    );
+    assert_eq!(recipe.event_source.as_deref(), Some("input"),);
 
-    assert_eq!(
-        recipe.body.statements.len(),
-        1,
-    );
+    assert_eq!(recipe.body.statements.len(), 1,);
 }
 
 #[test]
@@ -150,39 +115,23 @@ fn parses_attributed_recipe() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) =
-        &component.body[0]
-    else {
+    let ComponentMember::Recipe(recipe) = &component.body[0] else {
         panic!("expected recipe declaration");
     };
 
     assert_eq!(recipe.attributes.len(), 2);
 
-    assert_eq!(
-        recipe.attributes[0].name,
-        "startup",
-    );
+    assert_eq!(recipe.attributes[0].name, "startup",);
 
-    assert_eq!(
-        recipe.attributes[1].name,
-        "once",
-    );
+    assert_eq!(recipe.attributes[1].name, "once",);
 
-    assert_eq!(
-        recipe.span.start,
-        recipe.attributes[0].span.start,
-    );
+    assert_eq!(recipe.span.start, recipe.attributes[0].span.start,);
 
-    assert_eq!(
-        recipe.span.end,
-        recipe.body.span.end,
-    );
+    assert_eq!(recipe.span.end, recipe.body.span.end,);
 }
 
 #[test]
@@ -199,9 +148,7 @@ fn parses_multiple_recipes() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
@@ -227,7 +174,7 @@ fn rejects_recipe_without_name() {
     recipe {}
 }"#,
     )
-        .unwrap_err();
+    .unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -249,7 +196,7 @@ fn rejects_recipe_without_body() {
     recipe update
 }"#,
     )
-        .unwrap_err();
+    .unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -272,7 +219,7 @@ fn rejects_recipe_without_event_source() {
     }
 }"#,
     )
-        .unwrap_err();
+    .unwrap_err();
 
     let FrontendError::Parse(error) = error else {
         panic!("expected parse error");
@@ -298,30 +245,20 @@ fn recipe_span_includes_attribute_and_body() {
 
     let module = parse(source).unwrap();
 
-    let Declaration::Component(component) =
-        &module.declarations[0]
-    else {
+    let Declaration::Component(component) = &module.declarations[0] else {
         panic!("expected component declaration");
     };
 
-    let ComponentMember::Recipe(recipe) =
-        &component.body[0]
-    else {
+    let ComponentMember::Recipe(recipe) = &component.body[0] else {
         panic!("expected recipe declaration");
     };
 
-    let recipe_source = &source[
-        recipe.span.start
-            ..recipe.span.end
-        ];
+    let recipe_source = &source[recipe.span.start..recipe.span.end];
 
     assert!(recipe_source.starts_with("@startup"));
     assert!(recipe_source.ends_with('}'));
     assert_eq!(
         recipe.span,
-        Span::new(
-            recipe.attributes[0].span.start,
-            recipe.body.span.end,
-        ),
+        Span::new(recipe.attributes[0].span.start, recipe.body.span.end,),
     );
 }
