@@ -10,7 +10,7 @@
     "Other"
   ],
   "activationEvents": [
-    
+    "onLanguage:kome"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -33,7 +33,18 @@
         "scopeName": "source.kome",
         "path": "./syntaxes/kome.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Kome",
+      "properties": {
+        "kome.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Absolute path to the Kome Language Server executable. Leave empty to use the development build or PATH."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -45,12 +56,15 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
+    "@types/node": "^22.19.21",
     "@types/vscode": "^1.125.0",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.39.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.0.0"
   }
 }
