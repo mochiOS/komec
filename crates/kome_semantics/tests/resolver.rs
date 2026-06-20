@@ -223,3 +223,31 @@ fn reports_undefined_in_block() {
         other => panic!("expected UndefinedName, got {other:?}"),
     }
 }
+
+#[test]
+fn rejects_module_level_let() {
+    let source = "let x = 1";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert_eq!(result.errors.len(), 1);
+    let err = &result.errors[0];
+    match err {
+        kome_semantics::error::ResolutionError::InvalidLetLocation { .. } => {}
+        other => panic!("expected InvalidLetLocation, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_component_level_let() {
+    let source = "component App() {\n    let x = 1\n}";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert_eq!(result.errors.len(), 1);
+    let err = &result.errors[0];
+    match err {
+        kome_semantics::error::ResolutionError::InvalidLetLocation { .. } => {}
+        other => panic!("expected InvalidLetLocation, got {other:?}"),
+    }
+}
