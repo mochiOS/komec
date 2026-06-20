@@ -1,3 +1,4 @@
+use crate::error::ResolutionError;
 use kome_ast::Span;
 
 pub type ScopeId = usize;
@@ -72,4 +73,20 @@ impl Symbol {
             | Symbol::ImportedName { name, .. } => name,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Reference {
+    pub span: Span,
+    pub name: String,
+    pub resolved_to: Option<SymbolId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NameResolution {
+    pub scopes: Vec<Scope>,
+    pub symbols: Vec<Symbol>,
+    pub references: Vec<Reference>,
+    pub errors: Vec<ResolutionError>,
+    pub root: ScopeId,
 }
