@@ -7,7 +7,11 @@ use kome_ast::{
         ExtensionDeclaration, ExtensionMember, FunctionDeclaration, Module, RecipeDeclaration,
         UseSpecifier,
     },
-    expressions::Expression,
+    expressions::{
+        AssignmentExpression, BinaryExpression, BlockExpression, CallArg, CallExpression,
+        ClosureExpression, ComponentExpression, Expression, IsExpression, MemberExpression,
+        ObjectExpression, ObjectProperty, TemplateExpression, TemplatePart,
+    },
     patterns::{IsPattern, Pattern},
     statements::{
         BlockStatement, ForInStatement, IfStatement, IsStatement, ReturnStatement, Statement,
@@ -230,7 +234,127 @@ impl ScopeBuilder {
         self.exit_scope();
     }
 
-    fn visit_expression(&mut self, _expr: &Expression) {}
+    fn visit_expression(&mut self, expr: &Expression) {
+        match expr {
+            Expression::Literal(_) => {}
+            Expression::Ident(ident) => {
+                self.record_reference(&ident.name, ident.span);
+            }
+            Expression::Unary(unary) => {
+                self.visit_expression(&unary.argument);
+            }
+            Expression::Binary(binary) => self.visit_binary_expression(binary),
+            Expression::Call(call) => self.visit_call_expression(call),
+            Expression::Member(member) => self.visit_member_expression(member),
+            Expression::Index(index) => {
+                self.visit_expression(&index.object);
+                self.visit_expression(&index.index);
+            }
+            Expression::Assign(assign) => self.visit_assignment_expression(assign),
+            Expression::Group(group) => {
+                self.visit_expression(&group.expression);
+            }
+            Expression::Block(block) => self.visit_block_expression(block),
+            Expression::List(list) => {
+                for elem in &list.elems {
+                    if let Some(e) = elem {
+                        self.visit_expression(e);
+                    }
+                }
+            }
+            Expression::Object(obj) => self.visit_object_expression(obj),
+            Expression::Template(tmpl) => self.visit_template_expression(tmpl),
+            Expression::Closure(closure) => self.visit_closure_expression(closure),
+            Expression::DotIdent(dot) => {
+                self.record_reference(&dot.name, dot.span);
+            }
+            Expression::Is(is_expr) => self.visit_is_expression(is_expr),
+            Expression::Component(comp) => self.visit_component_expression(comp),
+        }
+    }
+
+    fn visit_binary_expression(&mut self, binary: &BinaryExpression) {
+        self.visit_expression(&binary.left);
+        self.visit_expression(&binary.right);
+    }
+
+    fn visit_call_expression(&mut self, call: &CallExpression) {
+        self.visit_expression(&call.callee);
+
+        for arg in &call.args {
+            match arg {
+                CallArg::Positional(expr) => self.visit_expression(expr),
+                CallArg::Named { value, .. } => self.visit_expression(value),
+            }
+        }
+    }
+
+    fn visit_member_expression(&mut self, member: &MemberExpression) {
+        self.visit_expression(&member.object);
+    }
+
+    fn visit_assignment_expression(&mut self, assign: &AssignmentExpression) {
+        self.visit_expression(&assign.target);
+        self.visit_expression(&assign.value);
+    }
+
+    fn visit_block_expression(&mut self, block: &BlockExpression) {
+        self.enter_scope(ScopeKind::Block);
+        for stmt in &block.statements {
+            self.visit_statement(stmt);
+        }
+        if let Some(ref tail) = block.tail {
+            self.visit_expression(tail);
+        }
+        self.exit_scope();
+    }
+
+    fn visit_object_expression(&mut self, obj: &ObjectExpression) {
+        for prop in &obj.props {
+            let ObjectProperty::KeyValue(kv) = prop;
+            self.visit_expression(&kv.value);
+        }
+    }
+
+    fn visit_template_expression(&mut self, tmpl: &TemplateExpression) {
+        for part in &tmpl.parts {
+            if let TemplatePart::Expression { expression, .. } = part {
+                self.visit_expression(expression);
+            }
+        }
+    }
+
+    fn visit_closure_expression(&mut self, closure: &ClosureExpression) {
+        self.enter_scope(ScopeKind::Closure);
+        for param in &closure.params {
+            self.visit_pattern_binding(param);
+        }
+        self.visit_expression(&closure.body);
+        self.exit_scope();
+    }
+
+    fn visit_is_expression(&mut self, is_expr: &IsExpression) {
+        self.visit_expression(&is_expr.value);
+        self.enter_scope(ScopeKind::IsPattern);
+        self.visit_is_pattern(&is_expr.pattern);
+        self.visit_expression(&is_expr.body);
+        self.exit_scope();
+    }
+
+    fn visit_component_expression(&mut self, comp: &ComponentExpression) {
+        self.record_reference(&comp.name, comp.span);
+
+        for arg in &comp.args {
+            match arg {
+                CallArg::Positional(expr) => self.visit_expression(expr),
+                CallArg::Named { value, .. } => self.visit_expression(value),
+            }
+        }
+
+        for child in &comp.children {
+            self.visit_expression(child);
+        }
+    }
 
     fn visit_is_pattern(&mut self, pattern: &IsPattern) {
         match pattern {
