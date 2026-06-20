@@ -16,6 +16,7 @@ extension View {
     ) -> View
 }
 
+// Comment
 @application
 component App() {
     state count = 0

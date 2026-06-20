@@ -1,0 +1,302 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Kome",
+    "scopeName": "source.kome",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#attributes"
+        },
+        {
+            "include": "#type-declarations"
+        },
+        {
+            "include": "#function-declarations"
+        },
+        {
+            "include": "#recipe-declarations"
+        },
+        {
+            "include": "#binding-declarations"
+        },
+        {
+            "include": "#literals"
+        },
+        {
+            "include": "#numbers"
+        },
+        {
+            "include": "#enum-cases"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#types"
+        },
+        {
+            "include": "#function-calls"
+        },
+        {
+            "include": "#operators"
+        },
+        {
+            "include": "#punctuation"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.kome",
+                    "match": "//.*$"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.kome",
+                    "begin": "\"",
+                    "beginCaptures": {
+                        "0": {
+                            "name": "punctuation.definition.string.begin.kome"
+                        }
+                    },
+                    "end": "\"",
+                    "endCaptures": {
+                        "0": {
+                            "name": "punctuation.definition.string.end.kome"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.kome",
+                            "match": "\\\\[\"\\\\nrt0{}]"
+                        },
+                        {
+                            "name": "invalid.illegal.escape.kome",
+                            "match": "\\\\."
+                        },
+                        {
+                            "name": "meta.interpolation.kome",
+                            "begin": "\\{",
+                            "beginCaptures": {
+                                "0": {
+                                    "name": "punctuation.section.interpolation.begin.kome"
+                                }
+                            },
+                            "end": "\\}",
+                            "endCaptures": {
+                                "0": {
+                                    "name": "punctuation.section.interpolation.end.kome"
+                                }
+                            },
+                            "patterns": [
+                                {
+                                    "include": "$self"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "attributes": {
+            "patterns": [
+                {
+                    "name": "storage.modifier.attribute.kome",
+                    "match": "@[A-Za-z_][A-Za-z0-9_]*"
+                }
+            ]
+        },
+        "type-declarations": {
+            "patterns": [
+                {
+                    "match": "\\b(component|enum|extension)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.kome"
+                        },
+                        "2": {
+                            "name": "entity.name.type.kome"
+                        }
+                    }
+                }
+            ]
+        },
+        "function-declarations": {
+            "patterns": [
+                {
+                    "match": "\\b(fn)\\s+((?:[A-Za-z_][A-Za-z0-9_]*\\.)?[A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.function.kome"
+                        },
+                        "2": {
+                            "name": "entity.name.function.kome"
+                        }
+                    }
+                }
+            ]
+        },
+        "recipe-declarations": {
+            "patterns": [
+                {
+                    "match": "\\b(recipe)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.function.kome"
+                        },
+                        "2": {
+                            "name": "entity.name.function.kome"
+                        }
+                    }
+                }
+            ]
+        },
+        "binding-declarations": {
+            "patterns": [
+                {
+                    "match": "\\b(state|let|mut|const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.kome"
+                        },
+                        "2": {
+                            "name": "variable.other.definition.kome"
+                        }
+                    }
+                }
+            ]
+        },
+        "literals": {
+            "patterns": [
+                {
+                    "name": "constant.language.boolean.kome",
+                    "match": "\\b(?:true|false)\\b"
+                },
+                {
+                    "name": "constant.language.null.kome",
+                    "match": "\\bnull\\b"
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.percentage.kome",
+                    "match": "\\b\\d+(?:\\.\\d+)?%"
+                },
+                {
+                    "name": "constant.numeric.kome",
+                    "match": "\\b\\d+(?:\\.\\d+)?\\b"
+                }
+            ]
+        },
+        "enum-cases": {
+            "patterns": [
+                {
+                    "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)",
+                    "captures": {
+                        "1": {
+                            "name": "punctuation.accessor.kome"
+                        },
+                        "2": {
+                            "name": "constant.other.enum.kome"
+                        }
+                    }
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.kome",
+                    "match": "\\b(?:if|else|while|for|in|return|break|continue)\\b"
+                },
+                {
+                    "name": "keyword.declaration.kome",
+                    "match": "\\b(?:fn|component|enum|extension|recipe|state|let|mut|const|use)\\b"
+                },
+                {
+                    "name": "keyword.operator.word.kome",
+                    "match": "\\bis\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "support.type.primitive.kome",
+                    "match": "\\b(?:String|Number|Bool|Void)\\b"
+                },
+                {
+                    "name": "entity.name.type.kome",
+                    "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+                }
+            ]
+        },
+        "function-calls": {
+            "patterns": [
+                {
+                    "name": "entity.name.function.call.kome",
+                    "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "name": "keyword.operator.kome",
+                    "match": "->|=>|\\+=|==|!=|<=|>=|&&|\\|\\||[=+\\-*/!<>?|]"
+                }
+            ]
+        },
+        "punctuation": {
+            "patterns": [
+                {
+                    "name": "punctuation.separator.comma.kome",
+                    "match": ","
+                },
+                {
+                    "name": "punctuation.separator.colon.kome",
+                    "match": ":"
+                },
+                {
+                    "name": "punctuation.accessor.kome",
+                    "match": "\\."
+                },
+                {
+                    "name": "punctuation.section.parens.begin.kome",
+                    "match": "\\("
+                },
+                {
+                    "name": "punctuation.section.parens.end.kome",
+                    "match": "\\)"
+                },
+                {
+                    "name": "punctuation.section.block.begin.kome",
+                    "match": "\\{"
+                },
+                {
+                    "name": "punctuation.section.block.end.kome",
+                    "match": "\\}"
+                },
+                {
+                    "name": "punctuation.section.brackets.begin.kome",
+                    "match": "\\["
+                },
+                {
+                    "name": "punctuation.section.brackets.end.kome",
+                    "match": "\\]"
+                }
+            ]
+        }
+    }
+}
