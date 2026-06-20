@@ -300,6 +300,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kome_semantics"
+version = "0.1.0"
+dependencies = [
+ "kome_ast",
+ "kome_parser",
+]
+
+[[package]]
 name = "komec"
 version = "0.1.0"
 

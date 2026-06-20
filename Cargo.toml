@@ -9,6 +9,7 @@ members = [
   "crates/kome_ast",
   "crates/kome_lsp",
   "crates/kome_parser",
+  "crates/kome_semantics",
 ]
 
 [workspace.package]
@@ -17,4 +18,5 @@ edition = "2024"
 [workspace.dependencies]
 kome_ast = { path = "crates/kome_ast" }
 kome_parser = { path = "crates/kome_parser" }
+kome_semantics = { path = "crates/kome_semantics" }
 [dependencies]
