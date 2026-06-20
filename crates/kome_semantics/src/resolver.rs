@@ -1,5 +1,5 @@
 use crate::error::ResolutionError;
-use crate::scope::{Reference, Scope, ScopeId, ScopeKind, Symbol, SymbolId};
+use crate::scope::{NameResolution, Reference, Scope, ScopeId, ScopeKind, Symbol, SymbolId};
 use kome_ast::Span;
 use kome_ast::{
     declarations::{
@@ -557,6 +557,18 @@ impl ScopeBuilder {
             if let Some(ref default) = ident.default {
                 self.visit_expression(default);
             }
+        }
+    }
+
+    pub fn resolve(module: &Module) -> NameResolution {
+        let mut builder = Self::new();
+        builder.visit_module(module);
+        NameResolution {
+            scopes: builder.scopes,
+            symbols: builder.symbols,
+            references: builder.references,
+            errors: builder.errors,
+            root: 0,
         }
     }
 }
