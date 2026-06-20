@@ -326,13 +326,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "kome-zed"
-version = "0.1.0"
-dependencies = [
- "zed_extension_api",
-]
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -754,6 +747,13 @@ dependencies = [
  "serde",
  "serde_json",
  "wit-bindgen",
+]
+
+[[package]]
+name = "zed_kome"
+version = "0.1.0"
+dependencies = [
+ "zed_extension_api",
 ]
 
 [[package]]
