@@ -8,7 +8,10 @@ fn resolves_empty_module() {
 
     assert!(result.errors.is_empty());
     assert_eq!(result.scopes.len(), 1);
-    assert_eq!(result.scopes[0].kind, kome_semantics::scope::ScopeKind::Module);
+    assert_eq!(
+        result.scopes[0].kind,
+        kome_semantics::scope::ScopeKind::Module
+    );
     assert!(result.references.is_empty());
     assert!(result.symbols.is_empty());
 }
@@ -27,7 +30,11 @@ fn resolves_function_declaration() {
 
     let func_scope_id = scope.children[0];
     let func_scope = &result.scopes[func_scope_id];
-    let param_names: Vec<_> = func_scope.symbols.iter().map(|(n, _, _)| n.as_str()).collect();
+    let param_names: Vec<_> = func_scope
+        .symbols
+        .iter()
+        .map(|(n, _, _)| n.as_str())
+        .collect();
     assert_eq!(param_names, vec!["name"]);
 }
 
@@ -112,7 +119,11 @@ fn resolves_enum_cases() {
 
     let enum_scope_id = result.scopes[result.root].children[0];
     let enum_scope = &result.scopes[enum_scope_id];
-    let case_names: Vec<_> = enum_scope.symbols.iter().map(|(n, _, _)| n.as_str()).collect();
+    let case_names: Vec<_> = enum_scope
+        .symbols
+        .iter()
+        .map(|(n, _, _)| n.as_str())
+        .collect();
     assert_eq!(case_names, vec!["Red", "Green", "Blue"]);
 }
 
@@ -164,7 +175,11 @@ fn resolves_call_expression() {
 
     assert!(result.errors.is_empty());
 
-    let greet_ref = result.references.iter().find(|r| r.name == "greet").unwrap();
+    let greet_ref = result
+        .references
+        .iter()
+        .find(|r| r.name == "greet")
+        .unwrap();
     assert!(greet_ref.resolved_to.is_some());
 }
 
@@ -176,7 +191,11 @@ fn resolves_component_expression() {
 
     assert!(result.errors.is_empty());
 
-    let btn_ref = result.references.iter().find(|r| r.name == "Button").unwrap();
+    let btn_ref = result
+        .references
+        .iter()
+        .find(|r| r.name == "Button")
+        .unwrap();
     assert!(btn_ref.resolved_to.is_some());
 }
 
@@ -202,9 +221,17 @@ fn for_in_introduces_binding() {
 
     assert!(result.errors.is_empty());
 
-    let item_refs: Vec<_> = result.references.iter().filter(|r| r.name == "item").collect();
+    let item_refs: Vec<_> = result
+        .references
+        .iter()
+        .filter(|r| r.name == "item")
+        .collect();
     assert!(item_refs.is_empty(), "item is a binding, not a reference");
-    let items_ref = result.references.iter().find(|r| r.name == "items").unwrap();
+    let items_ref = result
+        .references
+        .iter()
+        .find(|r| r.name == "items")
+        .unwrap();
     assert!(items_ref.resolved_to.is_some());
 }
 
