@@ -136,16 +136,7 @@ impl ScopeBuilder {
             for member in members {
                 match member {
                     ComponentMember::State(binding) => self.register_binding(binding),
-                    ComponentMember::Let(binding) => {
-                        self.errors
-                            .push(ResolutionError::InvalidLetLocation { span: binding.span });
-                        if let Some(ref ty) = binding.type_annotation {
-                            self.visit_type(ty);
-                        }
-                        if let Some(ref init) = binding.init {
-                            self.visit_expression(init);
-                        }
-                    }
+                    ComponentMember::Let(binding) => self.register_binding(binding),
                     ComponentMember::Recipe(recipe) => self.visit_recipe(recipe),
                     ComponentMember::Function(func) => self.visit_function_declaration(func),
                 }
