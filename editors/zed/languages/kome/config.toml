@@ -1,6 +1,5 @@
-name = "Kome Language"
+name = "Kome"
 grammar = "kome"
-
 path_suffixes = [
   "kome",
 ]
