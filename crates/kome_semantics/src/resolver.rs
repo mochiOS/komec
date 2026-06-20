@@ -20,6 +20,11 @@ use kome_ast::{
     types::{NamedType, Type},
 };
 
+/// Walks a Kome AST and builds a [`NameResolution`] side-table.
+///
+/// This is the first semantic pass: it records every scope, symbol declaration, and
+/// name reference, reporting errors for undefined names, duplicate definitions (except
+/// for variables), and invalid `let` placements.
 pub struct ScopeBuilder {
     scopes: Vec<Scope>,
     symbols: Vec<Symbol>,
@@ -587,6 +592,7 @@ impl ScopeBuilder {
         }
     }
 
+    /// Runs name resolution on a parsed [`Module`] and returns the result.
     pub fn resolve(module: &Module) -> NameResolution {
         let mut builder = Self::new();
         builder.visit_module(module);

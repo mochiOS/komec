@@ -6,6 +6,10 @@ use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
 use crate::position::span_to_range;
 
+/// Runs both syntax and semantic diagnostics on a Kome source file.
+///
+/// First parses the source via [`kome_parser::parse`]; on success, also runs name
+/// resolution via [`ScopeBuilder::resolve`] and reports any [`ResolutionError`]s.
 pub fn syntax_diagnostics(source: &str) -> Vec<Diagnostic> {
     match kome_parser::parse(source) {
         Ok(module) => {
@@ -115,6 +119,7 @@ fn parse_error_message(error: &ParseError) -> String {
     }
 }
 
+/// Extracts the [`Span`] from any [`FrontendError`].
 pub fn frontend_error_span(error: &FrontendError) -> Span {
     match error {
         FrontendError::Lex(error) => error.span,
