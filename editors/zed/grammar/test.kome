@@ -1,0 +1,22 @@
+// Kome test
+
+enum Color {
+    primary,
+    accent = "#007aff",
+}
+
+@application
+component App {
+    state count: Number = 0
+
+    recipe view {
+        Text(
+            content: "Count: {count}",
+            color: .accent,
+        )
+    }
+
+    fn increment() {
+        count += 1
+    }
+}

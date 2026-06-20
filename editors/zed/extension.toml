@@ -1,0 +1,16 @@
+id = "kome"
+name = "Kome"
+description = "Kome language support for Zed"
+version = "0.1.0"
+schema_version = 1
+authors = ["mochiOS"]
+repository = "https://github.com/mochiOS/komec"
+
+[grammars.kome]
+repository = "https://github.com/mochiOS/komec"
+rev = ""
+path = "editors/zed/grammar"
+
+[language_servers.kome-lsp]
+name = "Kome Language Server"
+languages = ["Kome"]
