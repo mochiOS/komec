@@ -1,6 +1,17 @@
 use crate::error::ResolutionError;
 use crate::scope::{Reference, Scope, ScopeId, ScopeKind, Symbol, SymbolId};
 use kome_ast::Span;
+use kome_ast::{
+    declarations::{
+        Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase, EnumDeclaration,
+        ExtensionDeclaration, ExtensionMember, FunctionDeclaration, Module, RecipeDeclaration,
+        UseSpecifier,
+    },
+    expressions::Expression,
+    patterns::{IsPattern, Pattern},
+    statements::BlockStatement,
+    types::Type,
+};
 
 pub struct ScopeBuilder {
     scopes: Vec<Scope>,
@@ -111,5 +122,201 @@ impl ScopeBuilder {
             name: name.to_string(),
             resolved_to: resolved,
         });
+    }
+
+    // -- stubs (filled in later commits) --
+
+    fn visit_type(&mut self, _ty: &Type) {}
+
+    fn visit_block_statement(&mut self, _block: &BlockStatement) {}
+
+    fn visit_expression(&mut self, _expr: &Expression) {}
+
+    fn visit_is_pattern(&mut self, _pattern: &IsPattern) {}
+
+    // -- declaration visitors --
+
+    fn visit_module(&mut self, module: &Module) {
+        self.enter_scope(ScopeKind::Module);
+
+        for decl in &module.declarations {
+            if let Declaration::Use(use_decl) = decl {
+                for spec in &use_decl.specifiers {
+                    if let UseSpecifier::Named { name, span } = spec {
+                        self.declare(
+                            *span,
+                            Symbol::ImportedName {
+                                name: name.clone(),
+                                span: *span,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        for decl in &module.declarations {
+            self.visit_top_level_declaration(decl);
+        }
+
+        self.exit_scope();
+    }
+
+    fn visit_top_level_declaration(&mut self, decl: &Declaration) {
+        match decl {
+            Declaration::Component(comp) => self.visit_component_declaration(comp),
+            Declaration::Function(func) => self.visit_function_declaration(func),
+            Declaration::Let(binding) => self.register_binding(binding),
+            Declaration::Constant(binding) => self.register_binding(binding),
+            Declaration::Use(_) => {}
+            Declaration::Enum(enum_decl) => self.visit_enum_declaration(enum_decl),
+            Declaration::Extension(ext) => self.visit_extension_declaration(ext),
+        }
+    }
+
+    fn visit_component_declaration(&mut self, comp: &ComponentDeclaration) {
+        self.declare(
+            comp.span,
+            Symbol::Component {
+                name: comp.name.clone(),
+                span: comp.span,
+            },
+        );
+        self.enter_scope(ScopeKind::Component);
+
+        for param in &comp.params {
+            self.declare(
+                param.span,
+                Symbol::Parameter {
+                    name: param.name.clone(),
+                    span: param.span,
+                },
+            );
+        }
+
+        if let Some(members) = &comp.body {
+            for member in members {
+                match member {
+                    ComponentMember::State(binding) => self.register_binding(binding),
+                    ComponentMember::Let(binding) => self.register_binding(binding),
+                    ComponentMember::Recipe(recipe) => self.visit_recipe(recipe),
+                    ComponentMember::Function(func) => self.visit_function_declaration(func),
+                }
+            }
+        }
+
+        self.exit_scope();
+    }
+
+    fn visit_recipe(&mut self, recipe: &RecipeDeclaration) {
+        self.declare(
+            recipe.span,
+            Symbol::Recipe {
+                name: recipe.name.clone(),
+                span: recipe.span,
+            },
+        );
+
+        if let Some(ref source) = recipe.event_source {
+            self.record_reference(source, recipe.span);
+        }
+
+        self.visit_block_statement(&recipe.body);
+    }
+
+    fn visit_function_declaration(&mut self, func: &FunctionDeclaration) {
+        self.declare(
+            func.span,
+            Symbol::Function {
+                name: func.name.clone(),
+                span: func.span,
+            },
+        );
+        self.enter_scope(ScopeKind::Function);
+
+        for param in &func.params {
+            self.visit_pattern_binding(param);
+        }
+
+        if let Some(ref return_type) = func.return_type {
+            self.visit_type(return_type);
+        }
+
+        if let Some(ref body) = func.body {
+            self.visit_block_statement(body);
+        }
+
+        self.exit_scope();
+    }
+
+    fn visit_enum_declaration(&mut self, enum_decl: &EnumDeclaration) {
+        self.declare(
+            enum_decl.span,
+            Symbol::EnumType {
+                name: enum_decl.name.clone(),
+                span: enum_decl.span,
+            },
+        );
+        self.enter_scope(ScopeKind::IsPattern);
+        for case in &enum_decl.cases {
+            self.register_enum_case(case);
+        }
+        self.exit_scope();
+    }
+
+    fn register_enum_case(&mut self, case: &EnumCase) {
+        self.declare(
+            case.span,
+            Symbol::EnumCase {
+                name: case.name.clone(),
+                span: case.span,
+            },
+        );
+
+        if let Some(ref value) = case.value {
+            self.visit_expression(value);
+        }
+    }
+
+    fn visit_extension_declaration(&mut self, ext: &ExtensionDeclaration) {
+        self.visit_type(&ext.target);
+
+        for member in &ext.members {
+            match member {
+                ExtensionMember::Function(func) => self.visit_function_declaration(func),
+            }
+        }
+    }
+
+    fn register_binding(&mut self, binding: &Binding) {
+        self.visit_pattern_binding(&binding.pattern);
+
+        if let Some(ref type_ann) = binding.type_annotation {
+            self.visit_type(type_ann);
+        }
+
+        if let Some(ref init) = binding.init {
+            self.visit_expression(init);
+        }
+    }
+
+    fn visit_pattern_binding(&mut self, pattern: &Pattern) {
+        if let Pattern::Ident(ident) = pattern {
+            self.declare(
+                ident.span,
+                Symbol::Variable {
+                    name: ident.name.clone(),
+                    span: ident.span,
+                },
+            );
+
+            if let Some(ref type_ann) = ident.type_annotation {
+                self.visit_type(type_ann);
+            }
+
+            if let Some(ref default) = ident.default {
+                self.visit_expression(default);
+            }
+        }
     }
 }
