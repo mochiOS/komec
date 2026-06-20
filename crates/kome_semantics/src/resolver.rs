@@ -48,6 +48,19 @@ impl ScopeBuilder {
         }
     }
 
+    /// Runs name resolution on a parsed [`Module`] and returns the result.
+    pub fn resolve(module: &Module) -> NameResolution {
+        let mut builder = Self::new();
+        builder.visit_module(module);
+        NameResolution {
+            scopes: builder.scopes,
+            symbols: builder.symbols,
+            references: builder.references,
+            errors: builder.errors,
+            root: 0,
+        }
+    }
+
     fn alloc_scope(&mut self) -> ScopeId {
         let id = self.next_scope_id;
         self.next_scope_id += 1;
@@ -587,19 +600,6 @@ impl ScopeBuilder {
             if let Some(ref default) = ident.default {
                 self.visit_expression(default);
             }
-        }
-    }
-
-    /// Runs name resolution on a parsed [`Module`] and returns the result.
-    pub fn resolve(module: &Module) -> NameResolution {
-        let mut builder = Self::new();
-        builder.visit_module(module);
-        NameResolution {
-            scopes: builder.scopes,
-            symbols: builder.symbols,
-            references: builder.references,
-            errors: builder.errors,
-            root: 0,
         }
     }
 }
