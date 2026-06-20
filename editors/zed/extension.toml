@@ -8,9 +8,9 @@ repository = "https://github.com/mochiOS/komec"
 
 [grammars.kome]
 repository = "https://github.com/mochiOS/komec"
-rev = "8db23c546dbae6964dca59056a56621f97df0123"
+rev = "76f1be16f0856d2ce1e119a5845940c44f692d24"
 path = "editors/zed/grammar"
 
 [language_servers.kome-lsp]
 name = "Kome Language Server"
-languages = ["Kome"]
+language = "Kome"
