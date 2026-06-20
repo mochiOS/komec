@@ -1,7 +1,4 @@
-use zed_extension_api::{
-    self as zed,
-    settings::LspSettings,
-};
+use zed_extension_api::{self as zed, settings::LspSettings};
 
 struct KomeExtension;
 
@@ -15,10 +12,7 @@ impl zed::Extension for KomeExtension {
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> zed::Result<zed::Command> {
-        let settings = LspSettings::for_worktree(
-            language_server_id.as_ref(),
-            worktree,
-        )?;
+        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
         let configured_path = settings
             .binary
@@ -33,7 +27,7 @@ impl zed::Extension for KomeExtension {
                     "Install kome-lsp in PATH or configure ",
                     "lsp.kome-lsp.binary.path in Zed settings."
                 )
-                    .to_string()
+                .to_string()
             })?;
 
         let args = settings
@@ -49,11 +43,7 @@ impl zed::Extension for KomeExtension {
             .into_iter()
             .collect();
 
-        Ok(zed::Command {
-            command,
-            args,
-            env,
-        })
+        Ok(zed::Command { command, args, env })
     }
 
     fn language_server_initialization_options(
@@ -61,10 +51,7 @@ impl zed::Extension for KomeExtension {
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> zed::Result<Option<zed::serde_json::Value>> {
-        let settings = LspSettings::for_worktree(
-            language_server_id.as_ref(),
-            worktree,
-        )?;
+        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
         Ok(settings.initialization_options)
     }
@@ -74,10 +61,7 @@ impl zed::Extension for KomeExtension {
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> zed::Result<Option<zed::serde_json::Value>> {
-        let settings = LspSettings::for_worktree(
-            language_server_id.as_ref(),
-            worktree,
-        )?;
+        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
         Ok(settings.settings)
     }
