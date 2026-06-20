@@ -33,14 +33,14 @@ fn resolves_function_declaration() {
 
 #[test]
 fn resolves_reference_to_declared_name() {
-    let source = "let x = 1\nfn foo() { x }";
+    let source = "fn bar() {}\nfn foo() { bar }";
     let module = parse(source).unwrap();
     let result = ScopeBuilder::resolve(&module);
 
     assert!(result.errors.is_empty());
 
-    let x_ref = result.references.iter().find(|r| r.name == "x").unwrap();
-    assert!(x_ref.resolved_to.is_some());
+    let bar_ref = result.references.iter().find(|r| r.name == "bar").unwrap();
+    assert!(bar_ref.resolved_to.is_some());
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn reports_duplicate_definition() {
 
 #[test]
 fn allows_variable_shadowing() {
-    let source = "let x = 1\nlet x = 2";
+    let source = "fn foo() {\n    let x = 1\n    let x = 2\n}";
     let module = parse(source).unwrap();
     let result = ScopeBuilder::resolve(&module);
 
@@ -95,7 +95,7 @@ fn allows_same_name_in_different_scopes() {
 
 #[test]
 fn inner_scope_masks_outer() {
-    let source = "let x = 1\nfn foo() { let x = 2 }";
+    let source = "fn bar() {}\nfn foo() { let bar = 2 }";
     let module = parse(source).unwrap();
     let result = ScopeBuilder::resolve(&module);
 

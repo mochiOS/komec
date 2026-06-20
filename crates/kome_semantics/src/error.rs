@@ -9,4 +9,5 @@ pub enum ResolutionError {
         second: Span,
     },
     ScopeStackEmpty,
+    InvalidLetLocation { span: Span },
 }

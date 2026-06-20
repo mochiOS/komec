@@ -412,7 +412,15 @@ impl ScopeBuilder {
         match decl {
             Declaration::Component(comp) => self.visit_component_declaration(comp),
             Declaration::Function(func) => self.visit_function_declaration(func),
-            Declaration::Let(binding) => self.register_binding(binding),
+            Declaration::Let(binding) => {
+                self.errors.push(ResolutionError::InvalidLetLocation { span: binding.span });
+                if let Some(ref ty) = binding.type_annotation {
+                    self.visit_type(ty);
+                }
+                if let Some(ref init) = binding.init {
+                    self.visit_expression(init);
+                }
+            }
             Declaration::Constant(binding) => self.register_binding(binding),
             Declaration::Use(_) => {}
             Declaration::Enum(enum_decl) => self.visit_enum_declaration(enum_decl),
@@ -444,7 +452,15 @@ impl ScopeBuilder {
             for member in members {
                 match member {
                     ComponentMember::State(binding) => self.register_binding(binding),
-                    ComponentMember::Let(binding) => self.register_binding(binding),
+                    ComponentMember::Let(binding) => {
+                        self.errors.push(ResolutionError::InvalidLetLocation { span: binding.span });
+                        if let Some(ref ty) = binding.type_annotation {
+                            self.visit_type(ty);
+                        }
+                        if let Some(ref init) = binding.init {
+                            self.visit_expression(init);
+                        }
+                    }
                     ComponentMember::Recipe(recipe) => self.visit_recipe(recipe),
                     ComponentMember::Function(func) => self.visit_function_declaration(func),
                 }
