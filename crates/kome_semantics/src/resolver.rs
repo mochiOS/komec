@@ -55,8 +55,8 @@ impl ScopeBuilder {
         id
     }
 
-    fn current_scope(&self) -> ScopeId {
-        *self.scope_stack.last().unwrap()
+    fn current_scope(&self) -> Option<ScopeId> {
+        self.scope_stack.last().copied()
     }
 
     fn enter_scope(&mut self, kind: ScopeKind) -> ScopeId {
@@ -82,12 +82,17 @@ impl ScopeBuilder {
 
     fn declare(&mut self, span: Span, symbol: Symbol) {
         let name = symbol.name().to_string();
-        let scope_id = self.current_scope();
-        let scope = &self.scopes[scope_id];
+        let scope_id = match self.current_scope() {
+            Some(id) => id,
+            None => {
+                self.errors.push(ResolutionError::ScopeStackEmpty);
+                return;
+            }
+        };
 
-        let dup = scope.symbols.iter().any(|(n, _, _)| n == &name);
+        let dup = self.scopes[scope_id].symbols.iter().any(|(n, _, _)| n == &name);
         if dup {
-            let first = scope
+            let first = self.scopes[scope_id]
                 .symbols
                 .iter()
                 .find(|(n, _, _)| n == &name)
