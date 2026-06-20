@@ -9,6 +9,7 @@ fn log(value: String) { print(value) }
 @application
 component App(title: String = "Kome") {
     state items = [1, 2, 3]
+    state button = {}
     state name = "world"
     state flag = true
     state fig = 100
@@ -27,7 +28,7 @@ component App(title: String = "Kome") {
     state total = (1 + 2) * 3
 
     @body
-    struct body {
+    let body = {
         VStack {
             Text("Hello, {name}", weight: .bold),
             Text("count: {counter}"),
