@@ -9,7 +9,10 @@ use kome_ast::{
     },
     expressions::Expression,
     patterns::{IsPattern, Pattern},
-    statements::BlockStatement,
+    statements::{
+        BlockStatement, ForInStatement, IfStatement, IsStatement, ReturnStatement, Statement,
+        WhileStatement,
+    },
     types::{NamedType, Type},
 };
 
@@ -160,7 +163,72 @@ impl ScopeBuilder {
         }
     }
 
-    fn visit_block_statement(&mut self, _block: &BlockStatement) {}
+    fn visit_block_statement(&mut self, block: &BlockStatement) {
+        self.enter_scope(ScopeKind::Block);
+        for stmt in &block.statements {
+            self.visit_statement(stmt);
+        }
+        self.exit_scope();
+    }
+
+    fn visit_statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Block(block) => self.visit_block_statement(block),
+            Statement::Expression(expr_stmt) => self.visit_expression(&expr_stmt.expression),
+            Statement::Let(binding) => self.register_binding(binding),
+            Statement::If(if_stmt) => self.visit_if_statement(if_stmt),
+            Statement::While(while_stmt) => self.visit_while_statement(while_stmt),
+            Statement::ForIn(for_in) => self.visit_for_in_statement(for_in),
+            Statement::Return(ret) => self.visit_return_statement(ret),
+            Statement::Break(_) | Statement::Continue(_) | Statement::Empty(_) => {}
+            Statement::Is(is_stmt) => self.visit_is_statement(is_stmt),
+            Statement::Declaration(decl) => self.visit_top_level_declaration(decl),
+        }
+    }
+
+    fn visit_if_statement(&mut self, if_stmt: &IfStatement) {
+        self.visit_expression(&if_stmt.test);
+        self.enter_scope(ScopeKind::Block);
+        self.visit_statement(&if_stmt.consequent);
+        self.exit_scope();
+
+        if let Some(ref alt) = if_stmt.alternative {
+            self.enter_scope(ScopeKind::Block);
+            self.visit_statement(alt);
+            self.exit_scope();
+        }
+    }
+
+    fn visit_while_statement(&mut self, while_stmt: &WhileStatement) {
+        self.visit_expression(&while_stmt.test);
+        self.enter_scope(ScopeKind::Block);
+        self.visit_statement(&while_stmt.body);
+        self.exit_scope();
+    }
+
+    fn visit_for_in_statement(&mut self, for_in: &ForInStatement) {
+        self.visit_expression(&for_in.right);
+        self.enter_scope(ScopeKind::ForIn);
+        self.visit_pattern_binding(&for_in.pattern);
+        self.visit_statement(&for_in.body);
+        self.exit_scope();
+    }
+
+    fn visit_return_statement(&mut self, ret: &ReturnStatement) {
+        if let Some(ref arg) = ret.argument {
+            self.visit_expression(arg);
+        }
+    }
+
+    fn visit_is_statement(&mut self, is_stmt: &IsStatement) {
+        if let Some(ref value) = is_stmt.value {
+            self.visit_expression(value);
+        }
+        self.enter_scope(ScopeKind::IsPattern);
+        self.visit_is_pattern(&is_stmt.pattern);
+        self.visit_statement(&is_stmt.body);
+        self.exit_scope();
+    }
 
     fn visit_expression(&mut self, _expr: &Expression) {}
 
