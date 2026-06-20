@@ -12,6 +12,17 @@
     <depends>com.intellij.modules.ultimate</depends>
 
     <extensions defaultExtensionNs="com.intellij">
+        <fileType
+                name="Kome"
+                language="Kome"
+                implementationClass="org.mochios.kome.lang.KomeFileType"
+                fieldName="INSTANCE"
+                extensions="kome"/>
+
+        <lang.syntaxHighlighterFactory
+                language="Kome"
+                implementationClass="org.mochios.kome.lang.KomeSyntaxHighlighterFactory"/>
+
         <platform.lsp.serverSupportProvider
                 implementation="org.mochios.kome.lsp.KomeLspServerSupportProvider"/>
     </extensions>
