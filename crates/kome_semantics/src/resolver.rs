@@ -145,8 +145,6 @@ impl ScopeBuilder {
         });
     }
 
-    // -- stubs (filled in later commits) --
-
     fn visit_type(&mut self, ty: &Type) {
         match ty {
             Type::Primitive(_) => {}
