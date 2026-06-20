@@ -1,10 +1,17 @@
 [package]
 name = "kome_lsp"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 publish = false
 
+[[bin]]
+name = "kome-lsp"
+path = "src/main.rs"
+
 [dependencies]
+kome_ast.workspace = true
+kome_parser.workspace = true
+
 tokio = {
     version = "1",
     features = [
@@ -13,4 +20,5 @@ tokio = {
         "rt-multi-thread",
     ],
 }
-tower-lsp-server = "0.23"
+
+tower-lsp = "0.20"
