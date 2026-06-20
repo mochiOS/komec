@@ -1,0 +1,10 @@
+[package]
+name = "kome_semantics"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+kome_ast.workspace = true
+
+[dev-dependencies]
+kome_parser.workspace = true
