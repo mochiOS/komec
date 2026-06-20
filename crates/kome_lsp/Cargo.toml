@@ -14,12 +14,12 @@ kome_parser.workspace = true
 kome_semantics.workspace = true
 
 tokio = {
-    version = "1",
-    features = [
-        "io-std",
-        "macros",
-        "rt-multi-thread",
-    ],
+  version = "1",
+  features = [
+    "io-std",
+    "macros",
+    "rt-multi-thread",
+  ],
 }
 
 tower-lsp = "0.20"
