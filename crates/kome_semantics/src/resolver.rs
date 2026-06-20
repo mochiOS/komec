@@ -164,7 +164,23 @@ impl ScopeBuilder {
 
     fn visit_expression(&mut self, _expr: &Expression) {}
 
-    fn visit_is_pattern(&mut self, _pattern: &IsPattern) {}
+    fn visit_is_pattern(&mut self, pattern: &IsPattern) {
+        match pattern {
+            IsPattern::Literal(_) => {}
+            IsPattern::Ident(ident) => {
+                self.declare(
+                    ident.span,
+                    Symbol::Variable {
+                        name: ident.name.clone(),
+                        span: ident.span,
+                    },
+                );
+            }
+            IsPattern::DotIdent(dot) => {
+                self.record_reference(&dot.name, dot.span);
+            }
+        }
+    }
 
     // -- declaration visitors --
 
