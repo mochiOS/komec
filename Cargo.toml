@@ -7,6 +7,7 @@ edition = "2024"
 resolver = "3"
 members = [
   "crates/kome_ast",
+  "crates/kome_lsp",
   "crates/kome_parser",
 ]
 
@@ -15,5 +16,5 @@ edition = "2024"
 
 [workspace.dependencies]
 kome_ast = { path = "crates/kome_ast" }
-
+kome_parser = { path = "crates/kome_parser" }
 [dependencies]

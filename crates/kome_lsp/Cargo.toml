@@ -1,0 +1,16 @@
+[package]
+name = "kome_lsp"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tokio = {
+    version = "1",
+    features = [
+        "io-std",
+        "macros",
+        "rt-multi-thread",
+    ],
+}
+tower-lsp-server = "0.23"
