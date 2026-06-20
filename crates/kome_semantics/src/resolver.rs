@@ -90,7 +90,8 @@ impl ScopeBuilder {
             }
         };
 
-        let dup = self.scopes[scope_id].symbols.iter().any(|(n, _, _)| n == &name);
+        let dup = !matches!(symbol, Symbol::Variable { .. })
+            && self.scopes[scope_id].symbols.iter().any(|(n, _, _)| n == &name);
         if dup {
             let first = self.scopes[scope_id]
                 .symbols

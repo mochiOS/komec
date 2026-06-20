@@ -61,7 +61,7 @@ fn reports_undefined_name() {
 
 #[test]
 fn reports_duplicate_definition() {
-    let source = "let x = 1\nlet x = 2";
+    let source = "fn foo() {}\nfn foo() {}";
     let module = parse(source).unwrap();
     let result = ScopeBuilder::resolve(&module);
 
@@ -69,10 +69,19 @@ fn reports_duplicate_definition() {
     let err = &result.errors[0];
     match err {
         kome_semantics::error::ResolutionError::DuplicateDefinition { name, .. } => {
-            assert_eq!(name, "x");
+            assert_eq!(name, "foo");
         }
         other => panic!("expected DuplicateDefinition, got {other:?}"),
     }
+}
+
+#[test]
+fn allows_variable_shadowing() {
+    let source = "let x = 1\nlet x = 2";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(result.errors.is_empty());
 }
 
 #[test]
