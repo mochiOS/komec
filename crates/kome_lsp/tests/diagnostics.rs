@@ -87,3 +87,30 @@ enum Color {
 
     assert!(syntax_diagnostics(valid_source).is_empty(),);
 }
+
+#[test]
+fn reports_undefined_name_diagnostic() {
+    let source = "fn foo() { bar }";
+    let diagnostics = syntax_diagnostics(source);
+
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("undefined name"));
+}
+
+#[test]
+fn reports_duplicate_definition_diagnostic() {
+    let source = "fn foo() {}\nfn foo() {}";
+    let diagnostics = syntax_diagnostics(source);
+
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("duplicate definition"));
+}
+
+#[test]
+fn reports_invalid_let_location_diagnostic() {
+    let source = "let x = 1";
+    let diagnostics = syntax_diagnostics(source);
+
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("`let` is not allowed"));
+}
