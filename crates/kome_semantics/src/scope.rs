@@ -22,3 +22,54 @@ pub struct Scope {
     pub symbols: Vec<(String, SymbolId, Span)>,
     pub children: Vec<ScopeId>,
 }
+
+#[derive(Debug, Clone)]
+pub enum Symbol {
+    Component {
+        name: String,
+        span: Span,
+    },
+    Function {
+        name: String,
+        span: Span,
+    },
+    Parameter {
+        name: String,
+        span: Span,
+    },
+    Variable {
+        name: String,
+        span: Span,
+    },
+    Recipe {
+        name: String,
+        span: Span,
+    },
+    EnumType {
+        name: String,
+        span: Span,
+    },
+    EnumCase {
+        name: String,
+        span: Span,
+    },
+    ImportedName {
+        name: String,
+        span: Span,
+    },
+}
+
+impl Symbol {
+    pub fn name(&self) -> &str {
+        match self {
+            Symbol::Component { name, .. }
+            | Symbol::Function { name, .. }
+            | Symbol::Parameter { name, .. }
+            | Symbol::Variable { name, .. }
+            | Symbol::Recipe { name, .. }
+            | Symbol::EnumType { name, .. }
+            | Symbol::EnumCase { name, .. }
+            | Symbol::ImportedName { name, .. } => name,
+        }
+    }
+}
