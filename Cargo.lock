@@ -288,6 +288,7 @@ version = "0.1.0"
 dependencies = [
  "kome_ast",
  "kome_parser",
+ "kome_semantics",
  "tokio",
  "tower-lsp",
 ]

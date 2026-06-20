@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 kome_ast.workspace = true
 kome_parser.workspace = true
+kome_semantics.workspace = true
 
 tokio = {
     version = "1",
