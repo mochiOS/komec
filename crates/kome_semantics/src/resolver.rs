@@ -10,7 +10,7 @@ use kome_ast::{
     expressions::Expression,
     patterns::{IsPattern, Pattern},
     statements::BlockStatement,
-    types::Type,
+    types::{NamedType, Type},
 };
 
 pub struct ScopeBuilder {
@@ -126,7 +126,39 @@ impl ScopeBuilder {
 
     // -- stubs (filled in later commits) --
 
-    fn visit_type(&mut self, _ty: &Type) {}
+    fn visit_type(&mut self, ty: &Type) {
+        match ty {
+            Type::Primitive(_) => {}
+            Type::Function(func_type) => {
+                for param in &func_type.params {
+                    self.visit_type(&param.type_);
+                }
+                self.visit_type(&func_type.return_type);
+            }
+            Type::List(list_type) => {
+                self.visit_type(&list_type.element);
+            }
+            Type::Object(obj_type) => {
+                for member in &obj_type.members {
+                    self.visit_type(&member.type_);
+                }
+            }
+            Type::Named(named) => {
+                self.visit_named_type(named);
+            }
+            Type::Optional(opt) => {
+                self.visit_type(&opt.inner);
+            }
+        }
+    }
+
+    fn visit_named_type(&mut self, named: &NamedType) {
+        self.record_reference(&named.name, named.span);
+
+        for arg in &named.type_arguments {
+            self.visit_type(arg);
+        }
+    }
 
     fn visit_block_statement(&mut self, _block: &BlockStatement) {}
 
