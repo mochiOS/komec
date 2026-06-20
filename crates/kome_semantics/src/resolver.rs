@@ -91,7 +91,10 @@ impl ScopeBuilder {
         };
 
         let dup = !matches!(symbol, Symbol::Variable { .. })
-            && self.scopes[scope_id].symbols.iter().any(|(n, _, _)| n == &name);
+            && self.scopes[scope_id]
+                .symbols
+                .iter()
+                .any(|(n, _, _)| n == &name);
         if dup {
             let first = self.scopes[scope_id]
                 .symbols
@@ -413,7 +416,8 @@ impl ScopeBuilder {
             Declaration::Component(comp) => self.visit_component_declaration(comp),
             Declaration::Function(func) => self.visit_function_declaration(func),
             Declaration::Let(binding) => {
-                self.errors.push(ResolutionError::InvalidLetLocation { span: binding.span });
+                self.errors
+                    .push(ResolutionError::InvalidLetLocation { span: binding.span });
                 if let Some(ref ty) = binding.type_annotation {
                     self.visit_type(ty);
                 }
@@ -453,7 +457,8 @@ impl ScopeBuilder {
                 match member {
                     ComponentMember::State(binding) => self.register_binding(binding),
                     ComponentMember::Let(binding) => {
-                        self.errors.push(ResolutionError::InvalidLetLocation { span: binding.span });
+                        self.errors
+                            .push(ResolutionError::InvalidLetLocation { span: binding.span });
                         if let Some(ref ty) = binding.type_annotation {
                             self.visit_type(ty);
                         }
