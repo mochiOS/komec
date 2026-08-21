@@ -7,6 +7,8 @@ use kome_ast::{
 };
 use std::{collections::HashMap, fmt};
 
+pub mod abi;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     String(String),
@@ -208,7 +210,7 @@ impl NativeRegistry {
         self.functions.insert(name.into(), Box::new(function));
     }
 
-    fn call(&self, name: &str, arguments: &[Value]) -> Result<Value, RuntimeError> {
+    pub fn call(&self, name: &str, arguments: &[Value]) -> Result<Value, RuntimeError> {
         let function =
             self.functions
                 .get(name)
