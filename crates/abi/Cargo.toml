@@ -1,0 +1,4 @@
+[package]
+name = "kome_abi"
+version = "0.1.0"
+edition.workspace = true
