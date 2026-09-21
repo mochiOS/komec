@@ -36,7 +36,7 @@ for Color {
     }
 }
 
-impl ops::traits::Add for Color {
+for Color: ops::traits::Add {
     fn add(self, other: Color) -> Color {
         return self
     }

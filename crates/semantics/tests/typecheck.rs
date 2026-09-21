@@ -208,7 +208,7 @@ for Color {
     fn value(self) -> Color { return self }
 }
 
-impl Add for Color {
+for Color: Add {
     fn add(self, other: Color) -> Color { return other }
 }
 "#,
@@ -217,6 +217,12 @@ impl Add for Color {
     let result = TypeChecker::check(&module);
 
     assert!(result.errors.is_empty());
+    assert_eq!(result.implementations.len(), 2);
+    assert!(result.implementations[0].trait_.is_none());
+    assert_eq!(
+        result.implementations[1].trait_.as_ref().unwrap().name(),
+        "Add"
+    );
 }
 
 #[test]

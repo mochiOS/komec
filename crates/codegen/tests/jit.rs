@@ -173,6 +173,20 @@ fn reports_unsupported_struct_construction() {
 }
 
 #[test]
+fn reports_unsupported_method_and_trait_dispatch() {
+    let module = kome_parser::parse(
+        "for bool: Add { fn add(self, other: bool) -> bool { return self } }\nfn main() { true.add(false) }",
+    )
+    .unwrap();
+    let error = kome_jit::execute(&module, "main").unwrap_err();
+
+    assert_eq!(
+        error.message(),
+        "method and trait dispatch are not supported yet"
+    );
+}
+
+#[test]
 fn marshals_booleans_and_nulls_into_natives() {
     let capture = Capture::install("test.capture");
 

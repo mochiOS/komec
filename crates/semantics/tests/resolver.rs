@@ -123,7 +123,7 @@ fn reports_duplicate_and_undefined_struct_types() {
 #[test]
 fn resolves_inherent_and_trait_implementation_types() {
     let module = parse(
-        "use ops\nstruct Color {}\nfor Color { fn value(self) -> Color { return self } }\nimpl ops::traits::Add for Color { fn add(self, other: Color) -> Color { return self } }",
+        "use ops\nstruct Color {}\nfor Color { fn value(self) -> Color { return self } }\nfor Color: ops::traits::Add { fn add(self, other: Color) -> Color { return self } }",
     )
     .unwrap();
     let result = ScopeBuilder::resolve(&module);
@@ -141,7 +141,7 @@ fn adds_members_to_an_existing_primitive_type() {
 
 #[test]
 fn reports_undefined_implementation_type_and_trait() {
-    let module = parse("struct Color {}\nfor Missing {}\nimpl MissingTrait for Color {}").unwrap();
+    let module = parse("struct Color {}\nfor Missing {}\nfor Color: MissingTrait {}").unwrap();
     let result = ScopeBuilder::resolve(&module);
     let undefined: Vec<_> = result
         .errors
