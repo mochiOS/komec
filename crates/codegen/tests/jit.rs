@@ -329,3 +329,71 @@ fn main() {
 
     clear_thread_registry();
 }
+
+#[test]
+fn moves_number_on_final_read() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    let a = 999999999999999999999999999999
+    let b = a
+    report(b)
+}
+"#);
+
+    assert!(capture.number_is_unique(0));
+
+    clear_thread_registry();
+}
+
+#[test]
+fn returns_parameter_number_safely() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn identity(value: Number) -> Number {
+    return value
+}
+
+fn main() {
+    let value = 999999999999999999999999999999
+    report(identity(value))
+}
+"#);
+
+    assert!(capture.number_is_unique(0));
+
+    clear_thread_registry();
+}
+
+#[test]
+fn handles_shadowed_number_bindings() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    let value = 999999999999999999999999999999
+
+    {
+        let value = 888888888888888888888888888888
+        report(value)
+    }
+
+    report(value)
+}
+"#);
+
+    assert_eq!(capture.recorded().len(), 2);
+
+    clear_thread_registry();
+}

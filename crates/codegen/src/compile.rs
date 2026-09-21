@@ -439,10 +439,7 @@ fn analyze_signature(function: &FunctionDeclaration) -> CodegenResult<FunctionSi
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueOwnership {
     Borrowed,
-    BorrowedMovable {
-        scope: usize,
-        variable: Variable,
-    },
+    BorrowedMovable { scope: usize, variable: Variable },
     Owned,
 }
 
@@ -909,23 +906,30 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
         let scoped = self.scopes[scope][&identifier.name];
 
-        let remaining = self.remaining_reads.get_mut(&identifier.name).ok_or_else(|| {
-            CodegenError::at(
-                format!("internal error: missing read count for `{}`", identifier.name),
-                identifier.span,
-            )
-        })?;
+        let remaining = self
+            .remaining_reads
+            .get_mut(&identifier.name)
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!(
+                        "internal error: missing read count for `{}`",
+                        identifier.name
+                    ),
+                    identifier.span,
+                )
+            })?;
 
         *remaining -= 1;
 
-        let ownership = if scoped.kome_type == KomeType::Number && scoped.owns_value && *remaining == 0 {
-            ValueOwnership::BorrowedMovable {
-                scope,
-                variable: scoped.variable,
-            }
-        } else {
-            ValueOwnership::Borrowed
-        };
+        let ownership =
+            if scoped.kome_type == KomeType::Number && scoped.owns_value && *remaining == 0 {
+                ValueOwnership::BorrowedMovable {
+                    scope,
+                    variable: scoped.variable,
+                }
+            } else {
+                ValueOwnership::Borrowed
+            };
 
         Ok(TypedValue {
             value: Some(self.builder.use_var(scoped.variable)),
@@ -1228,6 +1232,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             .clone();
 
         let mut arguments = Vec::with_capacity(call.args.len());
+        let mut argument_values = Vec::with_capacity(call.args.len());
 
         for (argument, param_type) in call.args.iter().zip(&signature.params) {
             let expression = match argument {
@@ -1256,13 +1261,24 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             }
 
             arguments.push(typed.expect_value(expression.span())?);
+            argument_values.push(typed);
         }
 
-        match plan {
-            CalleePlan::User => self.emit_user_call(callee, &arguments, &signature),
+        let result = match plan {
+            CalleePlan::User => self.emit_user_call(callee, &arguments, &signature)?,
+            CalleePlan::Native { symbol } => {
+                self.emit_native_call(&symbol, &arguments, &signature)?
+            }
+        };
 
-            CalleePlan::Native { symbol } => self.emit_native_call(&symbol, &arguments, &signature),
+        for argument in argument_values {
+            if argument.kome_type == KomeType::Number && argument.ownership == ValueOwnership::Owned
+            {
+                self.release_number(argument.expect_value(call.span)?);
+            }
         }
+
+        Ok(result)
     }
 
     fn evaluate_assign(&mut self, assignment: &AssignmentExpression) -> CodegenResult<TypedValue> {
@@ -1303,7 +1319,9 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             AssignOp::Assign => {
                 let value = self.own_value(typed, assignment.value.span())?;
 
-                if scoped.kome_type == KomeType::Number && self.scopes[scope][&identifier.name].owns_value {
+                if scoped.kome_type == KomeType::Number
+                    && self.scopes[scope][&identifier.name].owns_value
+                {
                     let old = self.builder.use_var(scoped.variable);
                     self.release_number(old);
                 }
@@ -1311,7 +1329,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 self.builder.def_var(scoped.variable, value);
 
                 if scoped.kome_type == KomeType::Number {
-                    self.scopes[scope].get_mut(&identifier.name).unwrap().owns_value = true;
+                    self.scopes[scope]
+                        .get_mut(&identifier.name)
+                        .unwrap()
+                        .owns_value = true;
                 }
 
                 Ok(TypedValue::borrowed(value, scoped.kome_type))
