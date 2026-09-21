@@ -3,7 +3,7 @@ use std::fmt;
 
 use kome_ast::declarations::{
     Binding, ComponentDeclaration, ComponentMember, Declaration, ForDeclaration,
-    FunctionDeclaration, Module, StructDeclaration, TypeMember,
+    FunctionDeclaration, Module, StructDeclaration, TraitDeclaration, TypeMember,
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
@@ -118,6 +118,7 @@ impl std::error::Error for TypeCheckError {}
 pub struct TypeCheckResult {
     pub errors: Vec<TypeCheckError>,
     pub structs: HashMap<String, StructTypeInfo>,
+    pub traits: HashMap<String, TraitTypeInfo>,
     pub implementations: Vec<TypeImplementationInfo>,
 }
 
@@ -126,6 +127,12 @@ pub struct TypeCheckResult {
 pub struct StructTypeInfo {
     pub fields: Option<HashMap<String, SemanticType>>,
     pub runtime: Option<String>,
+}
+
+/// Semantic information retained for a declared trait.
+#[derive(Debug, Clone)]
+pub struct TraitTypeInfo {
+    pub functions: Vec<String>,
 }
 
 /// Semantic target information for an inherent or trait implementation.
@@ -172,6 +179,7 @@ pub struct TypeChecker {
     functions: HashMap<String, FunctionSignature>,
     components: HashMap<String, ComponentSignature>,
     structs: HashMap<String, StructTypeInfo>,
+    traits: HashMap<String, TraitTypeInfo>,
     implementations: Vec<TypeImplementationInfo>,
     return_type: SemanticType,
     errors: Vec<TypeCheckError>,
@@ -185,6 +193,7 @@ impl TypeChecker {
             functions: HashMap::new(),
             components: HashMap::new(),
             structs: HashMap::new(),
+            traits: HashMap::new(),
             implementations: Vec::new(),
             return_type: SemanticType::Void,
             errors: Vec::new(),
@@ -196,6 +205,7 @@ impl TypeChecker {
         TypeCheckResult {
             errors: checker.errors,
             structs: checker.structs,
+            traits: checker.traits,
             implementations: checker.implementations,
         }
     }
@@ -207,6 +217,10 @@ impl TypeChecker {
             match declaration {
                 Declaration::Struct(struct_decl) => {
                     self.collect_struct(struct_decl);
+                }
+
+                Declaration::Trait(trait_decl) => {
+                    self.collect_trait(trait_decl);
                 }
 
                 Declaration::Function(function) => {
@@ -231,6 +245,25 @@ impl TypeChecker {
             target: Self::type_from_annotation(&declaration.target),
             trait_: declaration.trait_.as_ref().map(Self::type_from_annotation),
         });
+    }
+
+    fn collect_trait(&mut self, declaration: &TraitDeclaration) {
+        let functions = declaration
+            .functions
+            .iter()
+            .map(|function| function.name.clone())
+            .collect();
+
+        if self
+            .traits
+            .insert(declaration.name.clone(), TraitTypeInfo { functions })
+            .is_some()
+        {
+            self.errors.push(TypeCheckError {
+                message: format!("duplicate trait `{}`", declaration.name),
+                span: declaration.span,
+            });
+        }
     }
 
     fn collect_struct(&mut self, struct_decl: &StructDeclaration) {
@@ -334,6 +367,12 @@ impl TypeChecker {
 
                 Declaration::For(declaration) => {
                     self.visit_type_members(&declaration.members);
+                }
+
+                Declaration::Trait(declaration) => {
+                    for function in &declaration.functions {
+                        self.visit_function(function);
+                    }
                 }
 
                 _ => {}

@@ -202,6 +202,10 @@ struct Color {
     r: Number
 }
 
+trait Add {
+    fn add(self, other: Color) -> Color
+}
+
 for Color {
     const BLACK: Color = Color { r: 0 }
     fn make(r: Number) -> Color { return Color { r: r } }
@@ -217,6 +221,7 @@ for Color: Add {
     let result = TypeChecker::check(&module);
 
     assert!(result.errors.is_empty());
+    assert_eq!(result.traits["Add"].functions, vec!["add"]);
     assert_eq!(result.implementations.len(), 2);
     assert!(result.implementations[0].trait_.is_none());
     assert_eq!(

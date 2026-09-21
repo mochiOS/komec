@@ -123,12 +123,24 @@ fn reports_duplicate_and_undefined_struct_types() {
 #[test]
 fn resolves_inherent_and_trait_implementation_types() {
     let module = parse(
-        "use ops\nstruct Color {}\nfor Color { fn value(self) -> Color { return self } }\nfor Color: ops::traits::Add { fn add(self, other: Color) -> Color { return self } }",
+        "struct Color {}\ntrait Add { fn add(self, other: Color) -> Color }\nfor Color { fn value(self) -> Color { return self } }\nfor Color: Add { fn add(self, other: Color) -> Color { return self } }",
     )
     .unwrap();
     let result = ScopeBuilder::resolve(&module);
 
     assert!(result.errors.is_empty());
+}
+
+#[test]
+fn reports_duplicate_trait_definitions() {
+    let module = parse("trait Add {}\ntrait Add {}").unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(matches!(
+        result.errors.as_slice(),
+        [kome_semantics::error::ResolutionError::DuplicateDefinition { name, .. }]
+            if name == "Add"
+    ));
 }
 
 #[test]

@@ -57,6 +57,10 @@ pub enum Symbol {
         name: String,
         span: Span,
     },
+    TraitType {
+        name: String,
+        span: Span,
+    },
     EnumCase {
         name: String,
         span: Span,
@@ -80,6 +84,7 @@ impl Symbol {
             | Symbol::Recipe { name, .. }
             | Symbol::EnumType { name, .. }
             | Symbol::StructType { name, .. }
+            | Symbol::TraitType { name, .. }
             | Symbol::EnumCase { name, .. }
             | Symbol::ImportedName { name, .. }
             | Symbol::BuiltinFunction { name, .. } => name,
@@ -95,6 +100,7 @@ impl Symbol {
             | Self::Recipe { span, .. }
             | Self::EnumType { span, .. }
             | Self::StructType { span, .. }
+            | Self::TraitType { span, .. }
             | Self::EnumCase { span, .. }
             | Self::ImportedName { span, .. } => Some(*span),
 

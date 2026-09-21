@@ -11,6 +11,21 @@ fn impl_is_not_a_keyword() {
 }
 
 #[test]
+fn parses_trait_declaration() {
+    let tokens = tokenize("trait Add {}").unwrap();
+    assert_eq!(tokens[0].kind, TokenKind::Trait);
+
+    let module = parse("trait Add { fn add(self, other: Color) -> Color }").unwrap();
+    let Declaration::Trait(declaration) = &module.declarations[0] else {
+        panic!("expected trait declaration");
+    };
+
+    assert_eq!(declaration.name, "Add");
+    assert_eq!(declaration.functions.len(), 1);
+    assert_eq!(declaration.functions[0].name, "add");
+}
+
+#[test]
 fn parses_struct_fields() {
     let module = parse(
         r#"
@@ -72,4 +87,5 @@ fn rejects_invalid_type_members() {
     assert!(parse("struct Color { let value = 1 }").is_err());
     assert!(parse("struct Color { const VALUE: Number = 1 }").is_err());
     assert!(parse("struct Color { fn value() -> Number }").is_err());
+    assert!(parse("trait Add { const VALUE: Number = 1 }").is_err());
 }

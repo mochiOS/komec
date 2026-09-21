@@ -8,7 +8,7 @@ use kome_ast::{
     declarations::{
         Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase, EnumDeclaration,
         ForDeclaration, FunctionDeclaration, Module, RecipeDeclaration, StructDeclaration,
-        TypeMember,
+        TraitDeclaration, TypeMember,
     },
     expressions::{
         AssignmentExpression, BinaryExpression, BlockExpression, CallArg, CallExpression,
@@ -168,6 +168,7 @@ impl ScopeBuilder {
             Declaration::Component(comp) => self.visit_component_declaration(comp),
             Declaration::Function(func) => self.visit_function_declaration(func),
             Declaration::Struct(struct_decl) => self.visit_struct_declaration(struct_decl),
+            Declaration::Trait(trait_decl) => self.visit_trait_declaration(trait_decl),
             Declaration::For(for_decl) => self.visit_for_declaration(for_decl),
             Declaration::Let(binding) => {
                 self.errors
@@ -306,6 +307,22 @@ impl ScopeBuilder {
         }
 
         self.visit_type_members(&declaration.members);
+    }
+
+    fn visit_trait_declaration(&mut self, declaration: &TraitDeclaration) {
+        self.declare(
+            declaration.span,
+            Symbol::TraitType {
+                name: declaration.name.clone(),
+                span: declaration.span,
+            },
+        );
+
+        self.enter_scope(ScopeKind::Type);
+        for function in &declaration.functions {
+            self.visit_function_declaration(function);
+        }
+        self.exit_scope();
     }
 
     fn visit_type_members(&mut self, members: &[TypeMember]) {

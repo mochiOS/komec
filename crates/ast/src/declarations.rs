@@ -1,4 +1,4 @@
-//! Declarations for `component`, `function`, `struct`, `for`,
+//! Declarations for `component`, `function`, `struct`, `trait`, `for`,
 //! `recipe`, `state`, `let`, `const`, and `use`.
 
 use crate::{AstNode, Span};
@@ -9,6 +9,7 @@ pub enum Declaration {
     Component(ComponentDeclaration),
     Function(FunctionDeclaration),
     Struct(StructDeclaration),
+    Trait(TraitDeclaration),
     For(ForDeclaration),
     Let(Binding),
     Constant(Binding),
@@ -33,6 +34,14 @@ pub struct StructField {
     pub span: Span,
     pub name: String,
     pub type_: crate::types::Type,
+}
+
+/// A trait declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDeclaration {
+    pub span: Span,
+    pub name: String,
+    pub functions: Vec<FunctionDeclaration>,
 }
 
 /// A declaration in a struct or type implementation body.
@@ -347,6 +356,7 @@ impl AstNode for Declaration {
             Declaration::Component(declaration) => declaration.span,
             Declaration::Function(declaration) => declaration.span,
             Declaration::Struct(declaration) => declaration.span,
+            Declaration::Trait(declaration) => declaration.span,
             Declaration::For(declaration) => declaration.span,
             Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
             Declaration::Use(declaration) => declaration.span,

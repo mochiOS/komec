@@ -9,7 +9,7 @@ use kome_ast::{
     declarations::{
         Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
         EnumDeclaration, ForDeclaration, FunctionDeclaration, Module, RecipeDeclaration,
-        StructDeclaration, StructField, TypeMember, UseDeclaration,
+        StructDeclaration, StructField, TraitDeclaration, TypeMember, UseDeclaration,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
@@ -83,6 +83,10 @@ impl Parser {
             return self
                 .parse_struct_declaration(attributes)
                 .map(Declaration::Struct);
+        }
+
+        if self.at(|kind| matches!(kind, TokenKind::Trait)) && attributes.is_empty() {
+            return self.parse_trait_declaration().map(Declaration::Trait);
         }
 
         if self.at(|kind| matches!(kind, TokenKind::For)) && attributes.is_empty() {
@@ -205,6 +209,36 @@ impl Parser {
             target,
             trait_,
             members,
+        })
+    }
+
+    fn parse_trait_declaration(&mut self) -> Result<TraitDeclaration, ParseError> {
+        let keyword = self.expect("`trait`", |kind| matches!(kind, TokenKind::Trait))?;
+        let (name, _) = self.expect_identifier("a trait name")?;
+        self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
+        let mut functions = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            let attributes = self.parse_attributes()?;
+            if !self.at(|kind| matches!(kind, TokenKind::Fn)) {
+                return Err(self.expected("a `fn` trait member"));
+            }
+            functions.push(self.parse_function_declaration(attributes)?);
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            }
+        }
+
+        let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
+        Ok(TraitDeclaration {
+            span: Span::new(keyword.span.start, closing.span.end),
+            name,
+            functions,
         })
     }
 
