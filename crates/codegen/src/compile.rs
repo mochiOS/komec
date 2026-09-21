@@ -223,6 +223,7 @@ pub fn compile_module<M: Module>(
                 foreign: &foreign,
                 native_symbols: &mut native_symbols,
                 scopes: vec![HashMap::new()],
+                remaining_reads: HashMap::new(),
                 return_type: signature.ret,
                 terminated: false,
             };
@@ -438,6 +439,10 @@ fn analyze_signature(function: &FunctionDeclaration) -> CodegenResult<FunctionSi
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueOwnership {
     Borrowed,
+    BorrowedMovable {
+        scope: usize,
+        variable: Variable,
+    },
     Owned,
 }
 
@@ -499,6 +504,7 @@ struct FunctionTranslator<'b, 'c, 'a, M: Module> {
     foreign: &'b ForeignFunctions,
     native_symbols: &'b mut NativeSymbolPool,
     scopes: Vec<HashMap<String, ScopedVariable>>,
+    remaining_reads: HashMap<String, usize>,
     return_type: KomeType,
     terminated: bool,
 }
@@ -508,6 +514,63 @@ struct ScopedVariable {
     variable: Variable,
     kome_type: KomeType,
     owns_value: bool,
+}
+
+fn count_variable_reads(block: &BlockStatement) -> HashMap<String, usize> {
+    let mut reads = HashMap::new();
+
+    for statement in &block.statements {
+        count_statement_reads(statement, &mut reads);
+    }
+
+    reads
+}
+
+fn count_statement_reads(statement: &Statement, reads: &mut HashMap<String, usize>) {
+    match statement {
+        Statement::Expression(statement) => count_expression_reads(&statement.expression, reads),
+        Statement::Return(statement) => {
+            if let Some(argument) = &statement.argument {
+                count_expression_reads(argument, reads);
+            }
+        }
+        Statement::Let(binding) => {
+            if let Some(init) = &binding.init {
+                count_expression_reads(init, reads);
+            }
+        }
+        Statement::Block(block) => {
+            for statement in &block.statements {
+                count_statement_reads(statement, reads);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn count_expression_reads(expression: &Expression, reads: &mut HashMap<String, usize>) {
+    match expression {
+        Expression::Ident(identifier) => {
+            *reads.entry(identifier.name.clone()).or_default() += 1;
+        }
+        Expression::Group(group) => count_expression_reads(&group.expression, reads),
+        Expression::Binary(binary) => {
+            count_expression_reads(&binary.left, reads);
+            count_expression_reads(&binary.right, reads);
+        }
+        Expression::Call(call) => {
+            for argument in &call.args {
+                match argument {
+                    CallArg::Positional(value) => count_expression_reads(value, reads),
+                    CallArg::Named { value, .. } => count_expression_reads(value, reads),
+                }
+            }
+        }
+        Expression::Assign(assignment) => {
+            count_expression_reads(&assignment.value, reads);
+        }
+        _ => {}
+    }
 }
 
 impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
@@ -530,6 +593,8 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 declaration.span,
             )
         })?;
+
+        self.remaining_reads = count_variable_reads(body);
 
         let parameters = self.builder.block_params(entry_block).to_vec();
 
@@ -737,10 +802,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         })?;
 
         let owns_value = if kome_type == KomeType::Number {
-            if ownership == ValueOwnership::Borrowed {
-                self.retain_number(value);
-            }
-
+            self.take_number_ownership(value, ownership);
             true
         } else {
             false
@@ -834,12 +896,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         &mut self,
         identifier: &IdentifierExpression,
     ) -> CodegenResult<TypedValue> {
-        let scoped = self
+        let scope = self
             .scopes
             .iter()
-            .rev()
-            .find_map(|scope| scope.get(&identifier.name))
-            .copied()
+            .rposition(|scope| scope.contains_key(&identifier.name))
             .ok_or_else(|| {
                 CodegenError::at(
                     format!("variable `{}` is not defined", identifier.name),
@@ -847,10 +907,31 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 )
             })?;
 
-        Ok(TypedValue::borrowed(
-            self.builder.use_var(scoped.variable),
-            scoped.kome_type,
-        ))
+        let scoped = self.scopes[scope][&identifier.name];
+
+        let remaining = self.remaining_reads.get_mut(&identifier.name).ok_or_else(|| {
+            CodegenError::at(
+                format!("internal error: missing read count for `{}`", identifier.name),
+                identifier.span,
+            )
+        })?;
+
+        *remaining -= 1;
+
+        let ownership = if scoped.kome_type == KomeType::Number && scoped.owns_value && *remaining == 0 {
+            ValueOwnership::BorrowedMovable {
+                scope,
+                variable: scoped.variable,
+            }
+        } else {
+            ValueOwnership::Borrowed
+        };
+
+        Ok(TypedValue {
+            value: Some(self.builder.use_var(scoped.variable)),
+            kome_type: scoped.kome_type,
+            ownership,
+        })
     }
 
     fn evaluate_group(&mut self, group: &GroupExpression) -> CodegenResult<TypedValue> {
@@ -1192,12 +1273,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             ));
         };
 
-        let scoped = self
+        let scope = self
             .scopes
             .iter()
-            .rev()
-            .find_map(|scope| scope.get(&identifier.name))
-            .copied()
+            .rposition(|scope| scope.contains_key(&identifier.name))
             .ok_or_else(|| {
                 CodegenError::at(
                     format!("variable `{}` is not defined", identifier.name),
@@ -1205,6 +1284,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 )
             })?;
 
+        let scoped = self.scopes[scope][&identifier.name];
         let typed = self.evaluate(&assignment.value)?;
 
         if typed.kome_type != scoped.kome_type {
@@ -1222,15 +1302,20 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         match assignment.op {
             AssignOp::Assign => {
                 let value = self.own_value(typed, assignment.value.span())?;
-                if scoped.kome_type == KomeType::Number && scoped.owns_value {
+
+                if scoped.kome_type == KomeType::Number && self.scopes[scope][&identifier.name].owns_value {
                     let old = self.builder.use_var(scoped.variable);
                     self.release_number(old);
                 }
 
                 self.builder.def_var(scoped.variable, value);
+
+                if scoped.kome_type == KomeType::Number {
+                    self.scopes[scope].get_mut(&identifier.name).unwrap().owns_value = true;
+                }
+
                 Ok(TypedValue::borrowed(value, scoped.kome_type))
             }
-
             _ => Err(CodegenError::at(
                 "compound assignment is not supported yet",
                 assignment.span,
@@ -1420,11 +1505,28 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
     fn own_value(&mut self, value: TypedValue, span: Span) -> CodegenResult<ir::Value> {
         let raw = value.expect_value(span)?;
 
-        if value.kome_type == KomeType::Number && value.ownership == ValueOwnership::Borrowed {
-            self.retain_number(raw);
+        if value.kome_type == KomeType::Number {
+            self.take_number_ownership(raw, value.ownership);
         }
 
         Ok(raw)
+    }
+
+    fn take_number_ownership(&mut self, value: ir::Value, ownership: ValueOwnership) {
+        match ownership {
+            ValueOwnership::Owned => {}
+            ValueOwnership::Borrowed => {
+                self.retain_number(value);
+            }
+            ValueOwnership::BorrowedMovable { scope, variable } => {
+                let scoped = self.scopes[scope]
+                    .values_mut()
+                    .find(|scoped| scoped.variable == variable)
+                    .expect("movable variable must still exist");
+
+                scoped.owns_value = false;
+            }
+        }
     }
 
     fn release_owned_numbers(&mut self) {
