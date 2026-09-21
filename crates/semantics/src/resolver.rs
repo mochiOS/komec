@@ -300,7 +300,24 @@ impl ScopeBuilder {
     // -- binding/pattern visitors --
 
     fn register_binding(&mut self, binding: &Binding) {
-        self.visit_pattern_binding(&binding.pattern);
+        if let Pattern::Ident(ident) = &binding.pattern {
+            self.declare(
+                ident.span,
+                Symbol::Variable {
+                    name: ident.name.clone(),
+                    span: ident.span,
+                    mutable: binding.mutable,
+                },
+            );
+
+            if let Some(ref type_ann) = ident.type_annotation {
+                self.visit_type(type_ann);
+            }
+
+            if let Some(ref default) = ident.default {
+                self.visit_expression(default);
+            }
+        }
 
         if let Some(ref type_ann) = binding.type_annotation {
             self.visit_type(type_ann);
@@ -318,6 +335,7 @@ impl ScopeBuilder {
                 Symbol::Variable {
                     name: ident.name.clone(),
                     span: ident.span,
+                    mutable: false,
                 },
             );
 
@@ -462,6 +480,17 @@ impl ScopeBuilder {
     }
 
     fn visit_assignment_expression(&mut self, assign: &AssignmentExpression) {
+        if let Expression::Ident(ident) = assign.target.as_ref() {
+            if let Some(symbol_id) = self.resolve_name(&ident.name) {
+                if let Symbol::Variable { mutable: false, .. } = &self.symbols[symbol_id] {
+                    self.errors.push(ResolutionError::AssignmentToImmutable {
+                        name: ident.name.clone(),
+                        span: ident.span,
+                    });
+                }
+            }
+        }
+
         self.visit_expression(&assign.target);
         self.visit_expression(&assign.value);
     }
@@ -535,6 +564,7 @@ impl ScopeBuilder {
                     Symbol::Variable {
                         name: ident.name.clone(),
                         span: ident.span,
+                        mutable: false,
                     },
                 );
             }

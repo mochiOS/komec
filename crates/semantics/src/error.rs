@@ -12,6 +12,10 @@ pub enum ResolutionError {
         first: Span,
         second: Span,
     },
+    AssignmentToImmutable {
+        name: String,
+        span: Span,
+    },
     ScopeStackEmpty,
     InvalidLetLocation {
         span: Span,
@@ -39,6 +43,14 @@ impl fmt::Display for ResolutionError {
                     "duplicate definition of `{name}` at byte range {}..{}; \
                      first defined at byte range {}..{}",
                     second.start, second.end, first.start, first.end,
+                )
+            }
+
+            Self::AssignmentToImmutable { name, span } => {
+                write!(
+                    formatter,
+                    "cannot assign to immutable variable `{name}` at byte range {}..{}",
+                    span.start, span.end,
                 )
             }
 

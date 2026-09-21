@@ -2,7 +2,6 @@ mod stdlib;
 
 use kome_ast::declarations::Module;
 use kome_semantics::{error::ResolutionError, resolver::ScopeBuilder};
-use komec::stdlib::StandardLibrary;
 use std::{env, fs, path::Path, path::PathBuf, process::ExitCode};
 
 const USAGE: &str = "usage: komec <check|run|build> <file> [output]";
@@ -84,6 +83,13 @@ fn format_resolution_error(error: &ResolutionError) -> String {
                 "duplicate definition of `{name}` at byte range {}..{}; \
                  first defined at byte range {}..{}",
                 second.start, second.end, first.start, first.end,
+            )
+        }
+
+        ResolutionError::AssignmentToImmutable { name, span } => {
+            format!(
+                "cannot assign to immutable variable `{name}` at byte range {}..{}",
+                span.start, span.end,
             )
         }
 

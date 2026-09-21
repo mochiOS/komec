@@ -278,3 +278,45 @@ fn rejects_component_level_let() {
         other => panic!("expected InvalidLetLocation, got {other:?}"),
     }
 }
+
+#[test]
+fn rejects_assignment_to_immutable_variable() {
+    let source = "fn foo() { let x = 1 x = 2 }";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert_eq!(result.errors.len(), 1);
+
+    match &result.errors[0] {
+        kome_semantics::error::ResolutionError::AssignmentToImmutable { name, .. } => {
+            assert_eq!(name, "x");
+        }
+        other => panic!("expected AssignmentToImmutable, got {other:?}"),
+    }
+}
+
+#[test]
+fn allows_assignment_to_mutable_variable() {
+    let source = "fn foo() { var x = 1 x = 2 }";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn rejects_compound_assignment_to_immutable_variable() {
+    let source = "fn foo() { let x = 1 x += 1 }";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert_eq!(result.errors.len(), 1);
+
+    assert!(matches!(
+        &result.errors[0],
+        kome_semantics::error::ResolutionError::AssignmentToImmutable {
+            name,
+            ..
+        } if name == "x"
+    ));
+}

@@ -27,15 +27,42 @@ pub struct Scope {
 
 #[derive(Debug, Clone)]
 pub enum Symbol {
-    Component { name: String, span: Span },
-    Function { name: String, span: Span },
-    Parameter { name: String, span: Span },
-    Variable { name: String, span: Span },
-    Recipe { name: String, span: Span },
-    EnumType { name: String, span: Span },
-    EnumCase { name: String, span: Span },
-    ImportedName { name: String, span: Span },
-    BuiltinFunction { name: String },
+    Component {
+        name: String,
+        span: Span,
+    },
+    Function {
+        name: String,
+        span: Span,
+    },
+    Parameter {
+        name: String,
+        span: Span,
+    },
+    Variable {
+        name: String,
+        span: Span,
+        mutable: bool,
+    },
+    Recipe {
+        name: String,
+        span: Span,
+    },
+    EnumType {
+        name: String,
+        span: Span,
+    },
+    EnumCase {
+        name: String,
+        span: Span,
+    },
+    ImportedName {
+        name: String,
+        span: Span,
+    },
+    BuiltinFunction {
+        name: String,
+    },
 }
 
 impl Symbol {
