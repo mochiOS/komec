@@ -397,3 +397,52 @@ fn main() {
 
     clear_thread_registry();
 }
+
+#[test]
+fn handles_owned_number_temporary_in_arithmetic() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    let a = 100000000000000000000000000000
+    let b = 200000000000000000000000000000
+    let c = 3
+    let result = (a + b) * c
+    report(result)
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(
+            Number::parse("900000000000000000000000000000").unwrap()
+        )]
+    );
+    assert!(capture.number_is_unique(0));
+
+    clear_thread_registry();
+}
+
+#[test]
+fn handles_owned_number_temporary_in_comparison() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: bool)
+
+fn main() {
+    let a = 100000000000000000000000000000
+    let b = 200000000000000000000000000000
+    let c = 400000000000000000000000000000
+    report((a + b) < c)
+}
+"#);
+
+    assert_eq!(capture.recorded(), vec![Value::Boolean(true)]);
+
+    clear_thread_registry();
+}
