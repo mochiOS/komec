@@ -1,5 +1,6 @@
 //! JIT execution tests using a thread-local native registry for capture.
 
+use kome_native_rt::number::Number;
 use kome_native_rt::{
     NativeRegistry, RuntimeError, Value, clear_thread_registry, set_thread_registry,
 };
@@ -36,6 +37,16 @@ impl Capture {
     fn recorded(&self) -> Vec<Value> {
         self.values.lock().unwrap().clone()
     }
+
+    fn number_is_unique(&self, index: usize) -> bool {
+        let values = self.values.lock().unwrap();
+
+        let Value::Number(number) = &values[index] else {
+            panic!("captured value is not a Number");
+        };
+
+        number.is_unique()
+    }
 }
 
 fn run(source: &str) {
@@ -61,7 +72,7 @@ fn main() {
 }
 "#);
 
-    assert_eq!(capture.recorded(), vec![Value::bool(true)]);
+    assert_eq!(capture.recorded(), vec![Value::Boolean(true)]);
 
     clear_thread_registry();
 }
@@ -81,11 +92,14 @@ fn add(a: Number, b: Number) -> Number {
 fn main() {
     let total = add(20, 22)
     let doubled = total * 2
-    report(total + doubled - 4 / 2)
+    report(total + doubled - 2)
 }
 "#);
 
-    assert_eq!(capture.recorded(), vec![Value::Number(124.0)]);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("124").unwrap())]
+    );
 
     clear_thread_registry();
 }
@@ -139,7 +153,7 @@ fn main() {
 
     assert_eq!(
         capture.recorded(),
-        vec![Value::bool(true), Value::bool(false), Value::Null,]
+        vec![Value::Boolean(true), Value::Boolean(false), Value::Null,]
     );
 
     clear_thread_registry();
@@ -166,7 +180,10 @@ fn inner() -> Number {
 }
 "#);
 
-    assert_eq!(capture.recorded(), vec![Value::Number(42.0)]);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
 
     clear_thread_registry();
 }
@@ -222,4 +239,93 @@ fn main() {
     let j: f64 = 2.5
 }
 "#);
+}
+
+#[test]
+fn releases_copied_number_bindings() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    let a = 999999999999999999999999999999
+    let b = a
+    report(b)
+}
+"#);
+
+    assert!(capture.number_is_unique(0));
+
+    clear_thread_registry();
+}
+
+#[test]
+fn handles_number_self_assignment() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    var value = 999999999999999999999999999999
+    value = value
+    report(value)
+}
+"#);
+
+    assert!(capture.number_is_unique(0));
+
+    clear_thread_registry();
+}
+
+#[test]
+fn transfers_returned_number_ownership() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn make() -> Number {
+    let value = 999999999999999999999999999999
+    return value
+}
+
+fn main() {
+    let value = make()
+    report(value)
+}
+"#);
+
+    assert!(capture.number_is_unique(0));
+
+    clear_thread_registry();
+}
+
+#[test]
+fn releases_non_returned_numbers_on_return() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn make() -> Number {
+    let returned = 999999999999999999999999999999
+    let unused = 888888888888888888888888888888
+    return returned
+}
+
+fn main() {
+    let value = make()
+    report(value)
+}
+"#);
+
+    assert!(capture.number_is_unique(0));
+
+    clear_thread_registry();
 }

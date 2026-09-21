@@ -52,7 +52,9 @@ impl KomeType {
             PrimitiveTypeKind::U64 => Ok(Self::U64),
             PrimitiveTypeKind::F32 => Ok(Self::F32),
             PrimitiveTypeKind::F64 => Ok(Self::F64),
-            PrimitiveTypeKind::String => unreachable!("String is rejected before code generation"),
+            PrimitiveTypeKind::String => {
+                Err(CodegenError::new("String is not supported yet", None))
+            }
             PrimitiveTypeKind::Null => Ok(Self::Null),
         }
     }
