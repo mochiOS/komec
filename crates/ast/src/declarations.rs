@@ -1,4 +1,4 @@
-//! Declarations for `component`, `function`, `struct`, `for`, `impl`,
+//! Declarations for `component`, `function`, `struct`, `for`,
 //! `recipe`, `state`, `let`, `const`, and `use`.
 
 use crate::{AstNode, Span};
@@ -10,7 +10,6 @@ pub enum Declaration {
     Function(FunctionDeclaration),
     Struct(StructDeclaration),
     For(ForDeclaration),
-    Impl(ImplDeclaration),
     Let(Binding),
     Constant(Binding),
     Use(UseDeclaration),
@@ -57,19 +56,19 @@ pub enum TypeMember {
 ///     }
 /// }
 /// ```
+///
+/// A trait implementation adds `: Trait` after the target type.
+///
+/// ```kome
+/// for Color: Add {
+///     fn add(self, other: Color) -> Color
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForDeclaration {
     pub span: Span,
     pub target: crate::types::Type,
-    pub members: Vec<TypeMember>,
-}
-
-/// An implementation of a trait for one named type.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImplDeclaration {
-    pub span: Span,
-    pub trait_: crate::types::Type,
-    pub target: crate::types::Type,
+    pub trait_: Option<crate::types::Type>,
     pub members: Vec<TypeMember>,
 }
 
@@ -350,7 +349,6 @@ impl AstNode for Declaration {
             Declaration::Function(declaration) => declaration.span,
             Declaration::Struct(declaration) => declaration.span,
             Declaration::For(declaration) => declaration.span,
-            Declaration::Impl(declaration) => declaration.span,
             Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
             Declaration::Use(declaration) => declaration.span,
             Declaration::Enum(declaration) => declaration.span,
@@ -386,12 +384,6 @@ impl AstNode for TypeMember {
 }
 
 impl AstNode for ForDeclaration {
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
-impl AstNode for ImplDeclaration {
     fn span(&self) -> Span {
         self.span
     }

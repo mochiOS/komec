@@ -7,8 +7,8 @@ use kome_ast::declarations::{PathSegmentKind, UseImport};
 use kome_ast::{
     declarations::{
         Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase, EnumDeclaration,
-        ForDeclaration, FunctionDeclaration, ImplDeclaration, Module, RecipeDeclaration,
-        StructDeclaration, TypeMember,
+        ForDeclaration, FunctionDeclaration, Module, RecipeDeclaration, StructDeclaration,
+        TypeMember,
     },
     expressions::{
         AssignmentExpression, BinaryExpression, BlockExpression, CallArg, CallExpression,
@@ -169,7 +169,6 @@ impl ScopeBuilder {
             Declaration::Function(func) => self.visit_function_declaration(func),
             Declaration::Struct(struct_decl) => self.visit_struct_declaration(struct_decl),
             Declaration::For(for_decl) => self.visit_for_declaration(for_decl),
-            Declaration::Impl(impl_decl) => self.visit_impl_declaration(impl_decl),
             Declaration::Let(binding) => {
                 self.errors
                     .push(ResolutionError::InvalidLetLocation { span: binding.span });
@@ -301,12 +300,6 @@ impl ScopeBuilder {
     }
 
     fn visit_for_declaration(&mut self, declaration: &ForDeclaration) {
-        self.visit_type(&declaration.target);
-        self.visit_type_members(&declaration.members);
-    }
-
-    fn visit_impl_declaration(&mut self, declaration: &ImplDeclaration) {
-        self.visit_type(&declaration.trait_);
         self.visit_type(&declaration.target);
         self.visit_type_members(&declaration.members);
     }

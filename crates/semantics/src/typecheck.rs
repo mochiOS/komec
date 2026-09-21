@@ -318,10 +318,6 @@ impl TypeChecker {
                     self.visit_type_members(&declaration.members);
                 }
 
-                Declaration::Impl(declaration) => {
-                    self.visit_type_members(&declaration.members);
-                }
-
                 _ => {}
             }
         }

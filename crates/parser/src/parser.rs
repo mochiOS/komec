@@ -8,8 +8,8 @@ use kome_ast::{
     AstNode, Span,
     declarations::{
         Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
-        EnumDeclaration, ForDeclaration, FunctionDeclaration, ImplDeclaration, Module,
-        RecipeDeclaration, StructDeclaration, StructField, TypeMember, UseDeclaration,
+        EnumDeclaration, ForDeclaration, FunctionDeclaration, Module, RecipeDeclaration,
+        StructDeclaration, StructField, TypeMember, UseDeclaration,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
@@ -87,10 +87,6 @@ impl Parser {
 
         if self.at(|kind| matches!(kind, TokenKind::For)) && attributes.is_empty() {
             return self.parse_for_declaration().map(Declaration::For);
-        }
-
-        if self.at(|kind| matches!(kind, TokenKind::Impl)) && attributes.is_empty() {
-            return self.parse_impl_declaration().map(Declaration::Impl);
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Enum)) {
@@ -218,26 +214,18 @@ impl Parser {
     fn parse_for_declaration(&mut self) -> Result<ForDeclaration, ParseError> {
         let keyword = self.expect("`for`", |kind| matches!(kind, TokenKind::For))?;
         let target = self.parse_type()?;
+        let trait_ = if self.at(|kind| matches!(kind, TokenKind::Colon)) {
+            self.advance();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
         let (members, end) = self.parse_type_members()?;
 
         Ok(ForDeclaration {
             span: Span::new(keyword.span.start, end),
             target,
-            members,
-        })
-    }
-
-    fn parse_impl_declaration(&mut self) -> Result<ImplDeclaration, ParseError> {
-        let keyword = self.expect("`impl`", |kind| matches!(kind, TokenKind::Impl))?;
-        let trait_ = self.parse_type()?;
-        self.expect("`for`", |kind| matches!(kind, TokenKind::For))?;
-        let target = self.parse_type()?;
-        let (members, end) = self.parse_type_members()?;
-
-        Ok(ImplDeclaration {
-            span: Span::new(keyword.span.start, end),
             trait_,
-            target,
             members,
         })
     }
