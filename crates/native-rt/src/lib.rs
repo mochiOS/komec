@@ -13,7 +13,8 @@ pub mod number;
 pub mod string;
 
 use crate::number::Number;
-use kome_abi::{Slot, TAG_BOOLEAN, TAG_NULL, TAG_NUMBER, TAG_VOID};
+use crate::string::KomeString;
+use kome_abi::{Slot, TAG_BOOLEAN, TAG_NULL, TAG_NUMBER, TAG_STRING, TAG_VOID};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
@@ -25,6 +26,7 @@ use std::sync::{Arc, OnceLock};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Number(Number),
+    String(KomeString),
     Boolean(bool),
     Null,
 }
@@ -33,6 +35,7 @@ impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Number(value) => write!(formatter, "{value}"),
+            Self::String(value) => write!(formatter, "{value}"),
             Self::Boolean(value) => write!(formatter, "{value}"),
             Self::Null => formatter.write_str("null"),
         }
@@ -189,6 +192,9 @@ fn slot_to_value(slot: &Slot) -> Result<Value, String> {
         TAG_NUMBER => Ok(Value::Number(unsafe {
             Number::from_raw_retain(slot.payload as u64)
         })),
+        TAG_STRING => Ok(Value::String(unsafe {
+            KomeString::from_raw_retain(slot.payload as u64)
+        })),
         TAG_BOOLEAN => Ok(Value::Boolean(slot.payload != 0)),
         TAG_NULL => Ok(Value::Null),
         _ => Err(format!(
@@ -216,6 +222,7 @@ fn payload_for_return(value: &Value, ret_tag: i64) -> Result<i64, String> {
 fn scalar_payload(value: &Value) -> i64 {
     match value {
         Value::Number(number) => number.clone().into_raw() as i64,
+        Value::String(string) => string.clone().into_raw() as i64,
         Value::Boolean(flag) => i64::from(*flag),
         Value::Null => 0,
     }
@@ -224,6 +231,7 @@ fn scalar_payload(value: &Value) -> i64 {
 fn value_tag(value: &Value) -> i64 {
     match value {
         Value::Number(_) => TAG_NUMBER,
+        Value::String(_) => TAG_STRING,
         Value::Boolean(_) => TAG_BOOLEAN,
         Value::Null => TAG_NULL,
     }
@@ -232,6 +240,7 @@ fn value_tag(value: &Value) -> i64 {
 fn value_type_name(value: &Value) -> &'static str {
     match value {
         Value::Number(_) => "Number",
+        Value::String(_) => "String",
         Value::Boolean(_) => "bool",
         Value::Null => "Null",
     }
