@@ -1,0 +1,10 @@
+[package]
+name = "kome_native_rt"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+kome_abi.workspace = true

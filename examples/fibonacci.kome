@@ -1,0 +1,26 @@
+// use std::io
+
+fn main() {
+    let mut a = 0
+    let mut b = 1
+
+    // println("{a}")
+    let temp = a
+    a = b
+    b = temp + b
+
+    // println("{a}")
+    let temp = a
+    a = b
+    b = temp + b
+
+    // println("{a}")
+    let temp = a
+    a = b
+    b = temp + b
+
+    // println("{a}")
+    let temp = a
+    a = b
+    b = temp + b
+}

@@ -6,10 +6,14 @@ edition = "2024"
 [workspace]
 resolver = "3"
 members = [
+  "crates/abi",
   "crates/ast",
+  "crates/codegen",
+  "crates/jit",
   "crates/lsp",
+  "crates/native-rt",
+  "crates/aot",
   "crates/parser",
-  "crates/runtime",
   "crates/semantics",
 ]
 
@@ -17,16 +21,30 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
+kome_abi = { path = "crates/abi" }
 kome_ast = { path = "crates/ast" }
+kome_codegen = { path = "crates/codegen" }
+kome_jit = { path = "crates/jit" }
+kome_aot = { path = "crates/aot" }
+kome_native_rt = { path = "crates/native-rt" }
 kome_parser = { path = "crates/parser" }
 kome_semantics = { path = "crates/semantics" }
-kome_runtime = { path = "crates/runtime" }
+
+cranelift = "0.135.0"
+cranelift-codegen = "0.135.0"
+cranelift-frontend = "0.135.0"
+cranelift-jit = "0.135.0"
+cranelift-module = "0.135.0"
+cranelift-native = "0.135.0"
+cranelift-object = "0.135.0"
 
 [dependencies]
 kome_ast.workspace = true
+kome_codegen.workspace = true
+kome_jit.workspace = true
+kome_aot.workspace = true
 kome_parser.workspace = true
 kome_semantics.workspace = true
-kome_runtime.workspace = true
 
 serde = { version = "1", features = ["derive"] }
-toml = "1.1.2+spec-1.1.0"
+toml = "1.1.2"

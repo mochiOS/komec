@@ -1,13 +1,11 @@
-mod platform;
 mod stdlib;
 
 use kome_ast::declarations::Module;
-use kome_runtime::Interpreter;
 use kome_semantics::{error::ResolutionError, resolver::ScopeBuilder};
 use komec::stdlib::StandardLibrary;
-use std::{env, fs, path::Path, process::ExitCode};
+use std::{env, fs, path::Path, path::PathBuf, process::ExitCode};
 
-const USAGE: &str = "usage: komec <check|run> <file>";
+const USAGE: &str = "usage: komec <check|run|build> <file> [output]";
 
 fn main() -> ExitCode {
     match run() {
@@ -31,13 +29,24 @@ fn run() -> Result<(), String> {
 
     let path = arguments.next().ok_or_else(|| USAGE.to_string())?;
 
+    let output = arguments.next();
+
     if arguments.next().is_some() {
         return Err(USAGE.to_string());
     }
 
     match command {
         "check" => check(Path::new(&path)),
-        "run" => run_program(Path::new(&path)),
+
+        "run" => {
+            if output.is_some() {
+                return Err(USAGE.to_string());
+            }
+
+            run_program(Path::new(&path))
+        }
+
+        "build" => build_program(Path::new(&path), output.as_deref()),
 
         unknown => Err(format!("unknown command `{unknown}`\n{USAGE}")),
     }
@@ -91,38 +100,51 @@ fn format_resolution_error(error: &ResolutionError) -> String {
 
 fn run_program(path: &Path) -> Result<(), String> {
     let module = load_checked_module(path)?;
-    let natives = platform::native_registry();
 
-    let mut interpreter = Interpreter::new(&module, &natives).map_err(|error| error.to_string())?;
+    kome_jit::execute(&module, "main").map_err(|error| error.to_string())
+}
 
-    interpreter
-        .run_entry("main")
-        .map_err(|error| error.to_string())?;
+fn build_program(path: &Path, output: Option<&std::ffi::OsStr>) -> Result<(), String> {
+    let module = load_checked_module(path)?;
+
+    let output = match output {
+        Some(path) => PathBuf::from(path),
+
+        None => PathBuf::from(
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("kome-program"),
+        ),
+    };
+
+    kome_aot::build_executable(&module, &output).map_err(|error| error.to_string())?;
+
+    println!("built `{}`", output.display());
 
     Ok(())
 }
 
 fn load_checked_module(path: &Path) -> Result<Module, String> {
-    let standard_library = StandardLibrary::discover()?;
+    // let standard_library = StandardLibrary::discover()?;
 
-    let prelude_resolution = ScopeBuilder::resolve(standard_library.prelude());
+    // let prelude_resolution = ScopeBuilder::resolve(standard_library.prelude());
 
-    if !prelude_resolution.errors.is_empty() {
-        print_resolution_errors(standard_library.prelude_path(), &prelude_resolution.errors);
+    // if !prelude_resolution.errors.is_empty() {
+    //     print_resolution_errors(standard_library.prelude_path(), &prelude_resolution.errors);
 
-        return Err(format!(
-            "standard library check failed with {} semantic error(s)",
-            prelude_resolution.errors.len(),
-        ));
-    }
+    //     return Err(format!(
+    //         "standard library check failed with {} semantic error(s)",
+    //         prelude_resolution.errors.len(),
+    //     ));
+    // }
 
     let source = fs::read_to_string(path)
         .map_err(|error| format!("failed to read `{}`: {error}", path.display(),))?;
 
-    let application =
+    let module =
         kome_parser::parse(&source).map_err(|error| format!("{}: {error}", path.display()))?;
 
-    let module = standard_library.merge_with_imports(application)?;
+    // let module = standard_library.merge_with_imports(application)?;
 
     let resolution = ScopeBuilder::resolve(&module);
 

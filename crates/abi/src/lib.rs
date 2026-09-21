@@ -4,20 +4,17 @@
 //! fixed 16-byte `{ tag, payload }` records. This crate deliberately contains
 //! no runtime value model or dispatch implementation.
 
-/// Payload holds the bit pattern of an `f64`.
-pub const TAG_NUMBER: i64 = 0;
-
-/// Payload holds `0` or `1`.
-pub const TAG_BOOLEAN: i64 = 1;
-
-/// Payload holds a pointer to a native-runtime string box.
-pub const TAG_STRING: i64 = 2;
-
 /// Payload is unused and always `0`.
-pub const TAG_NULL: i64 = 3;
+pub const TAG_NULL: i64 = 0;
 
 /// Used as a return-type tag when the native result is discarded.
-pub const TAG_VOID: i64 = 4;
+pub const TAG_VOID: i64 = 1;
+
+/// Payload holds the bit pattern of an `f64`.
+pub const TAG_NUMBER: i64 = 2;
+
+/// Payload holds `0` or `1`.
+pub const TAG_BOOLEAN: i64 = 3;
 
 /// One marshalled argument or return value exchanged with the native runtime.
 #[repr(C)]
@@ -28,7 +25,7 @@ pub struct Slot {
 }
 
 impl Slot {
-    /// Builds a slot for a scalar value (anything except a string).
+    /// Builds a scalar-value slot.
     pub fn scalar(tag: i64, payload: i64) -> Self {
         Self { tag, payload }
     }
