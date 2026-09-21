@@ -1,0 +1,3 @@
+[submodule "vendor/stdlib"]
+	path = vendor/stdlib
+	url = https://github.com/mochiOS/kome_std.git
