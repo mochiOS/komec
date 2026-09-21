@@ -243,6 +243,17 @@ impl Number {
 
         (number.coefficient.clone(), number.scale)
     }
+
+    /// Transfers ownership of this `Number` into its raw runtime representation.
+    ///
+    /// The caller becomes responsible for eventually releasing the returned value.
+    pub fn into_raw(self) -> u64 {
+        let raw = self.raw;
+
+        std::mem::forget(self);
+
+        raw
+    }
 }
 
 impl Clone for Number {
@@ -339,6 +350,117 @@ pub unsafe fn retain(raw: u64) {
 /// one reference to it.
 pub unsafe fn release(raw: u64) {
     release_raw(raw);
+}
+
+// -- Public ABI --
+
+/// Increments the reference count for a raw `Number` representation.
+///
+/// Inline numbers require no bookkeeping.
+///
+/// # Safety
+///
+/// `raw` must be a valid Kome `Number` representation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_retain(raw: u64) {
+    unsafe {
+        retain(raw);
+    }
+}
+
+/// Decrements the reference count for a raw `Number` representation.
+///
+/// # Safety
+///
+/// `raw` must be a valid Kome `Number` representation and the caller must own
+/// one reference to it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_release(raw: u64) {
+    unsafe {
+        release(raw);
+    }
+}
+
+/// Parses a UTF-8 decimal number literal into a runtime `Number`.
+///
+/// Returns `0` when the input is invalid.
+///
+/// # Safety
+///
+/// `pointer` must point to `length` bytes of valid readable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_parse(pointer: *const u8, length: usize) -> u64 {
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+
+    let Ok(literal) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+
+    let Ok(number) = Number::parse(literal) else {
+        return 0;
+    };
+
+    number.into_raw()
+}
+
+/// Adds two runtime `Number` values.
+///
+/// # Safety
+///
+/// `left` and `right` must be valid Kome `Number` representations.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_add(left: u64, right: u64) -> u64 {
+    let left = unsafe { Number::from_raw_retain(left) };
+    let right = unsafe { Number::from_raw_retain(right) };
+
+    left.add(&right).into_raw()
+}
+
+/// Subtracts two runtime `Number` values.
+///
+/// # Safety
+///
+/// `left` and `right` must be valid Kome `Number` representations.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_sub(left: u64, right: u64) -> u64 {
+    let left = unsafe { Number::from_raw_retain(left) };
+    let right = unsafe { Number::from_raw_retain(right) };
+
+    left.sub(&right).into_raw()
+}
+
+/// Multiplies two runtime `Number` values.
+///
+/// # Safety
+///
+/// `left` and `right` must be valid Kome `Number` representations.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_mul(left: u64, right: u64) -> u64 {
+    let left = unsafe { Number::from_raw_retain(left) };
+    let right = unsafe { Number::from_raw_retain(right) };
+
+    left.mul(&right).into_raw()
+}
+
+/// Compares two runtime `Number` values.
+///
+/// Returns `-1`, `0`, or `1`.
+///
+/// # Safety
+///
+/// `left` and `right` must be valid Kome `Number` representations.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_compare(left: u64, right: u64) -> i32 {
+    use std::cmp::Ordering;
+
+    let left = unsafe { Number::from_raw_retain(left) };
+    let right = unsafe { Number::from_raw_retain(right) };
+
+    match left.compare(&right) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    }
 }
 
 fn parse_decimal(literal: &str) -> Option<(BigInt, u32)> {
