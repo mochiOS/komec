@@ -1115,11 +1115,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             .symbol_value(self.module.target_config().pointer_type(), global))
     }
 
-    fn release_owned_temporary(
-        &mut self,
-        value: TypedValue,
-        span: Span,
-    ) -> CodegenResult<()> {
+    fn release_owned_temporary(&mut self, value: TypedValue, span: Span) -> CodegenResult<()> {
         if value.kome_type == KomeType::Number && value.ownership == ValueOwnership::Owned {
             self.release_number(value.expect_value(span)?);
         }
@@ -1372,10 +1368,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         };
 
         for argument in argument_values {
-            if argument.kome_type == KomeType::Number && argument.ownership == ValueOwnership::Owned
-            {
-                self.release_number(argument.expect_value(call.span)?);
-            }
+            self.release_owned_temporary(argument, call.span)?;
         }
 
         Ok(result)

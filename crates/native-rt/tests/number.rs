@@ -10,8 +10,7 @@ fn small_integer_is_inline() {
 
 #[test]
 fn large_integer_is_exact() {
-    let literal =
-        "9999999999999999999999999999999999999999999999999999999999999999";
+    let literal = "9999999999999999999999999999999999999999999999999999999999999999";
 
     let number = Number::parse(literal).unwrap();
 
@@ -23,10 +22,7 @@ fn large_integer_is_exact() {
 fn decimal_is_exact() {
     let number = Number::parse("1234567890.12345678901234567890").unwrap();
 
-    assert_eq!(
-        number.to_string(),
-        "1234567890.1234567890123456789"
-    );
+    assert_eq!(number.to_string(), "1234567890.1234567890123456789");
 }
 
 #[test]
@@ -69,8 +65,7 @@ fn multiplication_is_exact() {
 
 #[test]
 fn clone_shares_heap_number() {
-    let number =
-        Number::parse("999999999999999999999999999999999999999").unwrap();
+    let number = Number::parse("999999999999999999999999999999999999999").unwrap();
 
     assert!(number.is_unique());
 
