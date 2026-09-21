@@ -1,7 +1,10 @@
 mod stdlib;
 
 use kome_ast::declarations::Module;
-use kome_semantics::{error::ResolutionError, resolver::ScopeBuilder};
+use kome_semantics::{
+    error::ResolutionError, initialization::InitializationChecker, resolver::ScopeBuilder,
+    typecheck::TypeChecker,
+};
 use std::{env, fs, path::Path, path::PathBuf, process::ExitCode};
 
 const USAGE: &str = "usage: komec <check|run|build> <file> [output]";
@@ -160,6 +163,32 @@ fn load_checked_module(path: &Path) -> Result<Module, String> {
         return Err(format!(
             "check failed with {} semantic error(s)",
             resolution.errors.len(),
+        ));
+    }
+
+    let initialization = InitializationChecker::check(&module);
+
+    if !initialization.errors.is_empty() {
+        for error in &initialization.errors {
+            eprintln!("{}: {error}", path.display());
+        }
+
+        return Err(format!(
+            "check failed with {} initialization error(s)",
+            initialization.errors.len(),
+        ));
+    }
+
+    let type_check = TypeChecker::check(&module);
+
+    if !type_check.errors.is_empty() {
+        for error in &type_check.errors {
+            eprintln!("{}: {error}", path.display());
+        }
+
+        return Err(format!(
+            "check failed with {} type error(s)",
+            type_check.errors.len(),
         ));
     }
 
