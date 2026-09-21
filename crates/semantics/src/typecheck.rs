@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use kome_ast::declarations::{
-    Binding, ComponentDeclaration, ComponentMember, Declaration, FunctionDeclaration, Module,
-    StructDeclaration, TypeMember,
+    Binding, ComponentDeclaration, ComponentMember, Declaration, ForDeclaration,
+    FunctionDeclaration, Module, StructDeclaration, TypeMember,
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
@@ -118,6 +118,7 @@ impl std::error::Error for TypeCheckError {}
 pub struct TypeCheckResult {
     pub errors: Vec<TypeCheckError>,
     pub structs: HashMap<String, StructTypeInfo>,
+    pub implementations: Vec<TypeImplementationInfo>,
 }
 
 /// Semantic information retained for a declared struct.
@@ -125,6 +126,13 @@ pub struct TypeCheckResult {
 pub struct StructTypeInfo {
     pub fields: Option<HashMap<String, SemanticType>>,
     pub runtime: Option<String>,
+}
+
+/// Semantic target information for an inherent or trait implementation.
+#[derive(Debug, Clone)]
+pub struct TypeImplementationInfo {
+    pub target: SemanticType,
+    pub trait_: Option<SemanticType>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +172,7 @@ pub struct TypeChecker {
     functions: HashMap<String, FunctionSignature>,
     components: HashMap<String, ComponentSignature>,
     structs: HashMap<String, StructTypeInfo>,
+    implementations: Vec<TypeImplementationInfo>,
     return_type: SemanticType,
     errors: Vec<TypeCheckError>,
 }
@@ -176,6 +185,7 @@ impl TypeChecker {
             functions: HashMap::new(),
             components: HashMap::new(),
             structs: HashMap::new(),
+            implementations: Vec::new(),
             return_type: SemanticType::Void,
             errors: Vec::new(),
         };
@@ -186,6 +196,7 @@ impl TypeChecker {
         TypeCheckResult {
             errors: checker.errors,
             structs: checker.structs,
+            implementations: checker.implementations,
         }
     }
 
@@ -206,9 +217,20 @@ impl TypeChecker {
                     self.collect_component(component);
                 }
 
+                Declaration::For(declaration) => {
+                    self.collect_implementation(declaration);
+                }
+
                 _ => {}
             }
         }
+    }
+
+    fn collect_implementation(&mut self, declaration: &ForDeclaration) {
+        self.implementations.push(TypeImplementationInfo {
+            target: Self::type_from_annotation(&declaration.target),
+            trait_: declaration.trait_.as_ref().map(Self::type_from_annotation),
+        });
     }
 
     fn collect_struct(&mut self, struct_decl: &StructDeclaration) {

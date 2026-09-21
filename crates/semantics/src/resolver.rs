@@ -301,6 +301,11 @@ impl ScopeBuilder {
 
     fn visit_for_declaration(&mut self, declaration: &ForDeclaration) {
         self.visit_type(&declaration.target);
+
+        if let Some(trait_) = &declaration.trait_ {
+            self.visit_type(trait_);
+        }
+
         self.visit_type_members(&declaration.members);
     }
 
