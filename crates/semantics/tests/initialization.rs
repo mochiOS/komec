@@ -76,7 +76,7 @@ fn main() {
 fn allows_value_initialized_in_both_if_branches() {
     let module = parse(
         r#"
-fn main(condition: Boolean) {
+fn main(condition: bool) {
     var value: Number
 
     if condition {
@@ -100,7 +100,7 @@ fn main(condition: Boolean) {
 fn rejects_value_initialized_in_only_one_if_branch() {
     let module = parse(
         r#"
-fn main(condition: Boolean) {
+fn main(condition: bool) {
     var value: Number
 
     if condition {
@@ -123,7 +123,7 @@ fn main(condition: Boolean) {
 fn loop_assignment_does_not_guarantee_initialization() {
     let module = parse(
         r#"
-fn main(condition: Boolean) {
+fn main(condition: bool) {
     var value: Number
 
     while condition {

@@ -20,7 +20,7 @@ impl KomeType {
     pub fn from_annotation(annotation: &Type) -> CodegenResult<Self> {
         let Type::Primitive(primitive) = annotation else {
             return Err(CodegenError::at(
-                "only Number, Boolean, Null are supported now",
+                "only Number, bool, Null are supported now",
                 annotation.span(),
             ));
         };
@@ -31,7 +31,7 @@ impl KomeType {
     fn from_primitive_kind(kind: &PrimitiveTypeKind) -> CodegenResult<Self> {
         match kind {
             PrimitiveTypeKind::Number => Ok(Self::Number),
-            PrimitiveTypeKind::Boolean => Ok(Self::Boolean),
+            PrimitiveTypeKind::Bool => Ok(Self::Boolean),
             PrimitiveTypeKind::String => unreachable!("String is rejected before code generation"),
             PrimitiveTypeKind::Null => Ok(Self::Null),
         }
@@ -59,7 +59,7 @@ impl KomeType {
     pub fn name(self) -> &'static str {
         match self {
             Self::Number => "Number",
-            Self::Boolean => "Boolean",
+            Self::Boolean => "bool",
             Self::Null => "Null",
             Self::Void => "Void",
         }

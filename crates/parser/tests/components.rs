@@ -136,7 +136,7 @@ fn bodyless_component_preserves_parameters() {
         r#"
         component Button(
             title: String,
-            enabled: Boolean = true,
+            enabled: bool = true,
         )
         "#,
     )

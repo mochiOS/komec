@@ -678,7 +678,7 @@ impl Parser {
 
             "Number" => Some(PrimitiveTypeKind::Number),
 
-            "Boolean" => Some(PrimitiveTypeKind::Boolean),
+            "bool" => Some(PrimitiveTypeKind::Bool),
 
             "Null" => Some(PrimitiveTypeKind::Null),
 

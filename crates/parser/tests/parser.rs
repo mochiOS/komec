@@ -241,7 +241,7 @@ fn parses_multiple_component_parameters() {
         "component Button(",
         "title: String, ",
         "count: Number = 0, ",
-        "enabled: Boolean = true,",
+        "enabled: bool = true,",
         ") {}",
     );
 

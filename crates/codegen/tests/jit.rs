@@ -50,9 +50,9 @@ fn executes_kome_wrapper_around_native_function() {
 
     run(r#"
 @native("core.write_line")
-fn write_line_native(value: Boolean)
+fn write_line_native(value: bool)
 
-fn print(value: Boolean) {
+fn print(value: bool) {
     write_line_native(value)
 }
 
@@ -61,7 +61,7 @@ fn main() {
 }
 "#);
 
-    assert_eq!(capture.recorded(), vec![Value::Boolean(true)]);
+    assert_eq!(capture.recorded(), vec![Value::bool(true)]);
 
     clear_thread_registry();
 }
@@ -125,7 +125,7 @@ fn marshals_booleans_and_nulls_into_natives() {
 
     run(r#"
 @native("test.capture")
-fn report_flag(value: Boolean)
+fn report_flag(value: bool)
 
 @native("test.capture")
 fn report_nothing(value: Null)
@@ -139,7 +139,7 @@ fn main() {
 
     assert_eq!(
         capture.recorded(),
-        vec![Value::Boolean(true), Value::Boolean(false), Value::Null,]
+        vec![Value::bool(true), Value::bool(false), Value::Null,]
     );
 
     clear_thread_registry();

@@ -67,7 +67,7 @@
 
 | Node        | Description                                       |
 |-------------|---------------------------------------------------|
-| `Primitive` | Primitive (`String`, `Number`, `Boolean`, `Null`) |
+| `Primitive` | Primitive (`String`, `Number`, `bool`, `Null`) |
 | `Function`  | Function type (`(param) => ReturnType`)           |
 | `List`      | List type (`ElementType[]`)                       |
 | `Object`    | Object type (`{ key: Type }`)                     |

@@ -2,7 +2,7 @@
 //!
 //! The pipeline is statically typed: type annotations on parameters,
 //! returns, and `let` bindings drive the choice of native representations
-//! (`Number` → `F64`, `Boolean`/`Null` → `I8`, `String` → boxed pointer).
+//! (`Number` → `F64`, `bool`/`Null` → `I8`, `String` → boxed pointer).
 //!
 //! Runtime backends such as `kome_jit` and `kome_aot` use this crate's common
 //! AST analysis and Cranelift IR-generation pass.
