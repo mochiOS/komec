@@ -1,0 +1,13 @@
+@native("core.write_line")
+fn write_line(value: Number)
+
+fn make() -> Number {
+    let a = 999999999999999999999999999999
+    let b = 1
+    return a + b
+}
+
+fn main() {
+    let value = make()
+    write_line(value)
+}
