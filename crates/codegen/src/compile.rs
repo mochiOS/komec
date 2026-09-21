@@ -1368,6 +1368,13 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
     }
 
     fn evaluate_call(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
+        if matches!(call.callee.as_ref(), Expression::Member(_)) {
+            return Err(CodegenError::at(
+                "method and trait dispatch are not supported yet",
+                call.span,
+            ));
+        }
+
         let Expression::Ident(callee) = call.callee.as_ref() else {
             return Err(CodegenError::at(
                 "calling non-identifier expressions is not supported yet",
