@@ -554,6 +554,8 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         self.translate_block(body)?;
 
         if !self.terminated {
+            self.release_owned_numbers();
+
             match self.return_type {
                 KomeType::Void => {
                     self.builder.ins().return_(&[]);
@@ -630,6 +632,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
                     None => match self.return_type {
                         KomeType::Void => {
+                            self.release_owned_numbers();
                             self.builder.ins().return_(&[]);
                             self.terminated = true;
                             return Ok(());
@@ -639,6 +642,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     },
                 };
 
+                self.release_owned_numbers();
                 self.builder.ins().return_(&[value]);
                 self.terminated = true;
             }
@@ -1222,7 +1226,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     let old = self.builder.use_var(scoped.variable);
                     self.release_number(old);
                 }
-                
+
                 self.builder.def_var(scoped.variable, value);
                 Ok(TypedValue::borrowed(value, scoped.kome_type))
             }
@@ -1421,6 +1425,20 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         }
 
         Ok(raw)
+    }
+
+    fn release_owned_numbers(&mut self) {
+        let values = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.values())
+            .filter(|scoped| scoped.kome_type == KomeType::Number && scoped.owns_value)
+            .map(|scoped| self.builder.use_var(scoped.variable))
+            .collect::<Vec<_>>();
+
+        for value in values {
+            self.release_number(value);
+        }
     }
 }
 
