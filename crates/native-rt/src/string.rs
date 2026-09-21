@@ -174,6 +174,83 @@ pub unsafe fn release(raw: u64) {
     release_raw(raw);
 }
 
+// -- Public ABI --
+
+/// Creates a managed Kome `String` from UTF-8 bytes.
+///
+/// Returns `0` if the input is not valid UTF-8.
+///
+/// # Safety
+///
+/// `pointer` must point to `length` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_string_create(pointer: *const u8, length: usize) -> u64 {
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+
+    let Ok(value) = std::str::from_utf8(bytes) else {
+        return 0;
+    };
+
+    KomeString::new(value).into_raw()
+}
+
+/// Increments the reference count for a raw Kome `String` handle.
+///
+/// # Safety
+///
+/// `raw` must be a valid Kome `String` runtime handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_string_retain(raw: u64) {
+    unsafe {
+        retain(raw);
+    }
+}
+
+/// Decrements the reference count for a raw Kome `String` handle.
+///
+/// # Safety
+///
+/// `raw` must be a valid Kome `String` runtime handle and the caller must own
+/// one reference to it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_string_release(raw: u64) {
+    unsafe {
+        release(raw);
+    }
+}
+
+/// Concatenates two Kome `String` values.
+///
+/// # Safety
+///
+/// `left` and `right` must be valid Kome `String` runtime handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_string_concat(left: u64, right: u64) -> u64 {
+    let left = unsafe { KomeString::from_raw_retain(left) };
+    let right = unsafe { KomeString::from_raw_retain(right) };
+
+    left.concat(&right).into_raw()
+}
+
+/// Compares two Kome `String` values.
+///
+/// Returns `-1`, `0`, or `1`.
+///
+/// # Safety
+///
+/// `left` and `right` must be valid Kome `String` runtime handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_string_compare(left: u64, right: u64) -> i32 {
+    let left = unsafe { KomeString::from_raw_retain(left) };
+    let right = unsafe { KomeString::from_raw_retain(right) };
+
+    match left.compare(&right) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    }
+}
+
 unsafe fn heap_string(raw: u64) -> &'static HeapString {
     unsafe { &*(raw as *const HeapString) }
 }
