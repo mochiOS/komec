@@ -11,6 +11,7 @@
 
 pub mod number;
 
+use crate::number::Number;
 use kome_abi::{Slot, TAG_BOOLEAN, TAG_NULL, TAG_NUMBER, TAG_VOID};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 /// A value exchanged between Kome code and a registered native function.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    Number(f64),
+    Number(Number),
     Boolean(bool),
     Null,
 }
@@ -184,7 +185,9 @@ unsafe fn dispatch(
 
 fn slot_to_value(slot: &Slot) -> Result<Value, String> {
     match slot.tag {
-        TAG_NUMBER => Ok(Value::Number(f64::from_bits(slot.payload as u64))),
+        TAG_NUMBER => Ok(Value::Number(unsafe {
+            Number::from_raw_retain(slot.payload as u64)
+        })),
         TAG_BOOLEAN => Ok(Value::Boolean(slot.payload != 0)),
         TAG_NULL => Ok(Value::Null),
         _ => Err(format!(
@@ -211,7 +214,7 @@ fn payload_for_return(value: &Value, ret_tag: i64) -> Result<i64, String> {
 
 fn scalar_payload(value: &Value) -> i64 {
     match value {
-        Value::Number(number) => number.to_bits() as i64,
+        Value::Number(number) => number.clone().into_raw() as i64,
         Value::Boolean(flag) => i64::from(*flag),
         Value::Null => 0,
     }
@@ -228,7 +231,7 @@ fn value_tag(value: &Value) -> i64 {
 fn value_type_name(value: &Value) -> &'static str {
     match value {
         Value::Number(_) => "Number",
-        Value::Boolean(_) => "Boolean",
+        Value::Boolean(_) => "bool",
         Value::Null => "Null",
     }
 }

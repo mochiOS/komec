@@ -246,6 +246,11 @@ pub fn compile_module<M: Module>(
 /// Foreign runtime symbols referenced by generated code.
 struct ForeignFunctions {
     native_call: FuncId,
+    number_parse: FuncId,
+    number_add: FuncId,
+    number_sub: FuncId,
+    number_mul: FuncId,
+    number_compare: FuncId,
 }
 
 impl ForeignFunctions {
@@ -257,7 +262,49 @@ impl ForeignFunctions {
             types::I64,
         )?;
 
-        Ok(Self { native_call })
+        let number_parse = declare_foreign(
+            module,
+            "__kome_number_parse",
+            &[types::I64, types::I64],
+            types::I64,
+        )?;
+
+        let number_add = declare_foreign(
+            module,
+            "__kome_number_add",
+            &[types::I64, types::I64],
+            types::I64,
+        )?;
+
+        let number_sub = declare_foreign(
+            module,
+            "__kome_number_sub",
+            &[types::I64, types::I64],
+            types::I64,
+        )?;
+
+        let number_mul = declare_foreign(
+            module,
+            "__kome_number_mul",
+            &[types::I64, types::I64],
+            types::I64,
+        )?;
+
+        let number_compare = declare_foreign(
+            module,
+            "__kome_number_compare",
+            &[types::I64, types::I64],
+            types::I32,
+        )?;
+
+        Ok(Self {
+            native_call,
+            number_parse,
+            number_add,
+            number_sub,
+            number_mul,
+            number_compare,
+        })
     }
 }
 
@@ -682,17 +729,21 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
     fn evaluate_literal(&mut self, literal: &LiteralExpression) -> CodegenResult<TypedValue> {
         match &literal.kind {
             LiteralKind::Number(number) => {
-                let parsed = number.0.parse::<f64>().map_err(|_| {
-                    CodegenError::at(
-                        format!("`{}` is not a valid number", number.0),
-                        literal.span,
-                    )
-                })?;
+                let pointer = self.c_string_pointer(&number.0)?;
 
-                Ok(TypedValue::some(
-                    self.builder.ins().f64const(parsed),
-                    KomeType::Number,
-                ))
+                let length = self.builder.ins().iconst(types::I64, number.0.len() as i64);
+
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.number_parse,
+                    self.builder.func,
+                );
+
+                let call = self.builder.ins().call(function, &[pointer, length]);
+
+                let value = self.builder.inst_results(call)[0];
+
+                Ok(TypedValue::some(value, KomeType::Number))
             }
 
             LiteralKind::Boolean(flag) => Ok(TypedValue::some(
@@ -835,6 +886,18 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             .symbol_value(self.module.target_config().pointer_type(), global))
     }
 
+    fn emit_number_binary(
+        &mut self,
+        function: FuncId,
+        left: ir::Value,
+        right: ir::Value,
+    ) -> ir::Value {
+        let function = Module::declare_func_in_func(self.module, function, self.builder.func);
+        let call = self.builder.ins().call(function, &[left, right]);
+
+        self.builder.inst_results(call)[0]
+    }
+
     fn evaluate_binary(&mut self, binary: &BinaryExpression) -> CodegenResult<TypedValue> {
         let left = self.evaluate(&binary.left)?;
         let right = self.evaluate(&binary.right)?;
@@ -853,92 +916,93 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         };
 
         match binary.op {
-            BinaryOp::Add => match (left.kome_type, right.kome_type) {
-                (KomeType::Number, KomeType::Number) => {
-                    let (l, r) = (left.expect_value(span)?, right.expect_value(span)?);
-
-                    Ok(TypedValue::some(
-                        self.builder.ins().fadd(l, r),
-                        KomeType::Number,
-                    ))
-                }
-
-                _ => Err(invalid_operands(left, right)),
-            },
-
-            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
                 if left.kome_type != KomeType::Number || right.kome_type != KomeType::Number {
                     return Err(invalid_operands(left, right));
                 }
 
-                let l = left.expect_value(span)?;
-                let r = right.expect_value(span)?;
+                let left_value = left.expect_value(span)?;
+                let right_value = right.expect_value(span)?;
 
-                let value = match binary.op {
-                    BinaryOp::Sub => self.builder.ins().fsub(l, r),
-                    BinaryOp::Mul => self.builder.ins().fmul(l, r),
-                    BinaryOp::Div => self.builder.ins().fdiv(l, r),
-                    _ => unreachable!("only arithmetic operations are handled here"),
+                let function = match binary.op {
+                    BinaryOp::Add => self.foreign.number_add,
+                    BinaryOp::Sub => self.foreign.number_sub,
+                    BinaryOp::Mul => self.foreign.number_mul,
+                    _ => unreachable!("only Number arithmetic operations are handled here"),
                 };
+
+                let value = self.emit_number_binary(function, left_value, right_value);
 
                 Ok(TypedValue::some(value, KomeType::Number))
             }
 
-            BinaryOp::Eq | BinaryOp::NotEq => {
-                let equal = binary.op == BinaryOp::Eq;
+            BinaryOp::Div => Err(CodegenError::at(
+                "Number division semantics are not defined yet",
+                binary.span,
+            )),
+
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::Lte
+            | BinaryOp::Gt
+            | BinaryOp::Gte => {
+                if left.kome_type == KomeType::Number && right.kome_type == KomeType::Number {
+                    let left_value = left.expect_value(span)?;
+                    let right_value = right.expect_value(span)?;
+
+                    let function = Module::declare_func_in_func(
+                        self.module,
+                        self.foreign.number_compare,
+                        self.builder.func,
+                    );
+
+                    let call = self
+                        .builder
+                        .ins()
+                        .call(function, &[left_value, right_value]);
+
+                    let comparison = self.builder.inst_results(call)[0];
+
+                    let condition = match binary.op {
+                        BinaryOp::Eq => IntCC::Equal,
+                        BinaryOp::NotEq => IntCC::NotEqual,
+                        BinaryOp::Lt => IntCC::SignedLessThan,
+                        BinaryOp::Lte => IntCC::SignedLessThanOrEqual,
+                        BinaryOp::Gt => IntCC::SignedGreaterThan,
+                        BinaryOp::Gte => IntCC::SignedGreaterThanOrEqual,
+                        _ => unreachable!("only comparison operations are handled here"),
+                    };
+
+                    let zero = self.builder.ins().iconst(types::I32, 0);
+
+                    return Ok(TypedValue::some(
+                        self.builder.ins().icmp(condition, comparison, zero),
+                        KomeType::Boolean,
+                    ));
+                }
 
                 match (left.kome_type, right.kome_type) {
-                    (KomeType::Number, KomeType::Number) => {
-                        let (l, r) = (left.expect_value(span)?, right.expect_value(span)?);
+                    (KomeType::Boolean, KomeType::Boolean) | (KomeType::Null, KomeType::Null)
+                        if matches!(binary.op, BinaryOp::Eq | BinaryOp::NotEq) =>
+                    {
+                        let left_value = left.expect_value(span)?;
+                        let right_value = right.expect_value(span)?;
 
-                        let flag = self.builder.ins().fcmp(
-                            if equal {
-                                FloatCC::Equal
-                            } else {
-                                FloatCC::NotEqual
-                            },
-                            l,
-                            r,
-                        );
+                        let condition = if binary.op == BinaryOp::Eq {
+                            IntCC::Equal
+                        } else {
+                            IntCC::NotEqual
+                        };
 
-                        Ok(TypedValue::some(flag, KomeType::Boolean))
-                    }
-
-                    (KomeType::Boolean, KomeType::Boolean) | (KomeType::Null, KomeType::Null) => {
-                        let (l, r) = (left.expect_value(span)?, right.expect_value(span)?);
-
-                        let flag = self.builder.ins().icmp(
-                            if equal { IntCC::Equal } else { IntCC::NotEqual },
-                            l,
-                            r,
-                        );
-
-                        Ok(TypedValue::some(flag, KomeType::Boolean))
+                        Ok(TypedValue::some(
+                            self.builder.ins().icmp(condition, left_value, right_value),
+                            KomeType::Boolean,
+                        ))
                     }
 
                     _ => Err(invalid_operands(left, right)),
                 }
-            }
-
-            BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {
-                if left.kome_type != KomeType::Number || right.kome_type != KomeType::Number {
-                    return Err(invalid_operands(left, right));
-                }
-
-                let (l, r) = (left.expect_value(span)?, right.expect_value(span)?);
-
-                let condition = match binary.op {
-                    BinaryOp::Lt => FloatCC::LessThan,
-                    BinaryOp::Lte => FloatCC::LessThanOrEqual,
-                    BinaryOp::Gt => FloatCC::GreaterThan,
-                    BinaryOp::Gte => FloatCC::GreaterThanOrEqual,
-                    _ => unreachable!("only ordering operations are handled here"),
-                };
-
-                Ok(TypedValue::some(
-                    self.builder.ins().fcmp(condition, l, r),
-                    KomeType::Boolean,
-                ))
             }
 
             BinaryOp::And | BinaryOp::Or => {
@@ -946,12 +1010,13 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     return Err(invalid_operands(left, right));
                 }
 
-                let (l, r) = (left.expect_value(span)?, right.expect_value(span)?);
+                let left_value = left.expect_value(span)?;
+                let right_value = right.expect_value(span)?;
 
                 let flag = if binary.op == BinaryOp::And {
-                    self.builder.ins().band(l, r)
+                    self.builder.ins().band(left_value, right_value)
                 } else {
-                    self.builder.ins().bor(l, r)
+                    self.builder.ins().bor(left_value, right_value)
                 };
 
                 Ok(TypedValue::some(flag, KomeType::Boolean))
@@ -1158,17 +1223,16 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             let offset = SLOT_SIZE * index as i64;
 
             let tag_address = self.builder.ins().iadd_imm_s(buffer, offset);
+
             let tag = self.builder.ins().iconst(types::I64, param_type.tag()?);
+
             self.builder
                 .ins()
                 .store(MachMemFlags::new(), tag, tag_address, 0);
 
             let payload = match param_type {
-                KomeType::Number => {
-                    self.builder
-                        .ins()
-                        .bitcast(types::I64, MachMemFlags::new(), *value)
-                }
+                KomeType::Number => *value,
+
                 KomeType::Boolean | KomeType::Null => {
                     self.builder.ins().uextend(types::I64, *value)
                 }
@@ -1190,14 +1254,12 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 }
 
                 KomeType::Void => {
-                    return Err(CodegenError::new(
-                        "Void cannot be passed to a native function",
-                        None,
-                    ));
+                    return Err(CodegenError::new("parameters cannot have type Void", None));
                 }
             };
 
             let payload_address = self.builder.ins().iadd_imm_s(buffer, offset + 8);
+
             self.builder
                 .ins()
                 .store(MachMemFlags::new(), payload, payload_address, 0);
@@ -1223,13 +1285,14 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         let payload = self.builder.inst_results(call)[0];
 
         let value = match signature.ret {
-            KomeType::Void => return Ok(TypedValue::void()),
-            KomeType::Number => {
-                self.builder
-                    .ins()
-                    .bitcast(types::F64, MachMemFlags::new(), payload)
+            KomeType::Void => {
+                return Ok(TypedValue::void());
             }
+
+            KomeType::Number => payload,
+
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
+
             KomeType::I8
             | KomeType::I16
             | KomeType::I32
@@ -1252,7 +1315,11 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
     fn zero_value(&mut self, kome_type: KomeType) -> CodegenResult<ir::Value> {
         match kome_type {
-            KomeType::Number | KomeType::F64 => Ok(self.builder.ins().f64const(0.0)),
+            KomeType::Number => Err(CodegenError::new(
+                "Number cannot be zero-initialized without constructing a runtime value",
+                None,
+            )),
+            KomeType::F64 => Ok(self.builder.ins().f64const(0.0)),
             KomeType::F32 => Ok(self.builder.ins().f32const(0.0)),
             KomeType::Boolean | KomeType::I8 | KomeType::U8 | KomeType::Null => {
                 Ok(self.builder.ins().iconst(types::I8, 0))

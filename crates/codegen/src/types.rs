@@ -60,7 +60,8 @@ impl KomeType {
     /// The Cranelift representation; `None` for `Void`.
     pub fn cranelift(self) -> Option<cranelift::prelude::Type> {
         match self {
-            Self::Number | Self::F64 => Some(types::F64),
+            Self::Number => Some(types::I64),
+            Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
             Self::Boolean | Self::I8 | Self::U8 | Self::Null => Some(types::I8),
             Self::I16 | Self::U16 => Some(types::I16),

@@ -8,6 +8,10 @@ use kome_ast::declarations::Module as KomeModule;
 use kome_codegen::compile::{analyze_module, compile_module, mangled_name};
 use kome_codegen::{CodegenError, CodegenResult};
 use kome_native_rt::__kome_native_call;
+use kome_native_rt::number::{
+    __kome_number_add, __kome_number_compare, __kome_number_mul, __kome_number_parse,
+    __kome_number_sub,
+};
 
 /// Compiles `module_ast` and runs `entry` in the current process.
 ///
@@ -52,12 +56,23 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    type NativeCall = unsafe extern "C" fn(*const u8, usize, *const kome_abi::Slot, i64) -> i64;
-
-    let symbols: [(&str, *const u8); 1] = [(
-        "__kome_native_call",
-        __kome_native_call as NativeCall as usize as *const u8,
-    )];
+    let symbols: [(&str, *const u8); 6] = [
+        (
+            "__kome_native_call",
+            __kome_native_call as *const () as usize as *const u8,
+        ),
+        (
+            "__kome_number_parse",
+            __kome_number_parse as *const () as usize as *const u8,
+        ),
+        ("__kome_number_add", __kome_number_add as *const () as usize as *const u8),
+        ("__kome_number_sub", __kome_number_sub as *const () as usize as *const u8),
+        ("__kome_number_mul", __kome_number_mul as *const () as usize as *const u8),
+        (
+            "__kome_number_compare",
+            __kome_number_compare as *const () as usize as *const u8,
+        ),
+    ];
 
     for (name, pointer) in symbols {
         builder.symbol(name, pointer);

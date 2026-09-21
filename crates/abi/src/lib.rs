@@ -10,7 +10,7 @@ pub const TAG_NULL: i64 = 0;
 /// Used as a return-type tag when the native result is discarded.
 pub const TAG_VOID: i64 = 1;
 
-/// Payload holds the bit pattern of an `f64`.
+/// Payload holds a raw Kome `Number` runtime handle.
 pub const TAG_NUMBER: i64 = 2;
 
 /// Payload holds `0` or `1`.
