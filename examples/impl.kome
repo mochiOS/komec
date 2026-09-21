@@ -1,0 +1,53 @@
+use ops
+
+struct Color {
+    r: Number
+    g: Number
+    b: Number
+
+    const BLACK: Color = Color {
+        r: 0
+        g: 0
+        b: 0
+    }
+
+    fn rgb(r: Number, g: Number, b: Number) -> Color {
+        return Color {
+            r: r
+            g: g
+            b: b
+        }
+    }
+
+    fn invert(self) -> Color {
+        return self
+    }
+}
+
+for Color {
+    const WHITE: Color = Color {
+        r: 1
+        g: 1
+        b: 1
+    }
+
+    fn lighten(self) -> Color {
+        return self
+    }
+}
+
+impl ops::traits::Add for Color {
+    fn add(self, other: Color) -> Color {
+        return self
+    }
+}
+
+@runtime("string")
+struct RuntimeString
+
+@native("core.write_line")
+fn write_line(value: RuntimeString)
+
+fn main() {
+    write_line("type implementations work")
+}

@@ -9,6 +9,7 @@ pub type SourceId = usize;
 pub enum ScopeKind {
     Module,
     Component,
+    Type,
     Function,
     Block,
     Closure,

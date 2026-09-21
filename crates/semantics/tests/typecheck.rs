@@ -195,6 +195,39 @@ fn main() {
 }
 
 #[test]
+fn checks_struct_and_implementation_members() {
+    let module = parse(
+        r#"
+struct Color {
+    r: Number
+    const BLACK: Color = Color { r: 0 }
+    fn make(r: Number) -> Color { return Color { r: r } }
+}
+
+for Color {
+    fn value(self) -> Color { return self }
+}
+
+impl Add for Color {
+    fn add(self, other: Color) -> Color { return other }
+}
+"#,
+    )
+    .unwrap();
+    let result = TypeChecker::check(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn checks_members_added_to_an_existing_type() {
+    let module = parse("for Number { fn doubled(self) -> Number { return self } }").unwrap();
+    let result = TypeChecker::check(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
 fn retains_runtime_backing_and_reports_duplicate_structs() {
     let module =
         parse("@runtime(\"string\") struct Text\nstruct Duplicate {}\nstruct Duplicate {}\nfn main() { let text: Text = \"hello\" }")

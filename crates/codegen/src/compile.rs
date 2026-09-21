@@ -1699,6 +1699,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         }
     }
 
+    #[allow(unused)]
     fn retain_number(&mut self, value: ir::Value) {
         let function = Module::declare_func_in_func(
             self.module,
@@ -1809,6 +1810,7 @@ fn expression_kind(expression: &Expression) -> &'static str {
         Expression::Block(_) => "block",
         Expression::List(_) => "list",
         Expression::Object(_) => "object",
+        Expression::Struct(_) => "struct construction",
         Expression::Template(_) => "template",
         Expression::Closure(_) => "closure",
         Expression::DotIdent(_) => "dot identifier",

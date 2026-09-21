@@ -1,5 +1,5 @@
-//! Declarations for `component`, `function`, `recipe`, `state`,
-//! `let`, `const`, and `use`.
+//! Declarations for `component`, `function`, `struct`, `for`, `impl`,
+//! `recipe`, `state`, `let`, `const`, and `use`.
 
 use crate::{AstNode, Span};
 
@@ -9,11 +9,12 @@ pub enum Declaration {
     Component(ComponentDeclaration),
     Function(FunctionDeclaration),
     Struct(StructDeclaration),
+    For(ForDeclaration),
+    Impl(ImplDeclaration),
     Let(Binding),
     Constant(Binding),
     Use(UseDeclaration),
     Enum(EnumDeclaration),
-    Extension(ExtensionDeclaration),
 }
 
 // ---- Struct ----
@@ -25,6 +26,7 @@ pub struct StructDeclaration {
     pub attributes: Vec<Attribute>,
     pub name: String,
     pub fields: Option<Vec<StructField>>,
+    pub members: Vec<TypeMember>,
 }
 
 /// One named field in a struct declaration.
@@ -33,6 +35,42 @@ pub struct StructField {
     pub span: Span,
     pub name: String,
     pub type_: crate::types::Type,
+}
+
+/// A declaration in a struct or type implementation body.
+// TODO: enumも生やす
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeMember {
+    Constant(Binding),
+    Function(FunctionDeclaration),
+}
+
+/// A declaration that adds members to an existing type.
+///
+/// Type implementations allow functions and constants to be declared for a
+/// type without modifying the type's original declaration.
+///
+/// ```kome
+/// for View {
+///     fn padding(value: Number) {
+///         // ...
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForDeclaration {
+    pub span: Span,
+    pub target: crate::types::Type,
+    pub members: Vec<TypeMember>,
+}
+
+/// An implementation of a trait for one named type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplDeclaration {
+    pub span: Span,
+    pub trait_: crate::types::Type,
+    pub target: crate::types::Type,
+    pub members: Vec<TypeMember>,
 }
 
 // ---- Component ----
@@ -249,48 +287,6 @@ pub struct EnumCase {
     pub value: Option<crate::expressions::Expression>,
 }
 
-// ---- Extension ---
-
-/// A decalaration that adds members to an existing type
-///
-/// Extensions allow functions to be declared for a type without modifying
-/// the types original declaration.
-///
-/// ```kome
-/// extension View {
-///     fn padding(value: Int) {
-///         // ...
-///     }
-/// }
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExtensionDeclaration {
-    pub span: Span,
-    pub attributes: Vec<Attribute>,
-    pub target: crate::types::Type,
-    pub members: Vec<ExtensionMember>,
-}
-
-// TODO: enumも生やす
-#[derive(Debug, Clone, PartialEq)]
-pub enum ExtensionMember {
-    Function(FunctionDeclaration),
-}
-
-impl AstNode for ExtensionDeclaration {
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
-impl AstNode for ExtensionMember {
-    fn span(&self) -> Span {
-        match self {
-            ExtensionMember::Function(declaration) => declaration.span,
-        }
-    }
-}
-
 // ---- Module ----
 
 /// A Kome source file containing a list of declarations.
@@ -353,10 +349,11 @@ impl AstNode for Declaration {
             Declaration::Component(declaration) => declaration.span,
             Declaration::Function(declaration) => declaration.span,
             Declaration::Struct(declaration) => declaration.span,
+            Declaration::For(declaration) => declaration.span,
+            Declaration::Impl(declaration) => declaration.span,
             Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
             Declaration::Use(declaration) => declaration.span,
             Declaration::Enum(declaration) => declaration.span,
-            Declaration::Extension(declaration) => declaration.span,
         }
     }
 }
@@ -374,6 +371,27 @@ impl AstNode for StructDeclaration {
 }
 
 impl AstNode for StructField {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for TypeMember {
+    fn span(&self) -> Span {
+        match self {
+            TypeMember::Constant(binding) => binding.span,
+            TypeMember::Function(function) => function.span,
+        }
+    }
+}
+
+impl AstNode for ForDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for ImplDeclaration {
     fn span(&self) -> Span {
         self.span
     }

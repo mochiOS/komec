@@ -161,6 +161,18 @@ fn identity(value: RuntimeText) -> RuntimeText {
 }
 
 #[test]
+fn reports_unsupported_struct_construction() {
+    let module =
+        kome_parser::parse("struct Point { x: Number }\nfn main() { Point { x: 1 } }").unwrap();
+    let error = kome_jit::execute(&module, "main").unwrap_err();
+
+    assert_eq!(
+        error.message(),
+        "expression `struct construction` is not supported yet"
+    );
+}
+
+#[test]
 fn marshals_booleans_and_nulls_into_natives() {
     let capture = Capture::install("test.capture");
 

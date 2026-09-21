@@ -251,9 +251,9 @@ fn lexes_question_mark() {
 }
 
 #[test]
-fn tokenizes_extension_declaration() {
+fn tokenizes_for_declaration() {
     let source = r#"
-extension View {
+for View {
     fn padding(value: Number) -> View
 }
 "#;
@@ -265,7 +265,7 @@ extension View {
     assert_eq!(
         kinds,
         vec![
-            TokenKind::Extension,
+            TokenKind::For,
             TokenKind::Ident("View".into()),
             TokenKind::LBrace,
             TokenKind::Fn,

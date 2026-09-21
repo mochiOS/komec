@@ -7,13 +7,13 @@ use kome_ast::declarations::{PathSegmentKind, UseImport};
 use kome_ast::{
     declarations::{
         Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase, EnumDeclaration,
-        ExtensionDeclaration, ExtensionMember, FunctionDeclaration, Module, RecipeDeclaration,
-        StructDeclaration,
+        ForDeclaration, FunctionDeclaration, ImplDeclaration, Module, RecipeDeclaration,
+        StructDeclaration, TypeMember,
     },
     expressions::{
         AssignmentExpression, BinaryExpression, BlockExpression, CallArg, CallExpression,
         ClosureExpression, ComponentExpression, Expression, IsExpression, MemberExpression,
-        ObjectExpression, ObjectProperty, TemplateExpression, TemplatePart,
+        ObjectExpression, ObjectProperty, StructExpression, TemplateExpression, TemplatePart,
     },
     patterns::{IsPattern, Pattern},
     statements::{
@@ -168,6 +168,8 @@ impl ScopeBuilder {
             Declaration::Component(comp) => self.visit_component_declaration(comp),
             Declaration::Function(func) => self.visit_function_declaration(func),
             Declaration::Struct(struct_decl) => self.visit_struct_declaration(struct_decl),
+            Declaration::For(for_decl) => self.visit_for_declaration(for_decl),
+            Declaration::Impl(impl_decl) => self.visit_impl_declaration(impl_decl),
             Declaration::Let(binding) => {
                 self.errors
                     .push(ResolutionError::InvalidLetLocation { span: binding.span });
@@ -181,7 +183,6 @@ impl ScopeBuilder {
             Declaration::Constant(binding) => self.register_binding(binding),
             Declaration::Use(_) => {}
             Declaration::Enum(enum_decl) => self.visit_enum_declaration(enum_decl),
-            Declaration::Extension(ext) => self.visit_extension_declaration(ext),
         }
     }
 
@@ -295,6 +296,32 @@ impl ScopeBuilder {
                 self.visit_type(&field.type_);
             }
         }
+
+        self.visit_type_members(&struct_decl.members);
+    }
+
+    fn visit_for_declaration(&mut self, declaration: &ForDeclaration) {
+        self.visit_type(&declaration.target);
+        self.visit_type_members(&declaration.members);
+    }
+
+    fn visit_impl_declaration(&mut self, declaration: &ImplDeclaration) {
+        self.visit_type(&declaration.trait_);
+        self.visit_type(&declaration.target);
+        self.visit_type_members(&declaration.members);
+    }
+
+    fn visit_type_members(&mut self, members: &[TypeMember]) {
+        self.enter_scope(ScopeKind::Type);
+
+        for member in members {
+            match member {
+                TypeMember::Constant(binding) => self.register_binding(binding),
+                TypeMember::Function(function) => self.visit_function_declaration(function),
+            }
+        }
+
+        self.exit_scope();
     }
 
     fn register_enum_case(&mut self, case: &EnumCase) {
@@ -308,16 +335,6 @@ impl ScopeBuilder {
 
         if let Some(ref value) = case.value {
             self.visit_expression(value);
-        }
-    }
-
-    fn visit_extension_declaration(&mut self, ext: &ExtensionDeclaration) {
-        self.visit_type(&ext.target);
-
-        for member in &ext.members {
-            match member {
-                ExtensionMember::Function(func) => self.visit_function_declaration(func),
-            }
         }
     }
 
@@ -473,6 +490,7 @@ impl ScopeBuilder {
                 }
             }
             Expression::Object(obj) => self.visit_object_expression(obj),
+            Expression::Struct(struct_) => self.visit_struct_expression(struct_),
             Expression::Template(tmpl) => self.visit_template_expression(tmpl),
             Expression::Closure(closure) => self.visit_closure_expression(closure),
             Expression::DotIdent(dot) => {
@@ -534,6 +552,14 @@ impl ScopeBuilder {
         for prop in &obj.props {
             let ObjectProperty::KeyValue(kv) = prop;
             self.visit_expression(&kv.value);
+        }
+    }
+
+    fn visit_struct_expression(&mut self, struct_: &StructExpression) {
+        self.record_reference(&struct_.name, struct_.span);
+
+        for field in &struct_.fields {
+            self.visit_expression(&field.value);
         }
     }
 
@@ -627,7 +653,8 @@ impl ScopeBuilder {
     }
 
     fn visit_named_type(&mut self, named: &NamedType) {
-        self.record_reference(&named.name, named.span);
+        let root = named.name.split("::").next().unwrap_or(&named.name);
+        self.record_reference(root, named.span);
 
         for arg in &named.type_arguments {
             self.visit_type(arg);

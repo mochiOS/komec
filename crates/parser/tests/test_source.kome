@@ -9,7 +9,7 @@ component Text(
     color: Color = .primary,
 )
 
-extension View {
+for View {
     @nativeModifier("Padding")
     fn padding(
         value: Number,

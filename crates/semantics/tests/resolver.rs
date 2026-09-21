@@ -121,6 +121,41 @@ fn reports_duplicate_and_undefined_struct_types() {
 }
 
 #[test]
+fn resolves_inherent_and_trait_implementation_types() {
+    let module = parse(
+        "use ops\nstruct Color {}\nfor Color { fn value(self) -> Color { return self } }\nimpl ops::traits::Add for Color { fn add(self, other: Color) -> Color { return self } }",
+    )
+    .unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn adds_members_to_an_existing_primitive_type() {
+    let module = parse("for Number { fn doubled(self) -> Number { return self } }").unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn reports_undefined_implementation_type_and_trait() {
+    let module = parse("struct Color {}\nfor Missing {}\nimpl MissingTrait for Color {}").unwrap();
+    let result = ScopeBuilder::resolve(&module);
+    let undefined: Vec<_> = result
+        .errors
+        .iter()
+        .filter_map(|error| match error {
+            kome_semantics::error::ResolutionError::UndefinedName { name, .. } => Some(name),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(undefined, vec!["Missing", "MissingTrait"]);
+}
+
+#[test]
 fn allows_variable_shadowing() {
     let source = "fn foo() {\n    let x = 1\n    let x = 2\n}";
     let module = parse(source).unwrap();

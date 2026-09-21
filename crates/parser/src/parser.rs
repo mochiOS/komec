@@ -8,15 +8,15 @@ use kome_ast::{
     AstNode, Span,
     declarations::{
         Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
-        EnumDeclaration, ExtensionDeclaration, ExtensionMember, FunctionDeclaration, Module,
-        RecipeDeclaration, StructDeclaration, StructField, UseDeclaration,
+        EnumDeclaration, ForDeclaration, FunctionDeclaration, ImplDeclaration, Module,
+        RecipeDeclaration, StructDeclaration, StructField, TypeMember, UseDeclaration,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
         ClosureExpression, ComponentExpression, DotIdentifierExpression, Expression,
         GroupExpression, IndexExpression, KeyValueProperty, ListExpression, LiteralKind,
         MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty, PropertyKey,
-        TemplateExpression, TemplatePart, UnaryExpression, UnaryOp,
+        StructExpression, TemplateExpression, TemplatePart, UnaryExpression, UnaryOp,
     },
     patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
@@ -85,16 +85,18 @@ impl Parser {
                 .map(Declaration::Struct);
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::For)) && attributes.is_empty() {
+            return self.parse_for_declaration().map(Declaration::For);
+        }
+
+        if self.at(|kind| matches!(kind, TokenKind::Impl)) && attributes.is_empty() {
+            return self.parse_impl_declaration().map(Declaration::Impl);
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Enum)) {
             return self
                 .parse_enum_declaration(attributes)
                 .map(Declaration::Enum);
-        }
-
-        if self.at(|kind| matches!(kind, TokenKind::Extension)) {
-            return self
-                .parse_extension_declaration(attributes)
-                .map(Declaration::Extension);
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Fn)) {
@@ -123,7 +125,7 @@ impl Parser {
             }
 
             return Err(self.expected(
-                "a component, enum, extension, function, let, or var declaration after attributes",
+                "a component, enum, function, let, or var declaration after attributes",
             ));
         }
 
@@ -150,18 +152,30 @@ impl Parser {
                 attributes,
                 name,
                 fields: None,
+                members: Vec::new(),
             });
         }
 
         self.advance();
         let mut fields = Vec::new();
+        let mut members = Vec::new();
 
         while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
             if self.current().is_eof() {
                 return Err(self.expected("`}`"));
             }
 
-            let (field_name, field_span) = self.expect_identifier("a struct field name")?;
+            if self.at(|kind| matches!(kind, TokenKind::Const | TokenKind::Fn | TokenKind::At)) {
+                members.push(self.parse_type_member()?);
+
+                if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                    self.advance();
+                }
+
+                continue;
+            }
+
+            let (field_name, field_span) = self.expect_identifier("a struct field or member")?;
             self.expect("`:`", |kind| matches!(kind, TokenKind::Colon))?;
             let type_ = self.parse_type()?;
             let end = type_.span().end;
@@ -176,7 +190,16 @@ impl Parser {
                 continue;
             }
 
-            if !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if !self.at(|kind| {
+                matches!(
+                    kind,
+                    TokenKind::RBrace
+                        | TokenKind::Ident(_)
+                        | TokenKind::Const
+                        | TokenKind::Fn
+                        | TokenKind::At
+                )
+            }) {
                 return Err(self.expected("`,` or `}` after a struct field"));
             }
         }
@@ -188,23 +211,39 @@ impl Parser {
             attributes,
             name,
             fields: Some(fields),
+            members,
         })
     }
 
-    fn parse_extension_declaration(
-        &mut self,
-        attributes: Vec<Attribute>,
-    ) -> Result<ExtensionDeclaration, ParseError> {
-        let keyword = self.expect("`extension`", |kind| matches!(kind, TokenKind::Extension))?;
-
-        let start = attributes
-            .first()
-            .map_or(keyword.span.start, |attribute| attribute.span.start);
-
+    fn parse_for_declaration(&mut self) -> Result<ForDeclaration, ParseError> {
+        let keyword = self.expect("`for`", |kind| matches!(kind, TokenKind::For))?;
         let target = self.parse_type()?;
+        let (members, end) = self.parse_type_members()?;
 
+        Ok(ForDeclaration {
+            span: Span::new(keyword.span.start, end),
+            target,
+            members,
+        })
+    }
+
+    fn parse_impl_declaration(&mut self) -> Result<ImplDeclaration, ParseError> {
+        let keyword = self.expect("`impl`", |kind| matches!(kind, TokenKind::Impl))?;
+        let trait_ = self.parse_type()?;
+        self.expect("`for`", |kind| matches!(kind, TokenKind::For))?;
+        let target = self.parse_type()?;
+        let (members, end) = self.parse_type_members()?;
+
+        Ok(ImplDeclaration {
+            span: Span::new(keyword.span.start, end),
+            trait_,
+            target,
+            members,
+        })
+    }
+
+    fn parse_type_members(&mut self) -> Result<(Vec<TypeMember>, usize), ParseError> {
         self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
-
         let mut members = Vec::new();
 
         while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
@@ -212,33 +251,33 @@ impl Parser {
                 return Err(self.expected("`}`"));
             }
 
-            members.push(self.parse_extension_member()?);
+            members.push(self.parse_type_member()?);
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            }
         }
 
         let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
-
-        Ok(ExtensionDeclaration {
-            span: Span::new(start, closing.span.end),
-            attributes,
-            target,
-            members,
-        })
+        Ok((members, closing.span.end))
     }
 
-    fn parse_extension_member(&mut self) -> Result<ExtensionMember, ParseError> {
+    fn parse_type_member(&mut self) -> Result<TypeMember, ParseError> {
         let attributes = self.parse_attributes()?;
+
+        if self.at(|kind| matches!(kind, TokenKind::Const)) {
+            return self
+                .parse_const_binding(attributes)
+                .map(TypeMember::Constant);
+        }
 
         if self.at(|kind| matches!(kind, TokenKind::Fn)) {
             return self
                 .parse_function_declaration(attributes)
-                .map(ExtensionMember::Function);
+                .map(TypeMember::Function);
         }
 
-        if attributes.is_empty() {
-            Err(self.expected("a function declaration in an extension"))
-        } else {
-            Err(self.expected("a function declaration after extension member attributes"))
-        }
+        Err(self.expected("a `const` or `fn` type member"))
     }
 
     fn parse_enum_declaration(
@@ -604,7 +643,21 @@ impl Parser {
     }
 
     fn parse_function_parameter(&mut self) -> Result<Pattern, ParseError> {
-        let (name, name_span) = self.expect_identifier("a parameter name")?;
+        let token = self.advance();
+        let name_span = token.span;
+        let name = match token.kind {
+            TokenKind::Ident(name) => name,
+            TokenKind::Self_ => "self".to_owned(),
+            found => {
+                return Err(ParseError::new(
+                    ParseErrorKind::Expected {
+                        expected: "a parameter name",
+                        found,
+                    },
+                    name_span,
+                ));
+            }
+        };
 
         let type_annotation = if self.at(|kind| matches!(kind, TokenKind::Colon)) {
             self.advance();
@@ -734,7 +787,16 @@ impl Parser {
     }
 
     fn parse_primary_type(&mut self) -> Result<Type, ParseError> {
-        let (name, name_span) = self.expect_identifier("a type name")?;
+        let (mut name, name_span) = self.expect_identifier("a type name")?;
+        let mut end = name_span.end;
+
+        while self.at(|kind| matches!(kind, TokenKind::ColonColon)) {
+            self.advance();
+            let (segment, segment_span) = self.expect_identifier("a type path segment")?;
+            name.push_str("::");
+            name.push_str(&segment);
+            end = segment_span.end;
+        }
 
         let primitive_kind = match name.as_str() {
             "String" => Some(PrimitiveTypeKind::String),
@@ -774,13 +836,12 @@ impl Parser {
             }
 
             return Ok(Type::Primitive(PrimitiveType {
-                span: name_span,
+                span: Span::new(name_span.start, end),
                 kind,
             }));
         }
 
         let mut type_arguments = Vec::new();
-        let mut end = name_span.end;
 
         if self.at(|kind| matches!(kind, TokenKind::Lt)) {
             self.advance();
@@ -1371,6 +1432,15 @@ impl Parser {
                 continue;
             }
 
+            if self.at(|kind| matches!(kind, TokenKind::LBrace))
+                && matches!(expression, Expression::Ident(_))
+                && self.is_struct_expression_start()
+            {
+                expression = self.parse_struct_expression(expression)?;
+
+                continue;
+            }
+
             if self.allow_component_children
                 && self.at(|kind| matches!(kind, TokenKind::LBrace))
                 && Self::is_component_head(&expression)
@@ -1481,6 +1551,37 @@ impl Parser {
         }))
     }
 
+    fn parse_struct_expression(&mut self, head: Expression) -> Result<Expression, ParseError> {
+        let Expression::Ident(identifier) = head else {
+            return Err(self.expected("a struct name before `{`"));
+        };
+        self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
+        let mut fields = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            let ObjectProperty::KeyValue(field) = self.parse_object_property()?;
+            fields.push(field);
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            } else if !self.at(|kind| matches!(kind, TokenKind::RBrace | TokenKind::Ident(_))) {
+                return Err(self.expected("`,` or `}` after a struct field value"));
+            }
+        }
+
+        let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
+
+        Ok(Expression::Struct(StructExpression {
+            span: Span::new(identifier.span.start, closing.span.end),
+            name: identifier.name,
+            fields,
+        }))
+    }
+
     fn parse_member_expression(&mut self, object: Expression) -> Result<Expression, ParseError> {
         self.expect("`.`", |kind| matches!(kind, TokenKind::Dot))?;
 
@@ -1561,6 +1662,8 @@ impl Parser {
             TokenKind::Null => Ok(Expression::literal(LiteralKind::Null, span)),
 
             TokenKind::Ident(name) => Ok(Expression::ident(name, span)),
+
+            TokenKind::Self_ => Ok(Expression::ident("self", span)),
 
             found => Err(ParseError::new(
                 ParseErrorKind::Expected {
@@ -2014,6 +2117,16 @@ impl Parser {
         matches!(
             (&self.current().kind, &self.next().kind,),
             (TokenKind::Ident(_), TokenKind::Colon,)
+        )
+    }
+
+    fn is_struct_expression_start(&self) -> bool {
+        matches!(
+            (
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                self.tokens.get(self.position + 2).map(|token| &token.kind),
+            ),
+            (Some(TokenKind::Ident(_)), Some(TokenKind::Colon))
         )
     }
 

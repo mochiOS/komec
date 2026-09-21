@@ -42,6 +42,9 @@ pub enum Expression {
     /// An object literal: `{ key: value }`.
     Object(ObjectExpression),
 
+    /// Construction of a named struct: `Point { x: 1, y: 2 }`.
+    Struct(StructExpression),
+
     /// A template string with interpolation: `"hello {name}"`.
     Template(TemplateExpression),
 
@@ -191,6 +194,14 @@ pub struct ComponentExpression {
     pub name: String,
     pub args: Vec<CallArg>,
     pub children: Vec<Expression>,
+}
+
+/// Construction of a named struct value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructExpression {
+    pub span: Span,
+    pub name: String,
+    pub fields: Vec<KeyValueProperty>,
 }
 
 // ---- Member ----
@@ -433,6 +444,7 @@ impl AstNode for Expression {
             Expression::Block(expression) => expression.span,
             Expression::List(expression) => expression.span,
             Expression::Object(expression) => expression.span,
+            Expression::Struct(expression) => expression.span,
             Expression::Template(expression) => expression.span,
             Expression::Closure(expression) => expression.span,
             Expression::DotIdent(expression) => expression.span,
@@ -515,6 +527,12 @@ impl AstNode for ListExpression {
 }
 
 impl AstNode for ObjectExpression {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for StructExpression {
     fn span(&self) -> Span {
         self.span
     }

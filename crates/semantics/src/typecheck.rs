@@ -3,12 +3,12 @@ use std::fmt;
 
 use kome_ast::declarations::{
     Binding, ComponentDeclaration, ComponentMember, Declaration, FunctionDeclaration, Module,
-    StructDeclaration,
+    StructDeclaration, TypeMember,
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
     ComponentExpression, Expression, LiteralKind, ObjectExpression, ObjectProperty, PropertyKey,
-    UnaryOp,
+    StructExpression, UnaryOp,
 };
 use kome_ast::patterns::Pattern;
 use kome_ast::statements::{
@@ -310,6 +310,18 @@ impl TypeChecker {
                     self.register_binding(binding);
                 }
 
+                Declaration::Struct(struct_decl) => {
+                    self.visit_type_members(&struct_decl.members);
+                }
+
+                Declaration::For(declaration) => {
+                    self.visit_type_members(&declaration.members);
+                }
+
+                Declaration::Impl(declaration) => {
+                    self.visit_type_members(&declaration.members);
+                }
+
                 _ => {}
             }
         }
@@ -383,6 +395,24 @@ impl TypeChecker {
         }
 
         self.return_type = previous_return_type;
+
+        self.exit_scope();
+    }
+
+    fn visit_type_members(&mut self, members: &[TypeMember]) {
+        self.enter_scope();
+
+        for member in members {
+            if let TypeMember::Constant(binding) = member {
+                self.register_binding(binding);
+            }
+        }
+
+        for member in members {
+            if let TypeMember::Function(function) = member {
+                self.visit_function(function);
+            }
+        }
 
         self.exit_scope();
     }
@@ -656,6 +686,8 @@ impl TypeChecker {
 
             Expression::Object(object) => self.infer_object_expression(object, expected),
 
+            Expression::Struct(struct_) => self.infer_struct_expression(struct_),
+
             Expression::Closure(closure) => {
                 self.enter_scope();
 
@@ -719,6 +751,30 @@ impl TypeChecker {
         } else {
             SemanticType::Unknown
         }
+    }
+
+    fn infer_struct_expression(&mut self, struct_: &StructExpression) -> SemanticType {
+        let fields = self
+            .structs
+            .get(&struct_.name)
+            .and_then(|struct_info| struct_info.fields.clone());
+
+        for field in &struct_.fields {
+            let name = match &field.key {
+                PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            };
+            let expected = name.and_then(|name| fields.as_ref()?.get(name));
+            let actual = self.infer_expression(&field.value, expected);
+
+            if let Some(expected) = expected {
+                self.check_compatible(expected, &actual, field.value.span());
+            }
+        }
+
+        SemanticType::Named(struct_.name.clone())
     }
 
     fn infer_binary_expression(&mut self, binary: &BinaryExpression) -> SemanticType {

@@ -399,6 +399,12 @@ impl InitializationChecker {
                 }
             }
 
+            Expression::Struct(struct_) => {
+                for field in &struct_.fields {
+                    self.visit_expression(&field.value);
+                }
+            }
+
             Expression::Template(template) => {
                 for part in &template.parts {
                     if let TemplatePart::Expression { expression, .. } = part {
