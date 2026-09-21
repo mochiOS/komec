@@ -8,3 +8,5 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 kome_abi.workspace = true
+num-bigint = "0.4"
+num-traits = "0.2"

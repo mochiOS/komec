@@ -9,6 +9,8 @@
 //! and AOT builds (archived into `libkome_native_rt.a` and linked into the
 //! produced executable).
 
+pub mod number;
+
 use kome_abi::{Slot, TAG_BOOLEAN, TAG_NULL, TAG_NUMBER, TAG_VOID};
 use std::cell::RefCell;
 use std::collections::HashMap;
