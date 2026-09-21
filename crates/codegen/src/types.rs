@@ -34,6 +34,19 @@ impl KomeType {
             PrimitiveTypeKind::Bool => Ok(Self::Boolean),
             PrimitiveTypeKind::String => unreachable!("String is rejected before code generation"),
             PrimitiveTypeKind::Null => Ok(Self::Null),
+            PrimitiveTypeKind::I8
+            | PrimitiveTypeKind::I16
+            | PrimitiveTypeKind::I32
+            | PrimitiveTypeKind::I64
+            | PrimitiveTypeKind::U8
+            | PrimitiveTypeKind::U16
+            | PrimitiveTypeKind::U32
+            | PrimitiveTypeKind::U64
+            | PrimitiveTypeKind::F32
+            | PrimitiveTypeKind::F64 => Err(CodegenError::new(
+                "fixed-width numeric types are not supported by code generation yet",
+                None,
+            )),
         }
     }
 

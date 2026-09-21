@@ -21,6 +21,16 @@ pub enum SemanticType {
     Number,
     String,
     Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
     Null,
     Named(String),
     Optional(Box<SemanticType>),
@@ -41,12 +51,44 @@ impl SemanticType {
             Self::Number => "Number".to_owned(),
             Self::String => "String".to_owned(),
             Self::Bool => "bool".to_owned(),
+            Self::I8 => "i8".to_owned(),
+            Self::I16 => "i16".to_owned(),
+            Self::I32 => "i32".to_owned(),
+            Self::I64 => "i64".to_owned(),
+            Self::U8 => "u8".to_owned(),
+            Self::U16 => "u16".to_owned(),
+            Self::U32 => "u32".to_owned(),
+            Self::U64 => "u64".to_owned(),
+            Self::F32 => "f32".to_owned(),
+            Self::F64 => "f64".to_owned(),
             Self::Null => "Null".to_owned(),
             Self::Named(name) => name.clone(),
             Self::Optional(inner) => format!("{}?", inner.name()),
             Self::Void => "Void".to_owned(),
             Self::Unknown => "<unknown>".to_owned(),
         }
+    }
+
+    fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::U8
+                | Self::U16
+                | Self::U32
+                | Self::U64
+        )
+    }
+
+    fn is_float(&self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
+    }
+
+    fn is_numeric(&self) -> bool {
+        matches!(self, Self::Number) || self.is_integer() || self.is_float()
     }
 }
 
@@ -456,7 +498,16 @@ impl TypeChecker {
         match expression {
             Expression::Literal(literal) => match &literal.kind {
                 LiteralKind::String(_) => SemanticType::String,
-                LiteralKind::Number(_) | LiteralKind::Percent(_) => SemanticType::Number,
+                LiteralKind::Number(number) => {
+                    let has_fraction = number.0.contains('.');
+                    match expected {
+                        Some(type_) if type_.is_integer() && !has_fraction => type_.clone(),
+                        Some(type_) if type_.is_float() => type_.clone(),
+
+                        _ => SemanticType::Number,
+                    }
+                }
+                LiteralKind::Percent(_) => SemanticType::Number,
                 LiteralKind::Boolean(_) => SemanticType::Bool,
                 LiteralKind::Null => SemanticType::Null,
             },
@@ -586,23 +637,49 @@ impl TypeChecker {
     fn infer_binary_expression(&mut self, binary: &BinaryExpression) -> SemanticType {
         match binary.op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
-                let left = self.infer_expression(&binary.left, Some(&SemanticType::Number));
-                let right = self.infer_expression(&binary.right, Some(&SemanticType::Number));
+                let left = self.infer_expression(&binary.left, None);
 
-                self.check_compatible(&SemanticType::Number, &left, binary.left.span());
+                if !left.is_numeric() && !matches!(left, SemanticType::Unknown) {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "operator requires a numeric value, but found {}",
+                            left.name(),
+                        ),
+                        span: binary.left.span(),
+                    });
 
-                self.check_compatible(&SemanticType::Number, &right, binary.right.span());
+                    self.infer_expression(&binary.right, None);
 
-                SemanticType::Number
+                    return SemanticType::Unknown;
+                }
+
+                let right = self.infer_expression(&binary.right, Some(&left));
+
+                self.check_compatible(&left, &right, binary.right.span());
+
+                left
             }
 
             BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {
-                let left = self.infer_expression(&binary.left, Some(&SemanticType::Number));
-                let right = self.infer_expression(&binary.right, Some(&SemanticType::Number));
+                let left = self.infer_expression(&binary.left, None);
 
-                self.check_compatible(&SemanticType::Number, &left, binary.left.span());
+                if !left.is_numeric() && !matches!(left, SemanticType::Unknown) {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "comparison requires a numeric value, but found {}",
+                            left.name(),
+                        ),
+                        span: binary.left.span(),
+                    });
 
-                self.check_compatible(&SemanticType::Number, &right, binary.right.span());
+                    self.infer_expression(&binary.right, None);
+
+                    return SemanticType::Bool;
+                }
+
+                let right = self.infer_expression(&binary.right, Some(&left));
+
+                self.check_compatible(&left, &right, binary.right.span());
 
                 SemanticType::Bool
             }
@@ -651,11 +728,19 @@ impl TypeChecker {
             }
 
             AssignOp::AddAssign => {
-                self.check_compatible(&SemanticType::Number, &target_type, identifier.span);
+                if !target_type.is_numeric() && !matches!(target_type, SemanticType::Unknown) {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "compound assignment requires a numeric variable, but found {}",
+                            target_type.name(),
+                        ),
+                        span: identifier.span,
+                    });
+                }
 
-                let value = self.infer_expression(&assignment.value, Some(&SemanticType::Number));
+                let value = self.infer_expression(&assignment.value, Some(&target_type));
 
-                self.check_compatible(&SemanticType::Number, &value, assignment.value.span());
+                self.check_compatible(&target_type, &value, assignment.value.span());
             }
         }
 
@@ -770,10 +855,20 @@ impl TypeChecker {
 
     fn type_from_annotation(type_: &Type) -> SemanticType {
         match type_ {
-            Type::Primitive(primitive) => match primitive.kind {
+            Type::Primitive(primitive) => match &primitive.kind {
                 PrimitiveTypeKind::String => SemanticType::String,
                 PrimitiveTypeKind::Number => SemanticType::Number,
                 PrimitiveTypeKind::Bool => SemanticType::Bool,
+                PrimitiveTypeKind::I8 => SemanticType::I8,
+                PrimitiveTypeKind::I16 => SemanticType::I16,
+                PrimitiveTypeKind::I32 => SemanticType::I32,
+                PrimitiveTypeKind::I64 => SemanticType::I64,
+                PrimitiveTypeKind::U8 => SemanticType::U8,
+                PrimitiveTypeKind::U16 => SemanticType::U16,
+                PrimitiveTypeKind::U32 => SemanticType::U32,
+                PrimitiveTypeKind::U64 => SemanticType::U64,
+                PrimitiveTypeKind::F32 => SemanticType::F32,
+                PrimitiveTypeKind::F64 => SemanticType::F64,
                 PrimitiveTypeKind::Null => SemanticType::Null,
             },
 

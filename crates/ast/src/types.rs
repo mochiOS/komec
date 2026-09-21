@@ -13,7 +13,7 @@ pub enum Type {
     Optional(OptionalType),
 }
 
-/// `String`, `Number`, `bool`, etc.
+/// `String`, `Number`, `bool`, fixed-width numbers, etc.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrimitiveType {
     pub span: Span,
@@ -25,6 +25,16 @@ pub enum PrimitiveTypeKind {
     String,
     Number,
     Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
     Null,
 }
 

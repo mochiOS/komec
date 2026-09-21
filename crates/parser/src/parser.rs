@@ -680,6 +680,26 @@ impl Parser {
 
             "bool" => Some(PrimitiveTypeKind::Bool),
 
+            "i8" => Some(PrimitiveTypeKind::I8),
+
+            "i16" => Some(PrimitiveTypeKind::I16),
+
+            "i32" => Some(PrimitiveTypeKind::I32),
+
+            "i64" => Some(PrimitiveTypeKind::I64),
+
+            "u8" => Some(PrimitiveTypeKind::U8),
+
+            "u16" => Some(PrimitiveTypeKind::U16),
+
+            "u32" => Some(PrimitiveTypeKind::U32),
+
+            "u64" => Some(PrimitiveTypeKind::U64),
+
+            "f32" => Some(PrimitiveTypeKind::F32),
+
+            "f64" => Some(PrimitiveTypeKind::F64),
+
             "Null" => Some(PrimitiveTypeKind::Null),
 
             _ => None,

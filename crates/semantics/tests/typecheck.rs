@@ -202,3 +202,154 @@ fn main() {
 
     assert_eq!(result.errors.len(), 1);
 }
+
+#[test]
+fn accepts_fixed_width_integer_literal() {
+    let module = parse(
+        r#"
+fn main() {
+    let value: i32 = 10
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn rejects_fractional_literal_for_integer_type() {
+    let module = parse(
+        r#"
+fn main() {
+    let value: i32 = 3.14
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert_eq!(result.errors.len(), 1);
+}
+
+#[test]
+fn accepts_fixed_width_float_literal() {
+    let module = parse(
+        r#"
+fn main() {
+    let value: f32 = 3.14
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn rejects_implicit_number_to_fixed_width_conversion() {
+    let module = parse(
+        r#"
+fn main() {
+    let number = 10
+    let value: i32 = number
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert_eq!(result.errors.len(), 1);
+}
+
+#[test]
+fn rejects_implicit_fixed_width_to_number_conversion() {
+    let module = parse(
+        r#"
+fn main() {
+    let value: i32 = 10
+    let number: Number = value
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert_eq!(result.errors.len(), 1);
+}
+
+#[test]
+fn rejects_implicit_conversion_between_integer_widths() {
+    let module = parse(
+        r#"
+fn main() {
+    let small: i32 = 10
+    let large: i64 = small
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert_eq!(result.errors.len(), 1);
+}
+
+#[test]
+fn accepts_fixed_width_arithmetic() {
+    let module = parse(
+        r#"
+fn main() {
+    let left: i32 = 10
+    let result = left + 20
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn rejects_arithmetic_between_different_numeric_types() {
+    let module = parse(
+        r#"
+fn main() {
+    let left: i32 = 10
+    let right: i64 = 20
+    let result = left + right
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert_eq!(result.errors.len(), 1);
+}
+
+#[test]
+fn accepts_fixed_width_compound_assignment() {
+    let module = parse(
+        r#"
+fn main() {
+    var value: u64 = 10
+    value += 1
+}
+"#,
+    )
+    .unwrap();
+
+    let result = TypeChecker::check(&module);
+
+    assert!(result.errors.is_empty());
+}
