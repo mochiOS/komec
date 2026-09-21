@@ -224,6 +224,7 @@ pub fn compile_module<M: Module>(
                 native_symbols: &mut native_symbols,
                 scopes: vec![HashMap::new()],
                 remaining_reads: HashMap::new(),
+                next_binding_id: 0,
                 return_type: signature.ret,
                 terminated: false,
             };
@@ -501,7 +502,8 @@ struct FunctionTranslator<'b, 'c, 'a, M: Module> {
     foreign: &'b ForeignFunctions,
     native_symbols: &'b mut NativeSymbolPool,
     scopes: Vec<HashMap<String, ScopedVariable>>,
-    remaining_reads: HashMap<String, usize>,
+    remaining_reads: HashMap<usize, usize>,
+    next_binding_id: usize,
     return_type: KomeType,
     terminated: bool,
 }
@@ -511,62 +513,138 @@ struct ScopedVariable {
     variable: Variable,
     kome_type: KomeType,
     owns_value: bool,
+    binding_id: usize,
 }
 
-fn count_variable_reads(block: &BlockStatement) -> HashMap<String, usize> {
-    let mut reads = HashMap::new();
+struct ReadCounter {
+    scopes: Vec<HashMap<String, usize>>,
+    reads: HashMap<usize, usize>,
+    next_binding_id: usize,
+}
 
-    for statement in &block.statements {
-        count_statement_reads(statement, &mut reads);
+fn count_variable_reads(
+    declaration: &FunctionDeclaration,
+    block: &BlockStatement,
+) -> HashMap<usize, usize> {
+    let mut counter = ReadCounter {
+        scopes: vec![HashMap::new()],
+        reads: HashMap::new(),
+        next_binding_id: 0,
+    };
+
+    for pattern in &declaration.params {
+        let kome_ast::patterns::Pattern::Ident(identifier) = pattern else {
+            continue;
+        };
+
+        counter.declare(&identifier.name);
     }
 
-    reads
+    counter.visit_block(block);
+
+    counter.reads
 }
 
-fn count_statement_reads(statement: &Statement, reads: &mut HashMap<String, usize>) {
-    match statement {
-        Statement::Expression(statement) => count_expression_reads(&statement.expression, reads),
-        Statement::Return(statement) => {
-            if let Some(argument) = &statement.argument {
-                count_expression_reads(argument, reads);
-            }
-        }
-        Statement::Let(binding) => {
-            if let Some(init) = &binding.init {
-                count_expression_reads(init, reads);
-            }
-        }
-        Statement::Block(block) => {
-            for statement in &block.statements {
-                count_statement_reads(statement, reads);
-            }
-        }
-        _ => {}
+impl ReadCounter {
+    fn declare(&mut self, name: &str) {
+        let binding_id = self.next_binding_id;
+        self.next_binding_id += 1;
+
+        self.scopes
+            .last_mut()
+            .expect("read counter scope stack is never empty")
+            .insert(name.to_owned(), binding_id);
     }
-}
 
-fn count_expression_reads(expression: &Expression, reads: &mut HashMap<String, usize>) {
-    match expression {
-        Expression::Ident(identifier) => {
-            *reads.entry(identifier.name.clone()).or_default() += 1;
+    fn read(&mut self, name: &str) {
+        let Some(binding_id) = self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .copied()
+        else {
+            return;
+        };
+
+        *self.reads.entry(binding_id).or_default() += 1;
+    }
+
+    fn visit_block(&mut self, block: &BlockStatement) {
+        self.scopes.push(HashMap::new());
+
+        for statement in &block.statements {
+            self.visit_statement(statement);
         }
-        Expression::Group(group) => count_expression_reads(&group.expression, reads),
-        Expression::Binary(binary) => {
-            count_expression_reads(&binary.left, reads);
-            count_expression_reads(&binary.right, reads);
-        }
-        Expression::Call(call) => {
-            for argument in &call.args {
-                match argument {
-                    CallArg::Positional(value) => count_expression_reads(value, reads),
-                    CallArg::Named { value, .. } => count_expression_reads(value, reads),
+
+        self.scopes.pop();
+    }
+
+    fn visit_statement(&mut self, statement: &Statement) {
+        match statement {
+            Statement::Expression(statement) => {
+                self.visit_expression(&statement.expression);
+            }
+
+            Statement::Return(statement) => {
+                if let Some(argument) = &statement.argument {
+                    self.visit_expression(argument);
                 }
             }
+
+            Statement::Let(binding) => {
+                if let Some(init) = &binding.init {
+                    self.visit_expression(init);
+                }
+
+                if let kome_ast::patterns::Pattern::Ident(identifier) = &binding.pattern {
+                    self.declare(&identifier.name);
+                }
+            }
+
+            Statement::Block(block) => {
+                self.visit_block(block);
+            }
+
+            _ => {}
         }
-        Expression::Assign(assignment) => {
-            count_expression_reads(&assignment.value, reads);
+    }
+
+    fn visit_expression(&mut self, expression: &Expression) {
+        match expression {
+            Expression::Ident(identifier) => {
+                self.read(&identifier.name);
+            }
+
+            Expression::Group(group) => {
+                self.visit_expression(&group.expression);
+            }
+
+            Expression::Binary(binary) => {
+                self.visit_expression(&binary.left);
+                self.visit_expression(&binary.right);
+            }
+
+            Expression::Call(call) => {
+                for argument in &call.args {
+                    match argument {
+                        CallArg::Positional(value) => {
+                            self.visit_expression(value);
+                        }
+
+                        CallArg::Named { value, .. } => {
+                            self.visit_expression(value);
+                        }
+                    }
+                }
+            }
+
+            Expression::Assign(assignment) => {
+                self.visit_expression(&assignment.value);
+            }
+
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -591,7 +669,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             )
         })?;
 
-        self.remaining_reads = count_variable_reads(body);
+        self.remaining_reads = count_variable_reads(declaration, body);
 
         let parameters = self.builder.block_params(entry_block).to_vec();
 
@@ -809,6 +887,9 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
         self.builder.def_var(variable, value);
 
+        let binding_id = self.next_binding_id;
+        self.next_binding_id += 1;
+
         let scope = self.scopes.last_mut().expect("scope stack is never empty");
 
         scope.insert(
@@ -817,6 +898,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 variable,
                 kome_type,
                 owns_value,
+                binding_id,
             },
         );
 
@@ -908,7 +990,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
         let remaining = self
             .remaining_reads
-            .get_mut(&identifier.name)
+            .get_mut(&scoped.binding_id)
             .ok_or_else(|| {
                 CodegenError::at(
                     format!(
