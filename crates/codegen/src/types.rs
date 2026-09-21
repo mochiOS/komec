@@ -10,6 +10,7 @@ use kome_ast::types::{PrimitiveTypeKind, Type};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KomeType {
     Number,
+    String,
     Boolean,
     I8,
     I16,
@@ -41,6 +42,7 @@ impl KomeType {
     fn from_primitive_kind(kind: &PrimitiveTypeKind) -> CodegenResult<Self> {
         match kind {
             PrimitiveTypeKind::Number => Ok(Self::Number),
+            PrimitiveTypeKind::String => Ok(Self::String),
             PrimitiveTypeKind::Bool => Ok(Self::Boolean),
             PrimitiveTypeKind::I8 => Ok(Self::I8),
             PrimitiveTypeKind::I16 => Ok(Self::I16),
@@ -52,9 +54,6 @@ impl KomeType {
             PrimitiveTypeKind::U64 => Ok(Self::U64),
             PrimitiveTypeKind::F32 => Ok(Self::F32),
             PrimitiveTypeKind::F64 => Ok(Self::F64),
-            PrimitiveTypeKind::String => {
-                Err(CodegenError::new("String is not supported yet", None))
-            }
             PrimitiveTypeKind::Null => Ok(Self::Null),
         }
     }
@@ -62,7 +61,7 @@ impl KomeType {
     /// The Cranelift representation; `None` for `Void`.
     pub fn cranelift(self) -> Option<cranelift::prelude::Type> {
         match self {
-            Self::Number => Some(types::I64),
+            Self::Number | Self::String => Some(types::I64),
             Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
             Self::Boolean | Self::I8 | Self::U8 | Self::Null => Some(types::I8),
@@ -77,6 +76,7 @@ impl KomeType {
     pub fn tag(self) -> CodegenResult<i64> {
         match self {
             Self::Number => Ok(abi::TAG_NUMBER),
+            Self::String => Ok(abi::TAG_STRING),
             Self::Boolean => Ok(abi::TAG_BOOLEAN),
             Self::Null => Ok(abi::TAG_NULL),
             Self::Void => Ok(abi::TAG_VOID),
@@ -99,6 +99,7 @@ impl KomeType {
     pub fn name(self) -> &'static str {
         match self {
             Self::Number => "Number",
+            Self::String => "String",
             Self::Boolean => "bool",
             Self::I8 => "i8",
             Self::I16 => "i16",
@@ -113,5 +114,9 @@ impl KomeType {
             Self::Null => "Null",
             Self::Void => "Void",
         }
+    }
+
+    pub fn is_managed(self) -> bool {
+        matches!(self, Self::Number | Self::String)
     }
 }

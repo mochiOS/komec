@@ -255,6 +255,9 @@ struct ForeignFunctions {
     number_sub: FuncId,
     number_mul: FuncId,
     number_compare: FuncId,
+    string_create: FuncId,
+    string_retain: FuncId,
+    string_release: FuncId,
 }
 
 impl ForeignFunctions {
@@ -274,7 +277,6 @@ impl ForeignFunctions {
         )?;
 
         let number_retain = declare_foreign(module, "__kome_number_retain", &[types::I64], None)?;
-
         let number_release = declare_foreign(module, "__kome_number_release", &[types::I64], None)?;
 
         let number_add = declare_foreign(
@@ -305,6 +307,16 @@ impl ForeignFunctions {
             Some(types::I32),
         )?;
 
+        let string_create = declare_foreign(
+            module,
+            "__kome_string_create",
+            &[types::I64, types::I64],
+            Some(types::I64),
+        )?;
+
+        let string_retain = declare_foreign(module, "__kome_string_retain", &[types::I64], None)?;
+        let string_release = declare_foreign(module, "__kome_string_release", &[types::I64], None)?;
+
         Ok(Self {
             native_call,
             number_parse,
@@ -314,6 +326,9 @@ impl ForeignFunctions {
             number_sub,
             number_mul,
             number_compare,
+            string_create,
+            string_retain,
+            string_release,
         })
     }
 }
@@ -694,7 +709,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         self.translate_block(body)?;
 
         if !self.terminated {
-            self.release_owned_numbers();
+            self.release_owned_managed();
 
             match self.return_type {
                 KomeType::Void => {
@@ -772,7 +787,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
                     None => match self.return_type {
                         KomeType::Void => {
-                            self.release_owned_numbers();
+                            self.release_owned_managed();
                             self.builder.ins().return_(&[]);
                             self.terminated = true;
                             return Ok(());
@@ -782,7 +797,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     },
                 };
 
-                self.release_owned_numbers();
+                self.release_owned_managed();
                 self.builder.ins().return_(&[value]);
                 self.terminated = true;
             }
@@ -876,15 +891,14 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             CodegenError::new("internal error: Void cannot be stored in a variable", None)
         })?;
 
-        let owns_value = if kome_type == KomeType::Number {
-            self.take_number_ownership(value, ownership);
+        let owns_value = if kome_type.is_managed() {
+            self.take_managed_ownership(value, kome_type, ownership);
             true
         } else {
             false
         };
 
         let variable = self.builder.declare_var(representation);
-
         self.builder.def_var(variable, value);
 
         let binding_id = self.next_binding_id;
@@ -933,7 +947,6 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         match &literal.kind {
             LiteralKind::Number(number) => {
                 let pointer = self.c_string_pointer(&number.0)?;
-
                 let length = self.builder.ins().iconst(types::I64, number.0.len() as i64);
 
                 let function = Module::declare_func_in_func(
@@ -943,10 +956,25 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 );
 
                 let call = self.builder.ins().call(function, &[pointer, length]);
-
                 let value = self.builder.inst_results(call)[0];
 
                 Ok(TypedValue::some(value, KomeType::Number))
+            }
+
+            LiteralKind::String(string) => {
+                let pointer = self.c_string_pointer(string)?;
+                let length = self.builder.ins().iconst(types::I64, string.len() as i64);
+
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.string_create,
+                    self.builder.func,
+                );
+
+                let call = self.builder.ins().call(function, &[pointer, length]);
+                let value = self.builder.inst_results(call)[0];
+
+                Ok(TypedValue::some(value, KomeType::String))
             }
 
             LiteralKind::Boolean(flag) => Ok(TypedValue::some(
@@ -957,11 +985,6 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             LiteralKind::Null => Ok(TypedValue::some(
                 self.builder.ins().iconst(types::I8, 0),
                 KomeType::Null,
-            )),
-
-            LiteralKind::String(_) => Err(CodegenError::at(
-                "string literals are not supported yet",
-                literal.span,
             )),
 
             LiteralKind::Percent(_) => Err(CodegenError::at(
@@ -1003,15 +1026,14 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
         *remaining -= 1;
 
-        let ownership =
-            if scoped.kome_type == KomeType::Number && scoped.owns_value && *remaining == 0 {
-                ValueOwnership::BorrowedMovable {
-                    scope,
-                    variable: scoped.variable,
-                }
-            } else {
-                ValueOwnership::Borrowed
-            };
+        let ownership = if scoped.kome_type.is_managed() && scoped.owns_value && *remaining == 0 {
+            ValueOwnership::BorrowedMovable {
+                scope,
+                variable: scoped.variable,
+            }
+        } else {
+            ValueOwnership::Borrowed
+        };
 
         Ok(TypedValue {
             value: Some(self.builder.use_var(scoped.variable)),
@@ -1116,8 +1138,8 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
     }
 
     fn release_owned_temporary(&mut self, value: TypedValue, span: Span) -> CodegenResult<()> {
-        if value.kome_type == KomeType::Number && value.ownership == ValueOwnership::Owned {
-            self.release_number(value.expect_value(span)?);
+        if value.kome_type.is_managed() && value.ownership == ValueOwnership::Owned {
+            self.release_managed(value.expect_value(span)?, value.kome_type);
         }
 
         Ok(())
@@ -1485,7 +1507,6 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             let offset = SLOT_SIZE * index as i64;
 
             let tag_address = self.builder.ins().iadd_imm_s(buffer, offset);
-
             let tag = self.builder.ins().iconst(types::I64, param_type.tag()?);
 
             self.builder
@@ -1493,7 +1514,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 .store(MachMemFlags::new(), tag, tag_address, 0);
 
             let payload = match param_type {
-                KomeType::Number => *value,
+                KomeType::Number | KomeType::String => *value,
 
                 KomeType::Boolean | KomeType::Null => {
                     self.builder.ins().uextend(types::I64, *value)
@@ -1551,7 +1572,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 return Ok(TypedValue::void());
             }
 
-            KomeType::Number => payload,
+            KomeType::Number | KomeType::String => payload,
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
 
@@ -1579,6 +1600,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         match kome_type {
             KomeType::Number => Err(CodegenError::new(
                 "Number cannot be zero-initialized without constructing a runtime value",
+                None,
+            )),
+            KomeType::String => Err(CodegenError::new(
+                "String cannot be zero-initialized without constructing a runtime value",
                 None,
             )),
             KomeType::F64 => Ok(self.builder.ins().f64const(0.0)),
@@ -1619,18 +1644,23 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
     fn own_value(&mut self, value: TypedValue, span: Span) -> CodegenResult<ir::Value> {
         let raw = value.expect_value(span)?;
 
-        if value.kome_type == KomeType::Number {
-            self.take_number_ownership(raw, value.ownership);
+        if value.kome_type.is_managed() {
+            self.take_managed_ownership(raw, value.kome_type, value.ownership);
         }
 
         Ok(raw)
     }
 
-    fn take_number_ownership(&mut self, value: ir::Value, ownership: ValueOwnership) {
+    fn take_managed_ownership(
+        &mut self,
+        value: ir::Value,
+        kome_type: KomeType,
+        ownership: ValueOwnership,
+    ) {
         match ownership {
             ValueOwnership::Owned => {}
             ValueOwnership::Borrowed => {
-                self.retain_number(value);
+                self.retain_managed(value, kome_type);
             }
             ValueOwnership::BorrowedMovable { scope, variable } => {
                 let scoped = self.scopes[scope]
@@ -1643,18 +1673,40 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         }
     }
 
-    fn release_owned_numbers(&mut self) {
+    fn release_owned_managed(&mut self) {
         let values = self
             .scopes
             .iter()
             .flat_map(|scope| scope.values())
-            .filter(|scoped| scoped.kome_type == KomeType::Number && scoped.owns_value)
-            .map(|scoped| self.builder.use_var(scoped.variable))
+            .filter(|scoped| scoped.kome_type.is_managed() && scoped.owns_value)
+            .map(|scoped| (self.builder.use_var(scoped.variable), scoped.kome_type))
             .collect::<Vec<_>>();
 
-        for value in values {
-            self.release_number(value);
+        for (value, kome_type) in values {
+            self.release_managed(value, kome_type);
         }
+    }
+
+    fn retain_managed(&mut self, value: ir::Value, kome_type: KomeType) {
+        let function = match kome_type {
+            KomeType::Number => self.foreign.number_retain,
+            KomeType::String => self.foreign.string_retain,
+            _ => return,
+        };
+
+        let function = Module::declare_func_in_func(self.module, function, self.builder.func);
+        self.builder.ins().call(function, &[value]);
+    }
+
+    fn release_managed(&mut self, value: ir::Value, kome_type: KomeType) {
+        let function = match kome_type {
+            KomeType::Number => self.foreign.number_release,
+            KomeType::String => self.foreign.string_release,
+            _ => return,
+        };
+
+        let function = Module::declare_func_in_func(self.module, function, self.builder.func);
+        self.builder.ins().call(function, &[value]);
     }
 }
 

@@ -12,6 +12,7 @@ use kome_native_rt::number::{
     __kome_number_add, __kome_number_compare, __kome_number_mul, __kome_number_parse,
     __kome_number_release, __kome_number_retain, __kome_number_sub,
 };
+use kome_native_rt::string::{__kome_string_create, __kome_string_release, __kome_string_retain};
 
 /// Compiles `module_ast` and runs `entry` in the current process.
 ///
@@ -56,7 +57,7 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    let symbols: [(&str, *const u8); 8] = [
+    let symbols: [(&str, *const u8); 11] = [
         (
             "__kome_native_call",
             __kome_native_call as *const () as *const u8,
@@ -88,6 +89,18 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         (
             "__kome_number_compare",
             __kome_number_compare as *const () as *const u8,
+        ),
+        (
+            "__kome_string_create",
+            __kome_string_create as *const () as *const u8,
+        ),
+        (
+            "__kome_string_retain",
+            __kome_string_retain as *const () as *const u8,
+        ),
+        (
+            "__kome_string_release",
+            __kome_string_release as *const () as *const u8,
         ),
     ];
 

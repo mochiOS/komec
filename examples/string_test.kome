@@ -1,0 +1,6 @@
+@native("core.write_line")
+fn write_line(value: String)
+
+fn main() {
+    write_line("Hello, World!")
+}
