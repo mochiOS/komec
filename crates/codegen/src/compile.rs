@@ -16,6 +16,7 @@ use kome_ast::declarations::{Declaration, FunctionDeclaration, Module as KomeMod
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
     Expression, GroupExpression, IdentifierExpression, LiteralExpression, LiteralKind,
+    NumberLiteral,
 };
 use kome_ast::statements::{BlockStatement, Statement};
 use std::collections::HashMap;
@@ -564,7 +565,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     .transpose()?;
 
                 let typed = match &binding.init {
-                    Some(expression) => self.evaluate(expression)?,
+                    Some(expression) => self.evaluate_with_expected(expression, annotated_type)?,
 
                     None => {
                         let annotated = annotated_type.ok_or_else(|| {
@@ -741,6 +742,87 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
     fn evaluate_group(&mut self, group: &GroupExpression) -> CodegenResult<TypedValue> {
         self.evaluate(&group.expression)
+    }
+
+    fn evaluate_with_expected(
+        &mut self,
+        expression: &Expression,
+        expected: Option<KomeType>,
+    ) -> CodegenResult<TypedValue> {
+        if let Expression::Literal(literal) = expression {
+            if let LiteralKind::Number(number) = &literal.kind {
+                if let Some(expected) = expected {
+                    return self.evaluate_numeric_literal(number, literal.span, expected);
+                }
+            }
+        }
+
+        self.evaluate(expression)
+    }
+
+    fn evaluate_numeric_literal(
+        &mut self,
+        number: &NumberLiteral,
+        span: Span,
+        expected: KomeType,
+    ) -> CodegenResult<TypedValue> {
+        match expected {
+            KomeType::I8
+            | KomeType::I16
+            | KomeType::I32
+            | KomeType::I64
+            | KomeType::U8
+            | KomeType::U16
+            | KomeType::U32
+            | KomeType::U64 => {
+                if number.0.contains('.') {
+                    return Err(CodegenError::at(
+                        format!("fractional literal cannot be used as {}", expected.name(),),
+                        span,
+                    ));
+                }
+
+                let value = number.0.parse::<i64>().map_err(|_| {
+                    CodegenError::at(format!("`{}` is not a valid integer", number.0), span)
+                })?;
+
+                let representation = expected
+                    .cranelift()
+                    .expect("integer types always have a Cranelift representation");
+
+                Ok(TypedValue::some(
+                    self.builder.ins().iconst(representation, value),
+                    expected,
+                ))
+            }
+
+            KomeType::F32 => {
+                let value = number.0.parse::<f32>().map_err(|_| {
+                    CodegenError::at(format!("`{}` is not a valid f32", number.0), span)
+                })?;
+
+                Ok(TypedValue::some(
+                    self.builder.ins().f32const(value),
+                    KomeType::F32,
+                ))
+            }
+
+            KomeType::F64 | KomeType::Number => {
+                let value = number.0.parse::<f64>().map_err(|_| {
+                    CodegenError::at(format!("`{}` is not a valid number", number.0), span)
+                })?;
+
+                Ok(TypedValue::some(
+                    self.builder.ins().f64const(value),
+                    expected,
+                ))
+            }
+
+            _ => self.evaluate_literal(&LiteralExpression {
+                span,
+                kind: LiteralKind::Number(number.clone()),
+            }),
+        }
     }
 
     fn c_string_pointer(&mut self, symbol: &str) -> CodegenResult<ir::Value> {
@@ -1076,7 +1158,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             let offset = SLOT_SIZE * index as i64;
 
             let tag_address = self.builder.ins().iadd_imm_s(buffer, offset);
-            let tag = self.builder.ins().iconst(types::I64, param_type.tag());
+            let tag = self.builder.ins().iconst(types::I64, param_type.tag()?);
             self.builder
                 .ins()
                 .store(MachMemFlags::new(), tag, tag_address, 0);
@@ -1091,8 +1173,27 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     self.builder.ins().uextend(types::I64, *value)
                 }
 
+                KomeType::I8
+                | KomeType::I16
+                | KomeType::I32
+                | KomeType::I64
+                | KomeType::U8
+                | KomeType::U16
+                | KomeType::U32
+                | KomeType::U64
+                | KomeType::F32
+                | KomeType::F64 => {
+                    return Err(CodegenError::new(
+                        "fixed-width numeric types are not supported by the native ABI yet",
+                        None,
+                    ));
+                }
+
                 KomeType::Void => {
-                    return Err(CodegenError::new("parameters cannot have type Void", None));
+                    return Err(CodegenError::new(
+                        "Void cannot be passed to a native function",
+                        None,
+                    ));
                 }
             };
 
@@ -1109,7 +1210,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             .ins()
             .iconst(types::I64, arguments.len() as i64);
 
-        let ret_tag = self.builder.ins().iconst(types::I64, signature.ret.tag());
+        let ret_tag = self.builder.ins().iconst(types::I64, signature.ret.tag()?);
 
         let func_ref =
             Module::declare_func_in_func(self.module, self.foreign.native_call, self.builder.func);
@@ -1129,6 +1230,21 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     .bitcast(types::F64, MachMemFlags::new(), payload)
             }
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
+            KomeType::I8
+            | KomeType::I16
+            | KomeType::I32
+            | KomeType::I64
+            | KomeType::U8
+            | KomeType::U16
+            | KomeType::U32
+            | KomeType::U64
+            | KomeType::F32
+            | KomeType::F64 => {
+                return Err(CodegenError::new(
+                    "fixed-width numeric types are not supported by the native ABI yet",
+                    None,
+                ));
+            }
         };
 
         Ok(TypedValue::some(value, signature.ret))
@@ -1136,10 +1252,14 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
     fn zero_value(&mut self, kome_type: KomeType) -> CodegenResult<ir::Value> {
         match kome_type {
-            KomeType::Number => Ok(self.builder.ins().f64const(0.0)),
-
-            KomeType::Boolean | KomeType::Null => Ok(self.builder.ins().iconst(types::I8, 0)),
-
+            KomeType::Number | KomeType::F64 => Ok(self.builder.ins().f64const(0.0)),
+            KomeType::F32 => Ok(self.builder.ins().f32const(0.0)),
+            KomeType::Boolean | KomeType::I8 | KomeType::U8 | KomeType::Null => {
+                Ok(self.builder.ins().iconst(types::I8, 0))
+            }
+            KomeType::I16 | KomeType::U16 => Ok(self.builder.ins().iconst(types::I16, 0)),
+            KomeType::I32 | KomeType::U32 => Ok(self.builder.ins().iconst(types::I32, 0)),
+            KomeType::I64 | KomeType::U64 => Ok(self.builder.ins().iconst(types::I64, 0)),
             KomeType::Void => Err(CodegenError::new(
                 "internal error: Void has no zero value",
                 None,

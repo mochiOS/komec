@@ -205,3 +205,21 @@ fn main() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn compiles_fixed_width_numeric_bindings() {
+    run(r#"
+fn main() {
+    let a: i8 = 10
+    let b: i16 = 20
+    let c: i32 = 30
+    let d: i64 = 40
+    let e: u8 = 50
+    let f: u16 = 60
+    let g: u32 = 70
+    let h: u64 = 80
+    let i: f32 = 1.5
+    let j: f64 = 2.5
+}
+"#);
+}
