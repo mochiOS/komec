@@ -590,6 +590,18 @@ impl Parser {
         Ok(binding)
     }
 
+    fn parse_var_binding(&mut self, attributes: Vec<Attribute>) -> Result<Binding, ParseError> {
+        let keyword = self.expect("`var`", |kind| matches!(kind, TokenKind::Var))?;
+
+        let binding = self.parse_binding_after_keyword(attributes, keyword.span.start, true)?;
+
+        if binding.init.is_none() && binding.type_annotation.is_none() {
+            return Err(self.expected("a type annotation or initializer for a `var` binding"));
+        }
+
+        Ok(binding)
+    }
+
     fn parse_const_binding(&mut self, attributes: Vec<Attribute>) -> Result<Binding, ParseError> {
         let keyword = self.expect("`const`", |kind| matches!(kind, TokenKind::Const))?;
         self.parse_binding_after_keyword(attributes, keyword.span.start, false)
@@ -723,6 +735,8 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         match &self.current().kind {
             TokenKind::Let => self.parse_let_binding(Vec::new()).map(Statement::Let),
+
+            TokenKind::Var => self.parse_var_binding(Vec::new()).map(Statement::Let),
 
             TokenKind::Const => self.parse_const_binding(Vec::new()).map(Statement::Let),
 
