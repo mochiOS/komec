@@ -1115,6 +1115,18 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             .symbol_value(self.module.target_config().pointer_type(), global))
     }
 
+    fn release_owned_temporary(
+        &mut self,
+        value: TypedValue,
+        span: Span,
+    ) -> CodegenResult<()> {
+        if value.kome_type == KomeType::Number && value.ownership == ValueOwnership::Owned {
+            self.release_number(value.expect_value(span)?);
+        }
+
+        Ok(())
+    }
+
     fn emit_number_binary(
         &mut self,
         function: FuncId,
@@ -1162,6 +1174,9 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
                 let value = self.emit_number_binary(function, left_value, right_value);
 
+                self.release_owned_temporary(left, span)?;
+                self.release_owned_temporary(right, span)?;
+
                 Ok(TypedValue::some(value, KomeType::Number))
             }
 
@@ -1192,6 +1207,9 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                         .call(function, &[left_value, right_value]);
 
                     let comparison = self.builder.inst_results(call)[0];
+
+                    self.release_owned_temporary(left, span)?;
+                    self.release_owned_temporary(right, span)?;
 
                     let condition = match binary.op {
                         BinaryOp::Eq => IntCC::Equal,
