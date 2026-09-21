@@ -10,6 +10,7 @@
 //! produced executable).
 
 pub mod number;
+pub mod string;
 
 use crate::number::Number;
 use kome_abi::{Slot, TAG_BOOLEAN, TAG_NULL, TAG_NUMBER, TAG_VOID};
