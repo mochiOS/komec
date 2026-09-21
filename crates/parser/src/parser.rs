@@ -9,7 +9,7 @@ use kome_ast::{
     declarations::{
         Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
         EnumDeclaration, ExtensionDeclaration, ExtensionMember, FunctionDeclaration, Module,
-        RecipeDeclaration, UseDeclaration,
+        RecipeDeclaration, StructDeclaration, StructField, UseDeclaration,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
@@ -79,6 +79,12 @@ impl Parser {
                 .map(Declaration::Component);
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::Struct)) {
+            return self
+                .parse_struct_declaration(attributes)
+                .map(Declaration::Struct);
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Enum)) {
             return self
                 .parse_enum_declaration(attributes)
@@ -126,6 +132,63 @@ impl Parser {
         } else {
             Err(self.expected("a declaration after attributes"))
         }
+    }
+
+    fn parse_struct_declaration(
+        &mut self,
+        attributes: Vec<Attribute>,
+    ) -> Result<StructDeclaration, ParseError> {
+        let keyword = self.expect("`struct`", |kind| matches!(kind, TokenKind::Struct))?;
+        let start = attributes
+            .first()
+            .map_or(keyword.span.start, |attribute| attribute.span.start);
+        let (name, name_span) = self.expect_identifier("a struct name")?;
+
+        if !self.at(|kind| matches!(kind, TokenKind::LBrace)) {
+            return Ok(StructDeclaration {
+                span: Span::new(start, name_span.end),
+                attributes,
+                name,
+                fields: None,
+            });
+        }
+
+        self.advance();
+        let mut fields = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+
+            let (field_name, field_span) = self.expect_identifier("a struct field name")?;
+            self.expect("`:`", |kind| matches!(kind, TokenKind::Colon))?;
+            let type_ = self.parse_type()?;
+            let end = type_.span().end;
+            fields.push(StructField {
+                span: Span::new(field_span.start, end),
+                name: field_name,
+                type_,
+            });
+
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+                continue;
+            }
+
+            if !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+                return Err(self.expected("`,` or `}` after a struct field"));
+            }
+        }
+
+        let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
+
+        Ok(StructDeclaration {
+            span: Span::new(start, closing.span.end),
+            attributes,
+            name,
+            fields: Some(fields),
+        })
     }
 
     fn parse_extension_declaration(

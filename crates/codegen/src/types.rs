@@ -29,14 +29,25 @@ pub enum KomeType {
 impl KomeType {
     /// Maps a type annotation to a compilable type.
     pub fn from_annotation(annotation: &Type) -> CodegenResult<Self> {
-        let Type::Primitive(primitive) = annotation else {
-            return Err(CodegenError::at(
-                "only Number, bool, Null are supported now",
+        match annotation {
+            Type::Primitive(primitive) => Self::from_primitive_kind(&primitive.kind),
+            _ => Err(CodegenError::at(
+                "only primitive or runtime-backed types are supported now",
                 annotation.span(),
-            ));
-        };
+            )),
+        }
+    }
 
-        Self::from_primitive_kind(&primitive.kind)
+    /// Maps a runtime representation name to its native codegen type.
+    pub fn from_runtime_name(name: &str, span: kome_ast::Span) -> CodegenResult<Self> {
+        match name {
+            "string" => Ok(Self::String),
+            "number" => Ok(Self::Number),
+            _ => Err(CodegenError::at(
+                format!("unsupported runtime type `{name}`"),
+                span,
+            )),
+        }
     }
 
     fn from_primitive_kind(kind: &PrimitiveTypeKind) -> CodegenResult<Self> {

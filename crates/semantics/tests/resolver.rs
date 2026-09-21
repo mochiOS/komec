@@ -83,6 +83,44 @@ fn reports_duplicate_definition() {
 }
 
 #[test]
+fn resolves_struct_types_in_fields_and_functions() {
+    let module = parse(
+        "struct Point { x: Number }\nstruct Line { start: Point }\nfn id(value: Point) -> Point { return value }",
+    )
+    .unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(result.errors.is_empty());
+    assert_eq!(
+        result
+            .references
+            .iter()
+            .filter(|reference| reference.name == "Point")
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn reports_duplicate_and_undefined_struct_types() {
+    let duplicate = parse("struct Point {}\nstruct Point {}").unwrap();
+    let duplicate_result = ScopeBuilder::resolve(&duplicate);
+    assert!(matches!(
+        duplicate_result.errors.as_slice(),
+        [kome_semantics::error::ResolutionError::DuplicateDefinition { name, .. }]
+            if name == "Point"
+    ));
+
+    let undefined = parse("struct Line { start: Missing }").unwrap();
+    let undefined_result = ScopeBuilder::resolve(&undefined);
+    assert!(matches!(
+        undefined_result.errors.as_slice(),
+        [kome_semantics::error::ResolutionError::UndefinedName { name, .. }]
+            if name == "Missing"
+    ));
+}
+
+#[test]
 fn allows_variable_shadowing() {
     let source = "fn foo() {\n    let x = 1\n    let x = 2\n}";
     let module = parse(source).unwrap();

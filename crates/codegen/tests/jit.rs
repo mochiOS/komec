@@ -105,7 +105,7 @@ fn main() {
 }
 
 #[test]
-fn rejects_string_types() {
+fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"
 fn main(value: String) {
@@ -114,12 +114,15 @@ fn main(value: String) {
     )
     .unwrap();
 
-    let error = kome_jit::execute(&module, "main").unwrap_err();
-    assert_eq!(error.message(), "String is not supported yet");
+    let info = kome_codegen::compile::analyze_module(&module).unwrap();
+    assert_eq!(
+        info.get("main").unwrap().signature().params,
+        vec![kome_codegen::KomeType::String]
+    );
 }
 
 #[test]
-fn rejects_string_literals() {
+fn compiles_string_literals() {
     let module = kome_parser::parse(
         r#"
 fn main() {
@@ -129,8 +132,32 @@ fn main() {
     )
     .unwrap();
 
-    let error = kome_jit::execute(&module, "main").unwrap_err();
-    assert_eq!(error.message(), "string literals are not supported yet");
+    kome_jit::execute(&module, "main").unwrap();
+}
+
+#[test]
+fn recognizes_named_runtime_backed_types() {
+    let module = kome_parser::parse(
+        r#"
+@runtime("string")
+struct RuntimeText
+
+fn identity(value: RuntimeText) -> RuntimeText {
+    return value
+}
+"#,
+    )
+    .unwrap();
+    let info = kome_codegen::compile::analyze_module(&module).unwrap();
+
+    assert_eq!(
+        info.runtime_type("RuntimeText"),
+        Some(kome_codegen::KomeType::String)
+    );
+    assert_eq!(
+        info.get("identity").unwrap().signature().params,
+        vec![kome_codegen::KomeType::String]
+    );
 }
 
 #[test]

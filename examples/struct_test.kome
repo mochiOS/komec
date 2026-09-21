@@ -1,0 +1,21 @@
+struct Point {
+    x: Number,
+    y: Number,
+}
+
+struct Empty {}
+
+@runtime("string")
+struct RuntimeString
+
+fn point_x(point: Point) -> Number {
+    return point.x
+}
+
+fn main() {
+    let point: Point = {
+        x: 10,
+        y: 20,
+    }
+    let x: Number = point_x(point)
+}

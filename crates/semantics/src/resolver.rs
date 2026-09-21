@@ -8,6 +8,7 @@ use kome_ast::{
     declarations::{
         Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase, EnumDeclaration,
         ExtensionDeclaration, ExtensionMember, FunctionDeclaration, Module, RecipeDeclaration,
+        StructDeclaration,
     },
     expressions::{
         AssignmentExpression, BinaryExpression, BlockExpression, CallArg, CallExpression,
@@ -166,6 +167,7 @@ impl ScopeBuilder {
         match decl {
             Declaration::Component(comp) => self.visit_component_declaration(comp),
             Declaration::Function(func) => self.visit_function_declaration(func),
+            Declaration::Struct(struct_decl) => self.visit_struct_declaration(struct_decl),
             Declaration::Let(binding) => {
                 self.errors
                     .push(ResolutionError::InvalidLetLocation { span: binding.span });
@@ -207,7 +209,13 @@ impl ScopeBuilder {
             for member in members {
                 match member {
                     ComponentMember::State(binding) => self.register_binding(binding),
-                    ComponentMember::Let(binding) => self.register_binding(binding),
+                    ComponentMember::Let(binding) => {
+                        if !binding.mutable {
+                            self.errors
+                                .push(ResolutionError::InvalidLetLocation { span: binding.span });
+                        }
+                        self.register_binding(binding);
+                    }
                     ComponentMember::Recipe(recipe) => self.visit_recipe(recipe),
                     ComponentMember::Function(func) => self.visit_function_declaration(func),
                 }
@@ -271,6 +279,22 @@ impl ScopeBuilder {
             self.register_enum_case(case);
         }
         self.exit_scope();
+    }
+
+    fn visit_struct_declaration(&mut self, struct_decl: &StructDeclaration) {
+        self.declare(
+            struct_decl.span,
+            Symbol::StructType {
+                name: struct_decl.name.clone(),
+                span: struct_decl.span,
+            },
+        );
+
+        if let Some(fields) = &struct_decl.fields {
+            for field in fields {
+                self.visit_type(&field.type_);
+            }
+        }
     }
 
     fn register_enum_case(&mut self, case: &EnumCase) {

@@ -8,11 +8,31 @@ use crate::{AstNode, Span};
 pub enum Declaration {
     Component(ComponentDeclaration),
     Function(FunctionDeclaration),
+    Struct(StructDeclaration),
     Let(Binding),
     Constant(Binding),
     Use(UseDeclaration),
     Enum(EnumDeclaration),
     Extension(ExtensionDeclaration),
+}
+
+// ---- Struct ----
+
+/// A named product type. `None` fields represent an opaque struct declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructDeclaration {
+    pub span: Span,
+    pub attributes: Vec<Attribute>,
+    pub name: String,
+    pub fields: Option<Vec<StructField>>,
+}
+
+/// One named field in a struct declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField {
+    pub span: Span,
+    pub name: String,
+    pub type_: crate::types::Type,
 }
 
 // ---- Component ----
@@ -332,6 +352,7 @@ impl AstNode for Declaration {
         match self {
             Declaration::Component(declaration) => declaration.span,
             Declaration::Function(declaration) => declaration.span,
+            Declaration::Struct(declaration) => declaration.span,
             Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
             Declaration::Use(declaration) => declaration.span,
             Declaration::Enum(declaration) => declaration.span,
@@ -341,6 +362,18 @@ impl AstNode for Declaration {
 }
 
 impl AstNode for ComponentDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for StructDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for StructField {
     fn span(&self) -> Span {
         self.span
     }

@@ -3,10 +3,12 @@ use std::fmt;
 
 use kome_ast::declarations::{
     Binding, ComponentDeclaration, ComponentMember, Declaration, FunctionDeclaration, Module,
+    StructDeclaration,
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
-    ComponentExpression, Expression, LiteralKind, UnaryOp,
+    ComponentExpression, Expression, LiteralKind, ObjectExpression, ObjectProperty, PropertyKey,
+    UnaryOp,
 };
 use kome_ast::patterns::Pattern;
 use kome_ast::statements::{
@@ -115,6 +117,14 @@ impl std::error::Error for TypeCheckError {}
 #[derive(Debug, Clone)]
 pub struct TypeCheckResult {
     pub errors: Vec<TypeCheckError>,
+    pub structs: HashMap<String, StructTypeInfo>,
+}
+
+/// Semantic information retained for a declared struct.
+#[derive(Debug, Clone)]
+pub struct StructTypeInfo {
+    pub fields: Option<HashMap<String, SemanticType>>,
+    pub runtime: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +163,7 @@ pub struct TypeChecker {
     scopes: Vec<HashMap<String, SemanticType>>,
     functions: HashMap<String, FunctionSignature>,
     components: HashMap<String, ComponentSignature>,
+    structs: HashMap<String, StructTypeInfo>,
     return_type: SemanticType,
     errors: Vec<TypeCheckError>,
 }
@@ -164,6 +175,7 @@ impl TypeChecker {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
             components: HashMap::new(),
+            structs: HashMap::new(),
             return_type: SemanticType::Void,
             errors: Vec::new(),
         };
@@ -173,6 +185,7 @@ impl TypeChecker {
 
         TypeCheckResult {
             errors: checker.errors,
+            structs: checker.structs,
         }
     }
 
@@ -181,6 +194,10 @@ impl TypeChecker {
     fn collect_declarations(&mut self, module: &Module) {
         for declaration in &module.declarations {
             match declaration {
+                Declaration::Struct(struct_decl) => {
+                    self.collect_struct(struct_decl);
+                }
+
                 Declaration::Function(function) => {
                     self.collect_function(function);
                 }
@@ -191,6 +208,39 @@ impl TypeChecker {
 
                 _ => {}
             }
+        }
+    }
+
+    fn collect_struct(&mut self, struct_decl: &StructDeclaration) {
+        let fields = struct_decl.fields.as_ref().map(|fields| {
+            fields
+                .iter()
+                .map(|field| (field.name.clone(), Self::type_from_annotation(&field.type_)))
+                .collect()
+        });
+        let runtime = struct_decl.attributes.iter().find_map(|attribute| {
+            if attribute.name != "runtime" || attribute.args.len() != 1 {
+                return None;
+            }
+
+            match &attribute.args[0] {
+                Expression::Literal(literal) => match &literal.kind {
+                    LiteralKind::String(runtime) => Some(runtime.clone()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        });
+
+        if self
+            .structs
+            .insert(struct_decl.name.clone(), StructTypeInfo { fields, runtime })
+            .is_some()
+        {
+            self.errors.push(TypeCheckError {
+                message: format!("duplicate struct `{}`", struct_decl.name),
+                span: struct_decl.span,
+            });
         }
     }
 
@@ -573,9 +623,18 @@ impl TypeChecker {
              * collection, object, closure, and member-resolution work.
              */
             Expression::Member(member) => {
-                self.infer_expression(&member.object, None);
+                let object = self.infer_expression(&member.object, None);
 
-                SemanticType::Unknown
+                match object {
+                    SemanticType::Named(name) => self
+                        .structs
+                        .get(&name)
+                        .and_then(|struct_| struct_.fields.as_ref())
+                        .and_then(|fields| fields.get(&member.property))
+                        .cloned()
+                        .unwrap_or(SemanticType::Unknown),
+                    _ => SemanticType::Unknown,
+                }
             }
 
             Expression::Index(index) => {
@@ -595,15 +654,7 @@ impl TypeChecker {
                 SemanticType::Unknown
             }
 
-            Expression::Object(object) => {
-                for property in &object.props {
-                    let kome_ast::expressions::ObjectProperty::KeyValue(property) = property;
-
-                    self.infer_expression(&property.value, None);
-                }
-
-                SemanticType::Unknown
-            }
+            Expression::Object(object) => self.infer_object_expression(object, expected),
 
             Expression::Closure(closure) => {
                 self.enter_scope();
@@ -631,6 +682,42 @@ impl TypeChecker {
                 self.infer_expression(&is_expression.value, None);
                 self.infer_expression(&is_expression.body, expected)
             }
+        }
+    }
+
+    fn infer_object_expression(
+        &mut self,
+        object: &ObjectExpression,
+        expected: Option<&SemanticType>,
+    ) -> SemanticType {
+        let fields = match expected {
+            Some(SemanticType::Named(name)) => self
+                .structs
+                .get(name)
+                .and_then(|struct_| struct_.fields.clone()),
+            _ => None,
+        };
+
+        for property in &object.props {
+            let ObjectProperty::KeyValue(property) = property;
+            let name = match &property.key {
+                PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            };
+            let field_type = name.and_then(|name| fields.as_ref()?.get(name));
+            let actual = self.infer_expression(&property.value, field_type);
+
+            if let Some(field_type) = field_type {
+                self.check_compatible(field_type, &actual, property.value.span());
+            }
+        }
+
+        if fields.is_some() {
+            expected.cloned().unwrap_or(SemanticType::Unknown)
+        } else {
+            SemanticType::Unknown
         }
     }
 

@@ -109,6 +109,10 @@ fn resolution_error_to_diagnostic(source: &str, error: &ResolutionError) -> Diag
             "`let` is not allowed at module or component level; use `const` or `state` instead"
                 .to_owned(),
         ),
+        ResolutionError::AssignmentToImmutable { name, span } => (
+            span,
+            format!("cannot assign to immutable variable `{name}`"),
+        ),
     };
 
     Diagnostic {

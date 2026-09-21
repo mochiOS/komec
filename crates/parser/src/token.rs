@@ -5,6 +5,7 @@ use kome_ast::Span;
 pub enum TokenKind {
     Fn,
     Component,
+    Struct,
     Enum,
     Extension,
     Recipe,
@@ -117,6 +118,7 @@ impl TokenKind {
         match identifier.as_str() {
             "fn" => Self::Fn,
             "component" => Self::Component,
+            "struct" => Self::Struct,
             "enum" => Self::Enum,
             "extension" => Self::Extension,
             "recipe" => Self::Recipe,

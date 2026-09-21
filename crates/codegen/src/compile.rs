@@ -12,7 +12,9 @@ use cranelift::prelude::*;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use kome_ast::AstNode;
 use kome_ast::Span;
-use kome_ast::declarations::{Declaration, FunctionDeclaration, Module as KomeModule};
+use kome_ast::declarations::{
+    Declaration, FunctionDeclaration, Module as KomeModule, StructDeclaration,
+};
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
     Expression, GroupExpression, IdentifierExpression, LiteralExpression, LiteralKind,
@@ -58,11 +60,16 @@ impl FunctionKind<'_> {
 #[derive(Debug)]
 pub struct ModuleInfo<'a> {
     functions: HashMap<String, FunctionKind<'a>>,
+    runtime_types: HashMap<String, KomeType>,
 }
 
 impl<'a> ModuleInfo<'a> {
     pub fn get(&self, name: &str) -> Option<&FunctionKind<'a>> {
         self.functions.get(name)
+    }
+
+    pub fn runtime_type(&self, name: &str) -> Option<KomeType> {
+        self.runtime_types.get(name).copied()
     }
 
     /// The entry point's signature, validated for direct invocation.
@@ -107,13 +114,24 @@ impl<'a> ModuleInfo<'a> {
 /// Collects function declarations and computes their signatures.
 pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
     let mut functions = HashMap::new();
+    let mut runtime_types = HashMap::new();
+
+    for declaration in &module.declarations {
+        let Declaration::Struct(struct_decl) = declaration else {
+            continue;
+        };
+
+        if let Some(runtime_type) = runtime_type(struct_decl)? {
+            runtime_types.insert(struct_decl.name.clone(), runtime_type);
+        }
+    }
 
     for declaration in &module.declarations {
         let Declaration::Function(function) = declaration else {
             continue;
         };
 
-        let signature = analyze_signature(function)?;
+        let signature = analyze_signature(function, &runtime_types)?;
 
         let kind = match native_symbol(function)? {
             Some(symbol) => FunctionKind::Native { signature, symbol },
@@ -132,7 +150,48 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
         }
     }
 
-    Ok(ModuleInfo { functions })
+    Ok(ModuleInfo {
+        functions,
+        runtime_types,
+    })
+}
+
+fn runtime_type(struct_decl: &StructDeclaration) -> CodegenResult<Option<KomeType>> {
+    let mut attributes = struct_decl
+        .attributes
+        .iter()
+        .filter(|attribute| attribute.name == "runtime");
+    let Some(attribute) = attributes.next() else {
+        return Ok(None);
+    };
+
+    let invalid = |message: &'static str| {
+        CodegenError::at(
+            format!(
+                "invalid @runtime attribute on `{}`: {message}",
+                struct_decl.name
+            ),
+            attribute.span,
+        )
+    };
+
+    if attributes.next().is_some() {
+        return Err(invalid("attribute appears more than once"));
+    }
+
+    if attribute.args.len() != 1 {
+        return Err(invalid("expected exactly one string argument"));
+    }
+
+    let Expression::Literal(LiteralExpression {
+        kind: LiteralKind::String(name),
+        ..
+    }) = &attribute.args[0]
+    else {
+        return Err(invalid("argument must be a string literal"));
+    };
+
+    KomeType::from_runtime_name(name, attribute.span).map(Some)
 }
 
 /// Extracts the symbol name from an `@native("symbol")` attribute.
@@ -408,7 +467,10 @@ fn build_signature<M: Module>(
     Ok(cranelift_signature)
 }
 
-fn analyze_signature(function: &FunctionDeclaration) -> CodegenResult<FunctionSignature> {
+fn analyze_signature(
+    function: &FunctionDeclaration,
+    runtime_types: &HashMap<String, KomeType>,
+) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
 
     for pattern in &function.params {
@@ -432,7 +494,7 @@ fn analyze_signature(function: &FunctionDeclaration) -> CodegenResult<FunctionSi
             ));
         };
 
-        let param_type = KomeType::from_annotation(annotation)?;
+        let param_type = type_from_annotation(annotation, runtime_types)?;
 
         if param_type == KomeType::Void {
             return Err(CodegenError::at(
@@ -445,11 +507,27 @@ fn analyze_signature(function: &FunctionDeclaration) -> CodegenResult<FunctionSi
     }
 
     let ret = match &function.return_type {
-        Some(annotation) => KomeType::from_annotation(annotation)?,
+        Some(annotation) => type_from_annotation(annotation, runtime_types)?,
         None => KomeType::Void,
     };
 
     Ok(FunctionSignature { params, ret })
+}
+
+fn type_from_annotation(
+    annotation: &kome_ast::types::Type,
+    runtime_types: &HashMap<String, KomeType>,
+) -> CodegenResult<KomeType> {
+    if let kome_ast::types::Type::Named(named) = annotation {
+        return runtime_types.get(&named.name).copied().ok_or_else(|| {
+            CodegenError::at(
+                format!("type `{}` has no runtime representation", named.name),
+                named.span,
+            )
+        });
+    }
+
+    KomeType::from_annotation(annotation)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -813,7 +891,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 let annotated_type = binding
                     .type_annotation
                     .as_ref()
-                    .map(KomeType::from_annotation)
+                    .map(|annotation| type_from_annotation(annotation, &self.info.runtime_types))
                     .transpose()?;
 
                 let typed = match &binding.init {

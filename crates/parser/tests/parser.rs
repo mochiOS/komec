@@ -257,7 +257,7 @@ fn parses_multiple_component_parameters() {
 
     assert_eq!(component.params[1].span, Span::new(32, 49),);
 
-    assert_eq!(component.params[2].span, Span::new(51, 74),);
+    assert_eq!(component.params[2].span, Span::new(51, 71),);
 }
 
 #[test]
@@ -321,7 +321,7 @@ fn parses_component_state_and_let_bindings() {
     };
 
     assert_eq!(name.span, Span::new(22, 42));
-    assert!(!name.mutable);
+    assert!(name.mutable);
     assert!(name.attributes.is_empty());
     assert_eq!(name.type_annotation, None);
 
@@ -390,7 +390,7 @@ fn parses_component_state_and_let_bindings() {
 #[test]
 fn parses_mutable_let_binding() {
     let source = r#"component App() {
-    let mut count = 1
+    var count = 1
 }"#;
 
     let module = parse(source).unwrap();
@@ -405,14 +405,14 @@ fn parses_mutable_let_binding() {
         panic!("expected let binding");
     };
 
-    assert_eq!(binding.span, Span::new(22, 39),);
+    assert_eq!(binding.span, Span::new(22, 35),);
 
     assert!(binding.mutable);
 
     assert_eq!(
         binding.pattern,
         Pattern::Ident(IdentifierPattern {
-            span: Span::new(30, 35),
+            span: Span::new(26, 31),
             name: "count".into(),
             type_annotation: None,
             default: None,
@@ -465,7 +465,7 @@ fn parses_attributed_let_binding() {
 #[test]
 fn parses_binding_without_initializer() {
     let source = r#"component App() {
-    let title: String
+    var title: String
 }"#;
 
     let module = parse(source).unwrap();

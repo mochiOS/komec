@@ -68,7 +68,7 @@ fn parses_object_literal() {
         enabled.value.as_ref(),
         Expression::Literal(literal)
             if literal.kind
-                == LiteralKind::bool(true)
+                == LiteralKind::Boolean(true)
     ));
 }
 

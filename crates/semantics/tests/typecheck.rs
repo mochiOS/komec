@@ -169,6 +169,48 @@ fn main() {
 }
 
 #[test]
+fn checks_named_struct_types_and_retains_fields() {
+    let module = parse(
+        r#"
+struct Point {
+    x: Number,
+    y: Number,
+}
+
+fn identity(point: Point) -> Point {
+    return point
+}
+
+fn main() {
+    let point: Point = { x: 1, y: 2 }
+    let x: Number = point.x
+}
+"#,
+    )
+    .unwrap();
+    let result = TypeChecker::check(&module);
+
+    assert!(result.errors.is_empty());
+    assert_eq!(result.structs["Point"].fields.as_ref().unwrap().len(), 2);
+}
+
+#[test]
+fn retains_runtime_backing_and_reports_duplicate_structs() {
+    let module =
+        parse("@runtime(\"string\") struct Text\nstruct Duplicate {}\nstruct Duplicate {}")
+            .unwrap();
+    let result = TypeChecker::check(&module);
+
+    assert_eq!(result.structs["Text"].runtime.as_deref(), Some("string"));
+    assert_eq!(result.errors.len(), 1);
+    assert!(
+        result.errors[0]
+            .message
+            .contains("duplicate struct `Duplicate`")
+    );
+}
+
+#[test]
 fn resolves_dot_identifier_from_component_parameter_type() {
     let module = parse(
         r#"
