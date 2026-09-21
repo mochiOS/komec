@@ -247,6 +247,8 @@ pub fn compile_module<M: Module>(
 struct ForeignFunctions {
     native_call: FuncId,
     number_parse: FuncId,
+    number_retain: FuncId,
+    number_release: FuncId,
     number_add: FuncId,
     number_sub: FuncId,
     number_mul: FuncId,
@@ -259,47 +261,53 @@ impl ForeignFunctions {
             module,
             "__kome_native_call",
             &[types::I64, types::I64, types::I64, types::I64],
-            types::I64,
+            Some(types::I64),
         )?;
 
         let number_parse = declare_foreign(
             module,
             "__kome_number_parse",
             &[types::I64, types::I64],
-            types::I64,
+            Some(types::I64),
         )?;
+
+        let number_retain = declare_foreign(module, "__kome_number_retain", &[types::I64], None)?;
+
+        let number_release = declare_foreign(module, "__kome_number_release", &[types::I64], None)?;
 
         let number_add = declare_foreign(
             module,
             "__kome_number_add",
             &[types::I64, types::I64],
-            types::I64,
+            Some(types::I64),
         )?;
 
         let number_sub = declare_foreign(
             module,
             "__kome_number_sub",
             &[types::I64, types::I64],
-            types::I64,
+            Some(types::I64),
         )?;
 
         let number_mul = declare_foreign(
             module,
             "__kome_number_mul",
             &[types::I64, types::I64],
-            types::I64,
+            Some(types::I64),
         )?;
 
         let number_compare = declare_foreign(
             module,
             "__kome_number_compare",
             &[types::I64, types::I64],
-            types::I32,
+            Some(types::I32),
         )?;
 
         Ok(Self {
             native_call,
             number_parse,
+            number_retain,
+            number_release,
             number_add,
             number_sub,
             number_mul,
@@ -312,14 +320,17 @@ fn declare_foreign<M: Module>(
     module: &mut M,
     name: &str,
     params: &[types::Type],
-    ret: types::Type,
+    ret: Option<types::Type>,
 ) -> CodegenResult<FuncId> {
     let mut signature = module.make_signature();
 
     signature
         .params
         .extend(params.iter().map(|ty| AbiParam::new(*ty)));
-    signature.returns.push(AbiParam::new(ret));
+
+    if let Some(ret) = ret {
+        signature.returns.push(AbiParam::new(ret));
+    }
 
     let func_id = module
         .declare_function(name, Linkage::Import, &signature)
@@ -424,6 +435,12 @@ fn analyze_signature(function: &FunctionDeclaration) -> CodegenResult<FunctionSi
     Ok(FunctionSignature { params, ret })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueOwnership {
+    Borrowed,
+    Owned,
+}
+
 /// The result of evaluating an expression: its native value and type.
 ///
 /// The value is `None` exactly when the type is `Void`.
@@ -431,6 +448,7 @@ fn analyze_signature(function: &FunctionDeclaration) -> CodegenResult<FunctionSi
 struct TypedValue {
     value: Option<ir::Value>,
     kome_type: KomeType,
+    ownership: ValueOwnership,
 }
 
 impl TypedValue {
@@ -438,6 +456,15 @@ impl TypedValue {
         Self {
             value: Some(value),
             kome_type,
+            ownership: ValueOwnership::Owned,
+        }
+    }
+
+    fn borrowed(value: ir::Value, kome_type: KomeType) -> Self {
+        Self {
+            value: Some(value),
+            kome_type,
+            ownership: ValueOwnership::Borrowed,
         }
     }
 
@@ -445,6 +472,7 @@ impl TypedValue {
         Self {
             value: None,
             kome_type: KomeType::Void,
+            ownership: ValueOwnership::Borrowed,
         }
     }
 
@@ -479,6 +507,7 @@ struct FunctionTranslator<'b, 'c, 'a, M: Module> {
 struct ScopedVariable {
     variable: Variable,
     kome_type: KomeType,
+    owns_value: bool,
 }
 
 impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
@@ -514,7 +543,12 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 unreachable!("non-identifier parameter patterns are rejected during analysis");
             };
 
-            self.declare_variable(&identifier.name, value, *param_type)?;
+            self.declare_variable(
+                &identifier.name,
+                value,
+                *param_type,
+                ValueOwnership::Borrowed,
+            )?;
         }
 
         self.translate_block(body)?;
@@ -550,7 +584,19 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             self.translate_statement(statement)?;
         }
 
-        self.scopes.pop();
+        if !self.terminated {
+            let scope = self.scopes.pop().expect("scope stack is never empty");
+
+            for scoped in scope.values() {
+                if scoped.kome_type == KomeType::Number && scoped.owns_value {
+                    let value = self.builder.use_var(scoped.variable);
+
+                    self.release_number(value);
+                }
+            }
+        } else {
+            self.scopes.pop();
+        }
 
         Ok(())
     }
@@ -650,7 +696,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
                 let value = typed.expect_value(binding.span)?;
 
-                self.declare_variable(&pattern.name, value, typed.kome_type)?;
+                self.declare_variable(&pattern.name, value, typed.kome_type, typed.ownership)?;
             }
 
             Statement::Block(block) => self.translate_block(block)?,
@@ -680,10 +726,21 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         name: &str,
         value: ir::Value,
         kome_type: KomeType,
+        ownership: ValueOwnership,
     ) -> CodegenResult<()> {
         let representation = kome_type.cranelift().ok_or_else(|| {
             CodegenError::new("internal error: Void cannot be stored in a variable", None)
         })?;
+
+        let owns_value = if kome_type == KomeType::Number {
+            if ownership == ValueOwnership::Borrowed {
+                self.retain_number(value);
+            }
+
+            true
+        } else {
+            false
+        };
 
         let variable = self.builder.declare_var(representation);
 
@@ -696,6 +753,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             ScopedVariable {
                 variable,
                 kome_type,
+                owns_value,
             },
         );
 
@@ -785,7 +843,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 )
             })?;
 
-        Ok(TypedValue::some(
+        Ok(TypedValue::borrowed(
             self.builder.use_var(scoped.variable),
             scoped.kome_type,
         ))
@@ -1332,6 +1390,26 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 None,
             )),
         }
+    }
+
+    fn retain_number(&mut self, value: ir::Value) {
+        let function = Module::declare_func_in_func(
+            self.module,
+            self.foreign.number_retain,
+            self.builder.func,
+        );
+
+        self.builder.ins().call(function, &[value]);
+    }
+
+    fn release_number(&mut self, value: ir::Value) {
+        let function = Module::declare_func_in_func(
+            self.module,
+            self.foreign.number_release,
+            self.builder.func,
+        );
+
+        self.builder.ins().call(function, &[value]);
     }
 }
 
