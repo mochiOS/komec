@@ -625,7 +625,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                             ));
                         }
 
-                        typed.expect_value(expression.span())?
+                        self.own_value(typed, expression.span())?
                     }
 
                     None => match self.return_type {
@@ -1201,13 +1201,13 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 )
             })?;
 
-        let value = self.evaluate(&assignment.value)?;
+        let typed = self.evaluate(&assignment.value)?;
 
-        if value.kome_type != scoped.kome_type {
+        if typed.kome_type != scoped.kome_type {
             return Err(CodegenError::at(
                 format!(
                     "cannot assign {} to variable `{}` of type {}",
-                    value.kome_type.name(),
+                    typed.kome_type.name(),
                     identifier.name,
                     scoped.kome_type.name(),
                 ),
@@ -1215,22 +1215,23 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             ));
         }
 
-        let value = value.expect_value(assignment.value.span())?;
-
         match assignment.op {
             AssignOp::Assign => {
+                let value = self.own_value(typed, assignment.value.span())?;
+                if scoped.kome_type == KomeType::Number && scoped.owns_value {
+                    let old = self.builder.use_var(scoped.variable);
+                    self.release_number(old);
+                }
+                
                 self.builder.def_var(scoped.variable, value);
+                Ok(TypedValue::borrowed(value, scoped.kome_type))
             }
 
-            _ => {
-                return Err(CodegenError::at(
-                    "compound assignment is not supported yet",
-                    assignment.span,
-                ));
-            }
+            _ => Err(CodegenError::at(
+                "compound assignment is not supported yet",
+                assignment.span,
+            )),
         }
-
-        Ok(TypedValue::some(value, scoped.kome_type))
     }
 
     fn emit_user_call(
@@ -1410,6 +1411,16 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         );
 
         self.builder.ins().call(function, &[value]);
+    }
+
+    fn own_value(&mut self, value: TypedValue, span: Span) -> CodegenResult<ir::Value> {
+        let raw = value.expect_value(span)?;
+
+        if value.kome_type == KomeType::Number && value.ownership == ValueOwnership::Borrowed {
+            self.retain_number(raw);
+        }
+
+        Ok(raw)
     }
 }
 
