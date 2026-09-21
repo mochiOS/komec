@@ -1,6 +1,4 @@
-use kome_ast::declarations::{Declaration, TypeMember};
-use kome_ast::expressions::Expression;
-use kome_ast::patterns::Pattern;
+use kome_ast::declarations::Declaration;
 use kome_ast::types::Type;
 use kome_parser::{TokenKind, parse, tokenize};
 
@@ -13,19 +11,13 @@ fn impl_is_not_a_keyword() {
 }
 
 #[test]
-fn parses_struct_fields_constants_and_functions() {
+fn parses_struct_fields() {
     let module = parse(
         r#"
 struct Color {
     r: Number
     g: Number
     b: Number
-
-    const BLACK: Color = Color { r: 0 g: 0 b: 0 }
-
-    fn invert(self) -> Color {
-        return self
-    }
 }
 "#,
     )
@@ -36,21 +28,6 @@ struct Color {
     let fields = declaration.fields.as_ref().unwrap();
 
     assert_eq!(fields.len(), 3);
-    assert_eq!(declaration.members.len(), 2);
-    assert!(matches!(declaration.members[0], TypeMember::Constant(_)));
-
-    let TypeMember::Function(function) = &declaration.members[1] else {
-        panic!("expected function member");
-    };
-    assert!(matches!(
-        &function.params[0],
-        Pattern::Ident(identifier) if identifier.name == "self"
-    ));
-
-    let TypeMember::Constant(constant) = &declaration.members[0] else {
-        unreachable!();
-    };
-    assert!(matches!(constant.init, Some(Expression::Struct(_))));
 }
 
 #[test]
@@ -93,4 +70,6 @@ fn rejects_invalid_type_members() {
     assert!(parse("for Color: Add { value: Number }").is_err());
     assert!(parse("impl Add for Color {}").is_err());
     assert!(parse("struct Color { let value = 1 }").is_err());
+    assert!(parse("struct Color { const VALUE: Number = 1 }").is_err());
+    assert!(parse("struct Color { fn value() -> Number }").is_err());
 }

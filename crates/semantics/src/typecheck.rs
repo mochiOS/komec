@@ -332,10 +332,6 @@ impl TypeChecker {
                     self.register_binding(binding);
                 }
 
-                Declaration::Struct(struct_decl) => {
-                    self.visit_type_members(&struct_decl.members);
-                }
-
                 Declaration::For(declaration) => {
                     self.visit_type_members(&declaration.members);
                 }

@@ -25,7 +25,6 @@ pub struct StructDeclaration {
     pub attributes: Vec<Attribute>,
     pub name: String,
     pub fields: Option<Vec<StructField>>,
-    pub members: Vec<TypeMember>,
 }
 
 /// One named field in a struct declaration.

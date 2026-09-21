@@ -296,7 +296,6 @@ impl ScopeBuilder {
             }
         }
 
-        self.visit_type_members(&struct_decl.members);
     }
 
     fn visit_for_declaration(&mut self, declaration: &ForDeclaration) {

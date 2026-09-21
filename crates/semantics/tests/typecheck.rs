@@ -200,11 +200,11 @@ fn checks_struct_and_implementation_members() {
         r#"
 struct Color {
     r: Number
-    const BLACK: Color = Color { r: 0 }
-    fn make(r: Number) -> Color { return Color { r: r } }
 }
 
 for Color {
+    const BLACK: Color = Color { r: 0 }
+    fn make(r: Number) -> Color { return Color { r: r } }
     fn value(self) -> Color { return self }
 }
 

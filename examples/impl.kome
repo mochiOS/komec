@@ -4,7 +4,9 @@ struct Color {
     r: Number
     g: Number
     b: Number
+}
 
+for Color {
     const BLACK: Color = Color {
         r: 0
         g: 0

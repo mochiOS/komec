@@ -148,30 +148,18 @@ impl Parser {
                 attributes,
                 name,
                 fields: None,
-                members: Vec::new(),
             });
         }
 
         self.advance();
         let mut fields = Vec::new();
-        let mut members = Vec::new();
 
         while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
             if self.current().is_eof() {
                 return Err(self.expected("`}`"));
             }
 
-            if self.at(|kind| matches!(kind, TokenKind::Const | TokenKind::Fn | TokenKind::At)) {
-                members.push(self.parse_type_member()?);
-
-                if self.at(|kind| matches!(kind, TokenKind::Comma)) {
-                    self.advance();
-                }
-
-                continue;
-            }
-
-            let (field_name, field_span) = self.expect_identifier("a struct field or member")?;
+            let (field_name, field_span) = self.expect_identifier("a struct field")?;
             self.expect("`:`", |kind| matches!(kind, TokenKind::Colon))?;
             let type_ = self.parse_type()?;
             let end = type_.span().end;
@@ -186,16 +174,7 @@ impl Parser {
                 continue;
             }
 
-            if !self.at(|kind| {
-                matches!(
-                    kind,
-                    TokenKind::RBrace
-                        | TokenKind::Ident(_)
-                        | TokenKind::Const
-                        | TokenKind::Fn
-                        | TokenKind::At
-                )
-            }) {
+            if !self.at(|kind| matches!(kind, TokenKind::RBrace | TokenKind::Ident(_))) {
                 return Err(self.expected("`,` or `}` after a struct field"));
             }
         }
@@ -207,7 +186,6 @@ impl Parser {
             attributes,
             name,
             fields: Some(fields),
-            members,
         })
     }
 
