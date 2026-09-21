@@ -48,12 +48,12 @@ fn parses_top_level_let() {
 }
 
 #[test]
-fn parses_mutable_top_level_let() {
-    let source = "let mut counter = 0";
+fn parses_top_level_var() {
+    let source = "var counter = 0";
     let module = parse(source).unwrap();
 
     let Declaration::Let(binding) = &module.declarations[0] else {
-        panic!("expected top-level let");
+        panic!("expected top-level variable");
     };
 
     assert!(binding.mutable);
@@ -75,15 +75,32 @@ fn parses_mutable_top_level_let() {
 }
 
 #[test]
-fn parses_top_level_let_without_initializer() {
-    let source = "let applicationName: String";
+fn rejects_top_level_let_without_initializer() {
+    let error = parse("let applicationName: String").unwrap_err();
+
+    let FrontendError::Parse(error) = error else {
+        panic!("expected parse error");
+    };
+
+    assert!(matches!(
+        error.kind,
+        ParseErrorKind::Expected {
+            expected: "an initializer for a `let` binding",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn parses_top_level_var_without_initializer() {
+    let source = "var applicationName: String";
     let module = parse(source).unwrap();
 
     let Declaration::Let(binding) = &module.declarations[0] else {
-        panic!("expected top-level let");
+        panic!("expected top-level variable");
     };
 
-    assert!(!binding.mutable);
+    assert!(binding.mutable);
     assert!(binding.init.is_none());
 
     assert!(matches!(
@@ -91,6 +108,23 @@ fn parses_top_level_let_without_initializer() {
         Some(Type::Primitive(primitive))
             if primitive.kind
                 == PrimitiveTypeKind::String
+    ));
+}
+
+#[test]
+fn rejects_top_level_var_without_type_or_initializer() {
+    let error = parse("var applicationName").unwrap_err();
+
+    let FrontendError::Parse(error) = error else {
+        panic!("expected parse error");
+    };
+
+    assert!(matches!(
+        error.kind,
+        ParseErrorKind::Expected {
+            expected: "a type annotation or initializer for a `var` binding",
+            ..
+        }
     ));
 }
 
@@ -120,7 +154,7 @@ fn parses_top_level_let_expression() {
 fn parses_multiple_top_level_bindings() {
     let source = r#"
 let name = "Kome"
-let mut launchCount = 0
+var launchCount = 0
 let version: Number = 1
 "#;
 

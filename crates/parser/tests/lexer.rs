@@ -7,7 +7,7 @@ fn tokenizes_component_source() {
     let source = r#"@application
 component App() {
     state ratio = 50%
-    let mut count = 1
+    var count = 1
 
     fn add(value: Number) -> Number {
         return count + value
@@ -32,8 +32,7 @@ component App() {
             TokenKind::Ident("ratio".into()),
             TokenKind::Assign,
             TokenKind::Percent("50".into()),
-            TokenKind::Let,
-            TokenKind::Mut,
+            TokenKind::Var,
             TokenKind::Ident("count".into()),
             TokenKind::Assign,
             TokenKind::Number("1".into()),

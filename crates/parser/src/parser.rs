@@ -101,6 +101,10 @@ impl Parser {
             return self.parse_let_binding(attributes).map(Declaration::Let);
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::Var)) {
+            return self.parse_var_binding(attributes).map(Declaration::Let);
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Const)) {
             return self
                 .parse_const_binding(attributes)
@@ -113,7 +117,7 @@ impl Parser {
             }
 
             return Err(self.expected(
-                "a component, enum, extension, function, or let declaration after attributes",
+                "a component, enum, extension, function, let, or var declaration after attributes",
             ));
         }
 
@@ -406,6 +410,12 @@ impl Parser {
                 .map(|binding| ComponentMember::Let(Box::new(binding)));
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::Var)) {
+            return self
+                .parse_var_binding(attributes)
+                .map(|binding| ComponentMember::Let(Box::new(binding)));
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Recipe)) {
             return self
                 .parse_recipe_declaration(attributes)
@@ -565,20 +575,19 @@ impl Parser {
     fn parse_state_binding(&mut self, attributes: Vec<Attribute>) -> Result<Binding, ParseError> {
         let keyword = self.expect("`state`", |kind| matches!(kind, TokenKind::State))?;
 
-        self.parse_binding_after_keyword(attributes, keyword.span.start, false)
+        self.parse_binding_after_keyword(attributes, keyword.span.start, true)
     }
 
     fn parse_let_binding(&mut self, attributes: Vec<Attribute>) -> Result<Binding, ParseError> {
         let keyword = self.expect("`let`", |kind| matches!(kind, TokenKind::Let))?;
 
-        let mutable = if self.at(|kind| matches!(kind, TokenKind::Mut)) {
-            self.advance();
-            true
-        } else {
-            false
-        };
+        let binding = self.parse_binding_after_keyword(attributes, keyword.span.start, false)?;
 
-        self.parse_binding_after_keyword(attributes, keyword.span.start, mutable)
+        if binding.init.is_none() {
+            return Err(self.expected("an initializer for a `let` binding"));
+        }
+
+        Ok(binding)
     }
 
     fn parse_const_binding(&mut self, attributes: Vec<Attribute>) -> Result<Binding, ParseError> {
