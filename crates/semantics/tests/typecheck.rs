@@ -197,7 +197,7 @@ fn main() {
 #[test]
 fn retains_runtime_backing_and_reports_duplicate_structs() {
     let module =
-        parse("@runtime(\"string\") struct Text\nstruct Duplicate {}\nstruct Duplicate {}")
+        parse("@runtime(\"string\") struct Text\nstruct Duplicate {}\nstruct Duplicate {}\nfn main() { let text: Text = \"hello\" }")
             .unwrap();
     let result = TypeChecker::check(&module);
 

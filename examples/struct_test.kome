@@ -8,14 +8,10 @@ struct Empty {}
 @runtime("string")
 struct RuntimeString
 
-fn point_x(point: Point) -> Number {
-    return point.x
-}
+@native("core.write_line")
+fn write_line(value: RuntimeString)
 
 fn main() {
-    let point: Point = {
-        x: 10,
-        y: 20,
-    }
-    let x: Number = point_x(point)
+    let message: RuntimeString = "struct declarations work"
+    write_line(message)
 }

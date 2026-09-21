@@ -986,12 +986,33 @@ impl TypeChecker {
             return true;
         }
 
+        if let Some(runtime_type) = self.runtime_type(expected) {
+            return self.types_compatible(&runtime_type, actual);
+        }
+
+        if let Some(runtime_type) = self.runtime_type(actual) {
+            return self.types_compatible(expected, &runtime_type);
+        }
+
         match expected {
             SemanticType::Optional(inner) => {
                 actual == &SemanticType::Null || self.types_compatible(inner, actual)
             }
 
             _ => false,
+        }
+    }
+
+    fn runtime_type(&self, type_: &SemanticType) -> Option<SemanticType> {
+        let SemanticType::Named(name) = type_ else {
+            return None;
+        };
+        let runtime = self.structs.get(name)?.runtime.as_deref()?;
+
+        match runtime {
+            "string" => Some(SemanticType::String),
+            "number" => Some(SemanticType::Number),
+            _ => None,
         }
     }
 
