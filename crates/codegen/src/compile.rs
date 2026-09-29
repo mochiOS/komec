@@ -272,8 +272,13 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         })?;
         let mut fields = Vec::with_capacity(declared.len());
         for (index, field) in declared.iter().enumerate() {
-            let kome_type =
-                type_from_annotation(&field.type_, &runtime_types, &struct_ids, &task_types)?;
+            let kome_type = type_from_annotation(
+                &field.type_,
+                &runtime_types,
+                &struct_ids,
+                &task_types,
+                &list_types,
+            )?;
             if kome_type == KomeType::Void {
                 return Err(CodegenError::at(
                     "struct fields cannot have type Void",
@@ -308,8 +313,14 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             continue;
         };
 
-        let signature =
-            analyze_signature(function, &runtime_types, &struct_ids, &task_types, None)?;
+        let signature = analyze_signature(
+            function,
+            &runtime_types,
+            &struct_ids,
+            &task_types,
+            &list_types,
+            None,
+        )?;
 
         let kind = match native_symbol(function)? {
             Some(symbol) => FunctionKind::Native {
@@ -349,6 +360,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             &runtime_types,
             &struct_ids,
             &task_types,
+            &list_types,
         )?;
         let trait_name = implementation
             .trait_
@@ -371,6 +383,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                         &runtime_types,
                         &struct_ids,
                         &task_types,
+                        &list_types,
                         Some(target),
                     )?;
                     let has_self = matches!(function.params.first(), Some(kome_ast::patterns::Pattern::Ident(parameter)) if parameter.name == "self");
@@ -424,8 +437,13 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                             binding.span,
                         )
                     })?;
-                    let kome_type =
-                        type_from_annotation(annotation, &runtime_types, &struct_ids, &task_types)?;
+                    let kome_type = type_from_annotation(
+                        annotation,
+                        &runtime_types,
+                        &struct_ids,
+                        &task_types,
+                        &list_types,
+                    )?;
                     constants.insert(
                         identifier.name.clone(),
                         AssociatedConstant {
@@ -451,6 +469,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &runtime_types,
                 &struct_ids,
                 &task_types,
+                &list_types,
             )?;
         }
         implementations.push(TypeImplementation {
@@ -500,6 +519,7 @@ fn validate_trait_implementation(
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
     task_types: &RefCell<Vec<KomeType>>,
+    list_types: &RefCell<Vec<KomeType>>,
 ) -> CodegenResult<()> {
     for required in &trait_decl.functions {
         let expected = analyze_signature(
@@ -507,6 +527,7 @@ fn validate_trait_implementation(
             runtime_types,
             struct_ids,
             task_types,
+            list_types,
             Some(target),
         )?;
         let actual = methods.get(&required.name).ok_or_else(|| {
@@ -978,6 +999,7 @@ fn analyze_signature(
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
     task_types: &RefCell<Vec<KomeType>>,
+    list_types: &RefCell<Vec<KomeType>>,
     self_type: Option<KomeType>,
 ) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
@@ -1010,7 +1032,13 @@ fn analyze_signature(
                     identifier.span,
                 ));
             };
-            type_from_annotation(annotation, runtime_types, struct_ids, task_types)?
+            type_from_annotation(
+                annotation,
+                runtime_types,
+                struct_ids,
+                task_types,
+                list_types,
+            )?
         };
 
         if param_type == KomeType::Void {
@@ -1024,9 +1052,13 @@ fn analyze_signature(
     }
 
     let ret = match &function.return_type {
-        Some(annotation) => {
-            type_from_annotation(annotation, runtime_types, struct_ids, task_types)?
-        }
+        Some(annotation) => type_from_annotation(
+            annotation,
+            runtime_types,
+            struct_ids,
+            task_types,
+            list_types,
+        )?,
         None => KomeType::Void,
     };
 
@@ -1038,7 +1070,26 @@ fn type_from_annotation(
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
     task_types: &RefCell<Vec<KomeType>>,
+    list_types: &RefCell<Vec<KomeType>>,
 ) -> CodegenResult<KomeType> {
+    if let kome_ast::types::Type::List(list) = annotation {
+        let element = type_from_annotation(
+            &list.element,
+            runtime_types,
+            struct_ids,
+            task_types,
+            list_types,
+        )?;
+        let mut list_types = list_types.borrow_mut();
+        let id = list_types
+            .iter()
+            .position(|existing| *existing == element)
+            .unwrap_or_else(|| {
+                list_types.push(element);
+                list_types.len() - 1
+            });
+        return Ok(KomeType::List(id));
+    }
     if let kome_ast::types::Type::Named(named) = annotation {
         if named.name == "Task" {
             if named.type_arguments.len() != 1 {
@@ -1055,6 +1106,7 @@ fn type_from_annotation(
                 runtime_types,
                 struct_ids,
                 task_types,
+                list_types,
             )?;
             let mut task_types = task_types.borrow_mut();
             let id = task_types
@@ -1467,6 +1519,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                             &self.info.runtime_types,
                             &self.info.struct_ids,
                             &self.info.task_types,
+                            &self.info.list_types,
                         )
                     })
                     .transpose()?;

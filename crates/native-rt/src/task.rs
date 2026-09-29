@@ -114,6 +114,12 @@ pub unsafe extern "C" fn __kome_task_complete(handle: u64, result: u64) {
         .data
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if matches!(
+        data.state,
+        TaskState::Completed | TaskState::Cancelled | TaskState::Failed
+    ) {
+        return;
+    }
     data.result = Some(TaskResult::Completed(result));
     data.state = TaskState::Completed;
     data.completion_order = NEXT_COMPLETION.fetch_add(1, Ordering::Relaxed);
@@ -133,6 +139,12 @@ pub unsafe extern "C" fn __kome_task_fail(handle: u64, error: u64) {
         .data
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if matches!(
+        data.state,
+        TaskState::Completed | TaskState::Cancelled | TaskState::Failed
+    ) {
+        return;
+    }
     data.result = Some(TaskResult::Failed(error));
     data.state = TaskState::Failed;
     task.ready.notify_all();

@@ -91,13 +91,6 @@ impl ScopeBuilder {
     fn visit_sources(&mut self, sources: &[(SourceId, &Module)], builtins: &[&str]) {
         self.enter_scope(ScopeKind::Module);
 
-        for name in ["all", "race", "timeout"] {
-            self.declare(
-                Span::new(0, 0),
-                Symbol::BuiltinFunction { name: name.into() },
-            );
-        }
-
         for name in builtins {
             self.declare(
                 Span::new(0, 0),
@@ -573,7 +566,14 @@ impl ScopeBuilder {
     }
 
     fn visit_call_expression(&mut self, call: &CallExpression) {
-        self.visit_expression(&call.callee);
+        let is_task_builtin = matches!(
+            call.callee.as_ref(),
+            Expression::Ident(identifier)
+                if matches!(identifier.name.as_str(), "all" | "race" | "timeout")
+        );
+        if !is_task_builtin {
+            self.visit_expression(&call.callee);
+        }
 
         for arg in &call.args {
             match arg {

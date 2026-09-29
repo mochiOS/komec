@@ -1,9 +1,9 @@
 use kome_native_rt::task::{
     __kome_task_all, __kome_task_cancel, __kome_task_complete, __kome_task_create,
     __kome_task_dealloc, __kome_task_error, __kome_task_fail, __kome_task_id,
-    __kome_task_is_cancelled, __kome_task_race, __kome_task_release, __kome_task_result,
-    __kome_task_start, __kome_task_state, __kome_task_wait, __kome_task_wait_timeout,
-    TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED,
+    __kome_task_is_cancelled, __kome_task_race, __kome_task_release, __kome_task_require_completed,
+    __kome_task_result, __kome_task_start, __kome_task_state, __kome_task_wait,
+    __kome_task_wait_timeout, TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED,
 };
 
 #[test]
@@ -126,4 +126,56 @@ fn timeout_cancels_a_pending_task_without_busy_waiting() {
         assert_eq!(__kome_task_release(task), 1);
         __kome_task_dealloc(task);
     }
+}
+
+#[test]
+fn terminal_states_do_not_transition_backwards() {
+    let task = __kome_task_create();
+    unsafe {
+        __kome_task_cancel(task);
+        __kome_task_start(task);
+        __kome_task_complete(task, 42);
+        __kome_task_fail(task, 9);
+        assert_eq!(__kome_task_state(task), TASK_CANCELLED);
+        assert_eq!(__kome_task_release(task), 1);
+        __kome_task_dealloc(task);
+    }
+}
+
+#[test]
+fn race_uses_completion_order_instead_of_argument_order() {
+    let first = __kome_task_create();
+    let second = __kome_task_create();
+    unsafe {
+        __kome_task_complete(second, 2);
+        __kome_task_complete(first, 1);
+        let handles = [first, second];
+        assert_eq!(__kome_task_race(handles.as_ptr(), handles.len()), 1);
+        assert_eq!(__kome_task_release(first), 1);
+        assert_eq!(__kome_task_release(second), 1);
+        __kome_task_dealloc(first);
+        __kome_task_dealloc(second);
+    }
+}
+
+#[test]
+fn cancelled_wait_error_child() {
+    if std::env::var_os("KOME_TASK_ERROR_CHILD").is_some() {
+        __kome_task_require_completed(TASK_CANCELLED, 0);
+    }
+}
+
+#[test]
+fn cancelled_wait_reports_a_runtime_error_without_panicking() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "cancelled_wait_error_child", "--nocapture"])
+        .env("KOME_TASK_ERROR_CHILD", "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("wait: task was cancelled"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

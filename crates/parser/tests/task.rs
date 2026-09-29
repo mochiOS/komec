@@ -38,3 +38,18 @@ fn parses_cancel_as_a_prefix_expression() {
     };
     assert!(matches!(cancel.argument.as_ref(), Expression::Ident(_)));
 }
+
+#[test]
+fn parses_all_result_list_annotations() {
+    let module = kome_parser::parse("fn take(values: Number[]) {}").unwrap();
+    let kome_ast::declarations::Declaration::Function(function) = &module.declarations[0] else {
+        panic!("expected function")
+    };
+    let kome_ast::patterns::Pattern::Ident(parameter) = &function.params[0] else {
+        panic!("expected identifier parameter")
+    };
+    assert!(matches!(
+        &parameter.type_annotation,
+        Some(kome_ast::types::Type::List(_))
+    ));
+}

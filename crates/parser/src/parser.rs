@@ -825,6 +825,18 @@ impl Parser {
     fn parse_type(&mut self) -> Result<Type, ParseError> {
         let mut type_ = self.parse_primary_type()?;
 
+        while self.at(|kind| matches!(kind, TokenKind::LBracket))
+            && matches!(self.next().kind, TokenKind::RBracket)
+        {
+            self.advance();
+            let close = self.advance();
+            let start = type_.span().start;
+            type_ = Type::List(kome_ast::types::ListType {
+                span: Span::new(start, close.span.end),
+                element: Box::new(type_),
+            });
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Question)) {
             let question = self.advance();
             let start = type_.span().start;

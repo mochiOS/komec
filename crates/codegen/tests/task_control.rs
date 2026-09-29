@@ -30,7 +30,7 @@ fn all_preserves_number_order_for_two_and_three_tasks() {
 @native("test.capture")
 fn report(value: Number)
 fn main() {
-    let two = all(task 10, task 20)
+    let two: Number[] = all(task 10, task 20)
     report(two[0])
     report(two[1])
     let three = all(task 30, task 40, task 50)
