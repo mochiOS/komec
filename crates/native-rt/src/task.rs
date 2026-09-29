@@ -8,12 +8,11 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1);
 static NEXT_COMPLETION: AtomicU64 = AtomicU64::new(1);
-static SCHEDULER_WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 const TASK_STACK_SIZE: usize = 1024 * 1024;
 
 /// Stable identifier assigned to one runtime task.
@@ -98,7 +97,13 @@ struct TaskRecord {
 struct Timer {
     deadline: Instant,
     waiter: u64,
-    target: u64,
+    action: TimerAction,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimerAction {
+    Timeout { target: u64 },
+    Sleep,
 }
 
 struct Scheduler {
@@ -144,12 +149,7 @@ fn cancellation_requested(handle: u64) -> bool {
 }
 
 fn scheduler_signal() {
-    let (generation, ready) = SCHEDULER_WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
-    let mut generation = generation
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *generation = generation.wrapping_add(1);
-    ready.notify_all();
+    crate::reactor::notify();
 }
 
 fn enqueue(handle: u64) {
@@ -359,10 +359,10 @@ fn nearest_timer() -> Option<Instant> {
     })
 }
 
-fn remove_timer(waiter: u64, target: u64, deadline: Instant) {
+fn remove_timer(waiter: u64, action: TimerAction, deadline: Instant) {
     SCHEDULER.with(|scheduler| {
         scheduler.borrow_mut().timers.retain(|timer| {
-            timer.waiter != waiter || timer.target != target || timer.deadline != deadline
+            timer.waiter != waiter || timer.action != action || timer.deadline != deadline
         });
     });
 }
@@ -377,33 +377,85 @@ fn process_timers() {
         expired
     });
     for timer in expired {
-        unregister_waiter(timer.target, timer.waiter);
-        if state(timer.waiter) == TaskState::Suspended {
-            unsafe { __kome_task_cancel(timer.target) };
-            unsafe { __kome_task_wake(timer.waiter) };
+        match timer.action {
+            TimerAction::Timeout { target } => {
+                unregister_waiter(target, timer.waiter);
+                if state(timer.waiter) == TaskState::Suspended {
+                    unsafe { __kome_task_cancel(target) };
+                    unsafe { __kome_task_wake(timer.waiter) };
+                }
+            }
+            TimerAction::Sleep => {
+                if state(timer.waiter) == TaskState::Suspended {
+                    unsafe { __kome_task_wake(timer.waiter) };
+                }
+            }
         }
     }
 }
 
 fn park_scheduler(deadline: Option<Instant>) {
-    let (generation, ready) = SCHEDULER_WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
-    let generation = generation
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(deadline) = deadline {
-        let duration = deadline.saturating_duration_since(Instant::now());
-        drop(
-            ready
-                .wait_timeout(generation, duration)
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-    } else {
-        drop(
-            ready
-                .wait(generation)
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
+    let timeout = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+    match crate::reactor::poll(timeout) {
+        Ok(waiters) => {
+            for waiter in waiters {
+                unsafe { __kome_task_wake(waiter) };
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(std::io::stderr(), "runtime error: reactor: {error}");
+        }
     }
+}
+
+fn wait_for_io(fd: libc::c_int, writable: bool) -> libc::c_int {
+    let Some(waiter) = current_task() else {
+        let mut descriptor = libc::pollfd {
+            fd,
+            events: if writable {
+                libc::POLLOUT
+            } else {
+                libc::POLLIN
+            },
+            revents: 0,
+        };
+        loop {
+            let status = unsafe { libc::poll(&mut descriptor, 1, -1) };
+            if status >= 0 {
+                return 0;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return -error.raw_os_error().unwrap_or(libc::EIO);
+            }
+        }
+    };
+    mark_current_suspended(waiter);
+    if let Err(error) = crate::reactor::register(fd, waiter, writable) {
+        restore_current_running(waiter);
+        return -error.raw_os_error().unwrap_or(libc::EIO);
+    }
+    suspend_current();
+    crate::reactor::unregister_task(waiter);
+    0
+}
+
+/// Suspends the current task until `fd` becomes readable.
+///
+/// Outside a task this blocks the scheduler thread with `poll`. A negative
+/// return value is the negated OS error number.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_task_wait_readable(fd: libc::c_int) -> libc::c_int {
+    wait_for_io(fd, false)
+}
+
+/// Suspends the current task until `fd` becomes writable.
+///
+/// Outside a task this blocks the scheduler thread with `poll`. A negative
+/// return value is the negated OS error number.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_task_wait_writable(fd: libc::c_int) -> libc::c_int {
+    wait_for_io(fd, true)
 }
 
 fn drive_until(handle: u64, deadline: Option<Instant>) -> TaskState {
@@ -645,18 +697,42 @@ pub unsafe extern "C" fn __kome_task_wait_timeout(handle: u64, milliseconds: u64
                 scheduler.borrow_mut().timers.push(Timer {
                     deadline,
                     waiter,
-                    target: handle,
+                    action: TimerAction::Timeout { target: handle },
                 });
             });
             suspend_current();
             unregister_waiter(handle, waiter);
-            remove_timer(waiter, handle, deadline);
+            remove_timer(waiter, TimerAction::Timeout { target: handle }, deadline);
         } else {
             restore_current_running(waiter);
         }
         return state(handle) as u8;
     }
     drive_until(handle, Some(deadline)) as u8
+}
+
+/// Suspends the current task for at least `milliseconds` without busy-waiting.
+///
+/// When called outside a task, the current thread sleeps because no task
+/// execution context exists to suspend.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_task_sleep(milliseconds: u64) {
+    let duration = Duration::from_millis(milliseconds);
+    let Some(waiter) = current_task() else {
+        std::thread::sleep(duration);
+        return;
+    };
+    let deadline = Instant::now() + duration;
+    mark_current_suspended(waiter);
+    SCHEDULER.with(|scheduler| {
+        scheduler.borrow_mut().timers.push(Timer {
+            deadline,
+            waiter,
+            action: TimerAction::Sleep,
+        });
+    });
+    suspend_current();
+    remove_timer(waiter, TimerAction::Sleep, deadline);
 }
 
 /// Waits for and returns the first successfully completed task index.
@@ -828,6 +904,7 @@ pub unsafe extern "C" fn __kome_task_release(handle: u64) -> u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __kome_task_dealloc(handle: u64) {
     remove_runnable(handle);
+    crate::reactor::unregister_task(handle);
     drop(unsafe { Box::from_raw(handle as *mut TaskRecord) });
 }
 

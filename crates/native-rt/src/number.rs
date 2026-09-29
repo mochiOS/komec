@@ -87,6 +87,17 @@ impl Number {
         self.raw
     }
 
+    /// Converts an integral value to `i64`, returning `None` for fractions or
+    /// values outside the signed 64-bit range.
+    pub fn to_i64(&self) -> Option<i64> {
+        let (coefficient, scale) = self.parts();
+        if scale == 0 {
+            coefficient.to_i64()
+        } else {
+            None
+        }
+    }
+
     /// Creates an owned `Number` from a raw runtime representation.
     ///
     /// The new value acquires its own reference to heap-backed numbers.

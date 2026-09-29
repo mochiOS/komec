@@ -11,8 +11,10 @@
 //! and AOT builds (archived into `libkome_native_rt.a` and linked into the
 //! produced executable).
 
+pub mod io;
 pub mod list;
 pub mod number;
+mod reactor;
 pub mod string;
 pub mod struct_value;
 pub mod task;
@@ -112,7 +114,58 @@ pub fn builtin_registry() -> NativeRegistry {
     let mut registry = NativeRegistry::new();
     registry.register("core.write", write);
     registry.register("core.write_line", write_line);
+    registry.register("io.sleep", io_sleep);
+    registry.register("io.socket_read", io_socket_read);
+    registry.register("io.socket_write", io_socket_write);
     registry
+}
+
+fn integer_argument(value: &Value, name: &str) -> Result<i64, RuntimeError> {
+    let Value::Number(value) = value else {
+        return Err(RuntimeError::native(format!("{name} must be a Number")));
+    };
+    value
+        .to_i64()
+        .ok_or_else(|| RuntimeError::native(format!("{name} must be an integer in i64 range")))
+}
+
+fn io_sleep(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [milliseconds] = arguments else {
+        return Err(RuntimeError::native("io.sleep expects one argument"));
+    };
+    let milliseconds = integer_argument(milliseconds, "milliseconds")?;
+    if milliseconds < 0 {
+        return Err(RuntimeError::native("milliseconds must not be negative"));
+    }
+    io::sleep(milliseconds as u64);
+    Ok(Value::Null)
+}
+
+fn io_socket_read(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [fd, maximum] = arguments else {
+        return Err(RuntimeError::native("io.socket_read expects two arguments"));
+    };
+    let fd = integer_argument(fd, "socket fd")?;
+    let maximum = integer_argument(maximum, "maximum read size")?;
+    let fd = i32::try_from(fd).map_err(|_| RuntimeError::native("socket fd is out of range"))?;
+    let maximum = usize::try_from(maximum)
+        .map_err(|_| RuntimeError::native("maximum read size must not be negative"))?;
+    io::socket_read(fd, maximum)
+        .map(Value::String)
+        .map_err(|error| RuntimeError::native(format!("socket read failed: {error}")))
+}
+
+fn io_socket_write(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [fd, Value::String(value)] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_write expects a socket fd and String",
+        ));
+    };
+    let fd = integer_argument(fd, "socket fd")?;
+    let fd = i32::try_from(fd).map_err(|_| RuntimeError::native("socket fd is out of range"))?;
+    io::socket_write(fd, value)
+        .map(|written| Value::Number(Number::from_i64(written as i64)))
+        .map_err(|error| RuntimeError::native(format!("socket write failed: {error}")))
 }
 
 /// Replaces the registry used by `@native` calls on the current thread.
