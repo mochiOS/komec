@@ -6,10 +6,12 @@ use kome_ast::declarations::{
     Declaration, ForDeclaration, FunctionDeclaration, GenericParameter, Module, StructDeclaration,
     TraitDeclaration, TypeMember,
 };
-use kome_ast::expressions::{CallArg, Expression, LiteralKind, PropertyKey};
+use kome_ast::expressions::{
+    CallArg, CallExpression, Expression, IdentifierExpression, LiteralKind, PropertyKey,
+};
 use kome_ast::generics::TypeSubstitution;
-use kome_ast::patterns::Pattern;
-use kome_ast::statements::{BlockStatement, Statement};
+use kome_ast::patterns::{IdentifierPattern, Pattern};
+use kome_ast::statements::{BlockStatement, ReturnStatement, Statement};
 use kome_ast::types::{NamedType, Type};
 use std::collections::{HashMap, HashSet};
 
@@ -29,6 +31,7 @@ struct Expander<'a> {
     emitted_traits: HashSet<String>,
     emitted_impls: HashSet<(usize, String)>,
     layout_stack: Vec<String>,
+    next_task_body: usize,
 }
 
 impl<'a> Expander<'a> {
@@ -62,6 +65,7 @@ impl<'a> Expander<'a> {
             emitted_traits: HashSet::new(),
             emitted_impls: HashSet::new(),
             layout_stack: Vec::new(),
+            next_task_body: 0,
         }
     }
 
@@ -549,8 +553,76 @@ impl<'a> Expander<'a> {
                 self.rewrite_expression(&mut value.expression, environment, substitution, expected)
             }
             Expression::Task(value) => {
-                let inner =
-                    self.rewrite_expression(&mut value.argument, environment, substitution, None)?;
+                let expected_result = expected.and_then(|expected| match expected {
+                    Type::Named(named)
+                        if named.name == "Task" && named.type_arguments.len() == 1 =>
+                    {
+                        named.type_arguments.first()
+                    }
+                    _ => None,
+                });
+                let inferred = self.rewrite_expression(
+                    &mut value.argument,
+                    environment,
+                    substitution,
+                    expected_result,
+                )?;
+                let inner = expected_result.cloned().unwrap_or(inferred);
+                let inner = self.concrete_type(&inner, substitution, value.span)?;
+                let mut captures = HashSet::new();
+                collect_captures(&value.argument, environment, &mut captures);
+                let mut captures = captures.into_iter().collect::<Vec<_>>();
+                captures.sort();
+
+                let name = format!(
+                    "__kome_task_body_{}_{}",
+                    value.span.start, self.next_task_body
+                );
+                self.next_task_body += 1;
+                let body_expression = value.argument.as_ref().clone();
+                let params = captures
+                    .iter()
+                    .map(|capture| {
+                        Pattern::Ident(IdentifierPattern {
+                            span: value.span,
+                            name: capture.clone(),
+                            type_annotation: environment.get(capture).cloned(),
+                            default: None,
+                        })
+                    })
+                    .collect();
+                self.output.push(Declaration::Function(FunctionDeclaration {
+                    span: value.span,
+                    attributes: Vec::new(),
+                    name: name.clone(),
+                    type_parameters: Vec::new(),
+                    params,
+                    body: Some(BlockStatement {
+                        span: value.span,
+                        statements: vec![Statement::Return(ReturnStatement {
+                            span: value.span,
+                            argument: Some(body_expression),
+                        })],
+                    }),
+                    return_type: Some(inner.clone()),
+                }));
+                value.argument = Box::new(Expression::Call(CallExpression {
+                    span: value.span,
+                    callee: Box::new(Expression::Ident(IdentifierExpression {
+                        span: value.span,
+                        name,
+                    })),
+                    type_arguments: Vec::new(),
+                    args: captures
+                        .into_iter()
+                        .map(|name| {
+                            CallArg::Positional(Expression::Ident(IdentifierExpression {
+                                span: value.span,
+                                name,
+                            }))
+                        })
+                        .collect(),
+                }));
                 Ok(Type::Named(NamedType {
                     span: value.span,
                     name: "Task".into(),
@@ -787,6 +859,151 @@ impl<'a> Expander<'a> {
             });
         }
         type_.clone()
+    }
+}
+
+fn collect_captures(
+    expression: &Expression,
+    environment: &HashMap<String, Type>,
+    captures: &mut HashSet<String>,
+) {
+    match expression {
+        Expression::Ident(identifier) => {
+            if environment.contains_key(&identifier.name) {
+                captures.insert(identifier.name.clone());
+            }
+        }
+        Expression::Unary(value) => collect_captures(&value.argument, environment, captures),
+        Expression::Task(value) => collect_captures(&value.argument, environment, captures),
+        Expression::Wait(value) => collect_captures(&value.argument, environment, captures),
+        Expression::Cancel(value) => collect_captures(&value.argument, environment, captures),
+        Expression::Binary(value) => {
+            collect_captures(&value.left, environment, captures);
+            collect_captures(&value.right, environment, captures);
+        }
+        Expression::Call(value) => {
+            collect_captures(&value.callee, environment, captures);
+            for argument in &value.args {
+                match argument {
+                    CallArg::Positional(value) => {
+                        collect_captures(value, environment, captures);
+                    }
+                    CallArg::Named { value, .. } => {
+                        collect_captures(value, environment, captures);
+                    }
+                }
+            }
+        }
+        Expression::Member(value) => collect_captures(&value.object, environment, captures),
+        Expression::Index(value) => {
+            collect_captures(&value.object, environment, captures);
+            collect_captures(&value.index, environment, captures);
+        }
+        Expression::Struct(value) => {
+            for field in &value.fields {
+                collect_captures(&field.value, environment, captures);
+            }
+        }
+        Expression::Group(value) => collect_captures(&value.expression, environment, captures),
+        Expression::Assign(value) => {
+            collect_captures(&value.target, environment, captures);
+            collect_captures(&value.value, environment, captures);
+        }
+        Expression::Block(value) => {
+            for statement in &value.statements {
+                collect_statement_captures(statement, environment, captures);
+            }
+            if let Some(tail) = &value.tail {
+                collect_captures(tail, environment, captures);
+            }
+        }
+        Expression::List(value) => {
+            for element in value.elems.iter().flatten() {
+                collect_captures(element, environment, captures);
+            }
+        }
+        Expression::Object(value) => {
+            for property in &value.props {
+                let kome_ast::expressions::ObjectProperty::KeyValue(property) = property;
+                collect_captures(&property.value, environment, captures);
+            }
+        }
+        Expression::Template(value) => {
+            for part in &value.parts {
+                if let kome_ast::expressions::TemplatePart::Expression { expression, .. } = part {
+                    collect_captures(expression, environment, captures);
+                }
+            }
+        }
+        Expression::Closure(value) => collect_captures(&value.body, environment, captures),
+        Expression::Is(value) => {
+            collect_captures(&value.value, environment, captures);
+            collect_captures(&value.body, environment, captures);
+        }
+        Expression::Component(value) => {
+            for argument in &value.args {
+                match argument {
+                    CallArg::Positional(value) => collect_captures(value, environment, captures),
+                    CallArg::Named { value, .. } => {
+                        collect_captures(value, environment, captures);
+                    }
+                }
+            }
+            for child in &value.children {
+                collect_captures(child, environment, captures);
+            }
+        }
+        Expression::Literal(_) | Expression::DotIdent(_) => {}
+    }
+}
+
+fn collect_statement_captures(
+    statement: &Statement,
+    environment: &HashMap<String, Type>,
+    captures: &mut HashSet<String>,
+) {
+    match statement {
+        Statement::Expression(value) => collect_captures(&value.expression, environment, captures),
+        Statement::Let(value) => {
+            if let Some(init) = &value.init {
+                collect_captures(init, environment, captures);
+            }
+        }
+        Statement::Return(value) => {
+            if let Some(argument) = &value.argument {
+                collect_captures(argument, environment, captures);
+            }
+        }
+        Statement::Block(value) => {
+            for statement in &value.statements {
+                collect_statement_captures(statement, environment, captures);
+            }
+        }
+        Statement::If(value) => {
+            collect_captures(&value.test, environment, captures);
+            collect_statement_captures(&value.consequent, environment, captures);
+            if let Some(alternative) = &value.alternative {
+                collect_statement_captures(alternative, environment, captures);
+            }
+        }
+        Statement::While(value) => {
+            collect_captures(&value.test, environment, captures);
+            collect_statement_captures(&value.body, environment, captures);
+        }
+        Statement::ForIn(value) => {
+            collect_captures(&value.right, environment, captures);
+            collect_statement_captures(&value.body, environment, captures);
+        }
+        Statement::Is(value) => {
+            if let Some(value) = &value.value {
+                collect_captures(value, environment, captures);
+            }
+            collect_statement_captures(&value.body, environment, captures);
+        }
+        Statement::Declaration(_)
+        | Statement::Break(_)
+        | Statement::Continue(_)
+        | Statement::Empty(_) => {}
     }
 }
 

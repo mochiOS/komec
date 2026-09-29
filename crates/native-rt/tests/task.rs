@@ -5,6 +5,47 @@ use kome_native_rt::task::{
     __kome_task_result, __kome_task_start, __kome_task_state, __kome_task_wait,
     __kome_task_wait_timeout, TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static OUTER_TASK: AtomicU64 = AtomicU64::new(0);
+
+unsafe extern "C" fn cooperative_child(_task: u64, _captures: *const u64, execute: u8) -> u64 {
+    if execute == 0 {
+        return 0;
+    }
+    let outer = OUTER_TASK.load(Ordering::SeqCst);
+    assert_eq!(
+        unsafe { __kome_task_state(outer) },
+        kome_native_rt::task::TASK_SUSPENDED
+    );
+    42
+}
+
+unsafe extern "C" fn cooperative_parent(_task: u64, _captures: *const u64, execute: u8) -> u64 {
+    if execute == 0 {
+        return 0;
+    }
+    let child =
+        unsafe { kome_native_rt::task::__kome_task_spawn(cooperative_child, [].as_ptr(), 0) };
+    assert_eq!(unsafe { __kome_task_wait(child) }, TASK_COMPLETED);
+    let result = unsafe { __kome_task_result(child) };
+    assert_eq!(unsafe { __kome_task_release(child) }, 1);
+    unsafe { __kome_task_dealloc(child) };
+    result
+}
+
+#[test]
+fn suspends_a_waiter_and_resumes_it_after_the_dependency_completes() {
+    let task =
+        unsafe { kome_native_rt::task::__kome_task_spawn(cooperative_parent, [].as_ptr(), 0) };
+    OUTER_TASK.store(task, Ordering::SeqCst);
+    unsafe {
+        assert_eq!(__kome_task_wait(task), TASK_COMPLETED);
+        assert_eq!(__kome_task_result(task), 42);
+        assert_eq!(__kome_task_release(task), 1);
+        __kome_task_dealloc(task);
+    }
+}
 
 #[test]
 fn creates_runs_completes_and_reads_a_task() {

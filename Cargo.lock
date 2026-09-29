@@ -647,6 +647,7 @@ name = "kome_native_rt"
 version = "0.1.0"
 dependencies = [
  "kome_abi",
+ "libc",
  "num-bigint",
  "num-traits",
 ]

@@ -149,6 +149,27 @@ fn main() {
 }
 
 #[test]
+fn suspends_and_resumes_a_task_waiting_for_a_nested_task() {
+    let values = run_and_capture(
+        r#"
+@native("test.capture")
+fn report(value: Number)
+fn child() -> Number { return 42 }
+fn parent() -> Number {
+    let pending = task child()
+    let value = wait pending
+    return value
+}
+fn main() {
+    let pending = task parent()
+    report(wait pending)
+}
+"#,
+    );
+    assert_eq!(values, vec![Value::Number(Number::parse("42").unwrap())]);
+}
+
+#[test]
 fn preserves_boolean_and_contextual_integer_results() {
     let values = run_and_capture(
         r#"
@@ -166,16 +187,17 @@ fn main() {
 }
 
 #[test]
-fn cancels_completed_tasks_without_losing_the_result() {
+fn cancelling_a_completed_task_does_not_lose_the_result() {
     let values = run_and_capture(
         r#"
 @native("test.capture")
 fn report(value: String)
 fn main() {
     let work = task "kept"
+    let kept = wait work
     cancel work
     cancel work
-    report(wait work)
+    report(kept)
 }
 "#,
     );

@@ -644,6 +644,7 @@ pub fn compile_module<M: Module>(
     module: &mut M,
 ) -> CodegenResult<HashMap<String, FuncId>> {
     let mut func_ids = HashMap::new();
+    let mut task_entry_ids = HashMap::new();
 
     for (name, _, signature) in info.user_functions() {
         let cranelift_signature = build_signature(module, signature)?;
@@ -653,6 +654,24 @@ pub fn compile_module<M: Module>(
             .map_err(|error| CodegenError::new(error.to_string(), None))?;
 
         func_ids.insert(name.to_owned(), func_id);
+
+        if name.starts_with("__kome_task_body_") {
+            let mut entry_signature = module.make_signature();
+            entry_signature.params.push(AbiParam::new(types::I64));
+            entry_signature
+                .params
+                .push(AbiParam::new(module.target_config().pointer_type()));
+            entry_signature.params.push(AbiParam::new(types::I8));
+            entry_signature.returns.push(AbiParam::new(types::I64));
+            let entry_id = module
+                .declare_function(
+                    &format!("{}_entry", mangled_name(name)),
+                    Linkage::Local,
+                    &entry_signature,
+                )
+                .map_err(|error| CodegenError::new(error.to_string(), None))?;
+            task_entry_ids.insert(name.to_owned(), entry_id);
+        }
     }
 
     let foreign = ForeignFunctions::declare(module)?;
@@ -675,6 +694,7 @@ pub fn compile_module<M: Module>(
                 module,
                 info,
                 func_ids: &func_ids,
+                task_entry_ids: &task_entry_ids,
                 foreign: &foreign,
                 native_symbols: &mut native_symbols,
                 scopes: vec![HashMap::new()],
@@ -697,6 +717,53 @@ pub fn compile_module<M: Module>(
             })?;
     }
 
+    for (name, entry_id) in &task_entry_ids {
+        let signature = info
+            .get(name)
+            .expect("task body is a user function")
+            .signature();
+        let mut context = module.make_context();
+        context
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        context
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(module.target_config().pointer_type()));
+        context.func.signature.params.push(AbiParam::new(types::I8));
+        context
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I64));
+        context.func.name = UserFuncName::user(0, entry_id.as_u32());
+        let mut function_builder_context = FunctionBuilderContext::new();
+        {
+            let builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
+            let translator = FunctionTranslator {
+                builder,
+                module,
+                info,
+                func_ids: &func_ids,
+                task_entry_ids: &task_entry_ids,
+                foreign: &foreign,
+                native_symbols: &mut native_symbols,
+                scopes: vec![HashMap::new()],
+                remaining_reads: HashMap::new(),
+                next_binding_id: 0,
+                return_type: signature.ret,
+                terminated: false,
+            };
+            translator.translate_task_entry(name, signature)?;
+        }
+        module
+            .define_function(*entry_id, &mut context)
+            .map_err(|error| CodegenError::new(error.to_string(), None))?;
+    }
+
     Ok(func_ids)
 }
 
@@ -717,10 +784,9 @@ struct ForeignFunctions {
     struct_retain: FuncId,
     struct_release: FuncId,
     struct_dealloc: FuncId,
-    task_create: FuncId,
-    task_start: FuncId,
-    task_complete: FuncId,
+    task_spawn: FuncId,
     task_cancel: FuncId,
+    task_is_cancelled: FuncId,
     task_wait: FuncId,
     task_result: FuncId,
     task_retain: FuncId,
@@ -813,15 +879,23 @@ impl ForeignFunctions {
             &[types::I64, types::I64],
             None,
         )?;
-        let task_create = declare_foreign(module, "__kome_task_create", &[], Some(types::I64))?;
-        let task_start = declare_foreign(module, "__kome_task_start", &[types::I64], None)?;
-        let task_complete = declare_foreign(
+        let task_spawn = declare_foreign(
             module,
-            "__kome_task_complete",
-            &[types::I64, types::I64],
-            None,
+            "__kome_task_spawn",
+            &[
+                module.target_config().pointer_type(),
+                module.target_config().pointer_type(),
+                types::I64,
+            ],
+            Some(types::I64),
         )?;
         let task_cancel = declare_foreign(module, "__kome_task_cancel", &[types::I64], None)?;
+        let task_is_cancelled = declare_foreign(
+            module,
+            "__kome_task_is_cancelled",
+            &[types::I64],
+            Some(types::I8),
+        )?;
         let task_wait =
             declare_foreign(module, "__kome_task_wait", &[types::I64], Some(types::I8))?;
         let task_result = declare_foreign(
@@ -896,10 +970,9 @@ impl ForeignFunctions {
             struct_retain,
             struct_release,
             struct_dealloc,
-            task_create,
-            task_start,
-            task_complete,
+            task_spawn,
             task_cancel,
+            task_is_cancelled,
             task_wait,
             task_result,
             task_retain,
@@ -1195,6 +1268,7 @@ struct FunctionTranslator<'b, 'c, M: Module> {
     module: &'b mut M,
     info: &'b ModuleInfo,
     func_ids: &'b HashMap<String, FuncId>,
+    task_entry_ids: &'b HashMap<String, FuncId>,
     foreign: &'b ForeignFunctions,
     native_symbols: &'b mut NativeSymbolPool,
     scopes: Vec<HashMap<String, ScopedVariable>>,
@@ -1365,6 +1439,90 @@ impl ReadCounter {
 }
 
 impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
+    fn translate_task_entry(
+        mut self,
+        function_key: &str,
+        signature: &FunctionSignature,
+    ) -> CodegenResult<()> {
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+        let parameters = self.builder.block_params(entry).to_vec();
+        let handle = parameters[0];
+        let buffer = parameters[1];
+        let execute = parameters[2];
+        let run = self.builder.create_block();
+        let cleanup = self.builder.create_block();
+        self.builder.ins().brif(execute, run, &[], cleanup, &[]);
+
+        self.builder.switch_to_block(run);
+        self.builder.seal_block(run);
+        let arguments = signature
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, kome_type)| {
+                let slot = self.builder.ins().load(
+                    types::I64,
+                    MachMemFlags::new(),
+                    buffer,
+                    (index * 8) as i32,
+                );
+                self.task_slot_to_value(slot, *kome_type)
+            })
+            .collect::<Vec<_>>();
+        let result = self.emit_user_call(function_key, &arguments, signature)?;
+        for (argument, kome_type) in arguments.iter().zip(&signature.params) {
+            if kome_type.is_managed() {
+                self.release_managed(*argument, *kome_type);
+            }
+        }
+        let result = result.expect_value(kome_ast::Span::new(0, 0))?;
+        let is_cancelled = Module::declare_func_in_func(
+            self.module,
+            self.foreign.task_is_cancelled,
+            self.builder.func,
+        );
+        let cancelled_call = self.builder.ins().call(is_cancelled, &[handle]);
+        let cancelled = self.builder.inst_results(cancelled_call)[0];
+        let discard = self.builder.create_block();
+        let finish = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(cancelled, discard, &[], finish, &[]);
+        self.builder.switch_to_block(discard);
+        self.builder.seal_block(discard);
+        if signature.ret.is_managed() {
+            self.release_managed(result, signature.ret);
+        }
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().return_(&[zero]);
+        self.builder.switch_to_block(finish);
+        self.builder.seal_block(finish);
+        let result = self.value_to_task_slot(result, signature.ret);
+        self.builder.ins().return_(&[result]);
+
+        self.builder.switch_to_block(cleanup);
+        self.builder.seal_block(cleanup);
+        for (index, kome_type) in signature.params.iter().enumerate() {
+            if kome_type.is_managed() {
+                let slot = self.builder.ins().load(
+                    types::I64,
+                    MachMemFlags::new(),
+                    buffer,
+                    (index * 8) as i32,
+                );
+                let value = self.task_slot_to_value(slot, *kome_type);
+                self.release_managed(value, *kome_type);
+            }
+        }
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().return_(&[zero]);
+        self.builder.finalize(self.module.target_config());
+        Ok(())
+    }
+
     fn translate_function(
         mut self,
         declaration: &FunctionDeclaration,
@@ -1469,7 +1627,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             Statement::Return(statement) => {
                 let value = match &statement.argument {
                     Some(expression) => {
-                        let typed = self.evaluate(expression)?;
+                        let typed =
+                            self.evaluate_with_expected(expression, Some(self.return_type))?;
 
                         if typed.kome_type != self.return_type {
                             return Err(CodegenError::at(
@@ -1668,35 +1827,89 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         task: &TaskExpression,
         expected_result: Option<KomeType>,
     ) -> CodegenResult<TypedValue> {
-        let create =
-            Module::declare_func_in_func(self.module, self.foreign.task_create, self.builder.func);
-        let call = self.builder.ins().call(create, &[]);
-        let handle = self.builder.inst_results(call)[0];
-        let start =
-            Module::declare_func_in_func(self.module, self.foreign.task_start, self.builder.func);
-        self.builder.ins().call(start, &[handle]);
-
-        let result = self.evaluate_with_expected(&task.argument, expected_result)?;
-        if result.kome_type == KomeType::Void {
+        let Expression::Call(call) = task.argument.as_ref() else {
+            return Err(CodegenError::at(
+                "task body was not lowered to a runtime entry function",
+                task.span,
+            ));
+        };
+        let Expression::Ident(callee) = call.callee.as_ref() else {
+            return Err(CodegenError::at(
+                "task body was not lowered to a runtime entry function",
+                task.span,
+            ));
+        };
+        if !callee.name.starts_with("__kome_task_body_") {
+            return Err(CodegenError::at(
+                "task body was not lowered to a runtime entry function",
+                task.span,
+            ));
+        }
+        let signature = self
+            .info
+            .get(&callee.name)
+            .expect("lowered task body must be analyzed")
+            .signature()
+            .clone();
+        if signature.ret == KomeType::Void {
             return Err(CodegenError::at(
                 "task expressions returning Void are not supported yet",
                 task.span,
             ));
         }
-        let value = result.expect_value(task.argument.span())?;
-        self.take_managed_ownership(value, result.kome_type, result.ownership);
-        let slot = self.value_to_task_slot(value, result.kome_type);
-        let complete = Module::declare_func_in_func(
-            self.module,
-            self.foreign.task_complete,
-            self.builder.func,
-        );
-        self.builder.ins().call(complete, &[handle, slot]);
+        if expected_result.is_some_and(|expected| expected != signature.ret) {
+            return Err(CodegenError::at(
+                "task result has the wrong type",
+                task.span,
+            ));
+        }
+        let size = (call.args.len().max(1) * 8) as StackSize;
+        let captures = self.builder.create_sized_stack_slot(StackSlotData {
+            kind: cranelift::codegen::ir::StackSlotKind::ExplicitSlot,
+            size,
+            align_shift: 3,
+            key: None,
+        });
+        let buffer =
+            self.builder
+                .ins()
+                .stack_addr(self.module.target_config().pointer_type(), captures, 0);
+        for (index, (argument, expected)) in call.args.iter().zip(&signature.params).enumerate() {
+            let CallArg::Positional(argument) = argument else {
+                return Err(CodegenError::at(
+                    "task captures must be positional",
+                    call.span,
+                ));
+            };
+            let value = self.evaluate_with_expected(argument, Some(*expected))?;
+            if value.kome_type != *expected {
+                return Err(CodegenError::at(
+                    "task capture has the wrong type",
+                    argument.span(),
+                ));
+            }
+            let value = self.own_value(value, argument.span())?;
+            let slot = self.value_to_task_slot(value, *expected);
+            self.builder
+                .ins()
+                .store(MachMemFlags::new(), slot, buffer, (index * 8) as i32);
+        }
+        let entry_id = self.task_entry_ids[&callee.name];
+        let entry_ref = Module::declare_func_in_func(self.module, entry_id, self.builder.func);
+        let entry = self
+            .builder
+            .ins()
+            .func_addr(self.module.target_config().pointer_type(), entry_ref);
+        let count = self
+            .builder
+            .ins()
+            .iconst(types::I64, call.args.len() as i64);
+        let spawn =
+            Module::declare_func_in_func(self.module, self.foreign.task_spawn, self.builder.func);
+        let spawn = self.builder.ins().call(spawn, &[entry, buffer, count]);
+        let handle = self.builder.inst_results(spawn)[0];
 
-        Ok(TypedValue::some(
-            handle,
-            self.info.task_type(result.kome_type),
-        ))
+        Ok(TypedValue::some(handle, self.info.task_type(signature.ret)))
     }
 
     fn evaluate_wait(&mut self, wait: &WaitExpression) -> CodegenResult<TypedValue> {

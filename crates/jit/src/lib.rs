@@ -22,9 +22,10 @@ use kome_native_rt::struct_value::{
 };
 use kome_native_rt::task::{
     __kome_task_all, __kome_task_cancel, __kome_task_complete, __kome_task_create,
-    __kome_task_dealloc, __kome_task_race, __kome_task_release, __kome_task_require_completed,
-    __kome_task_require_race_winner, __kome_task_result, __kome_task_retain, __kome_task_start,
-    __kome_task_wait, __kome_task_wait_timeout,
+    __kome_task_dealloc, __kome_task_is_cancelled, __kome_task_race, __kome_task_release,
+    __kome_task_require_completed, __kome_task_require_race_winner, __kome_task_result,
+    __kome_task_retain, __kome_task_spawn, __kome_task_start, __kome_task_wait,
+    __kome_task_wait_timeout,
 };
 
 /// Compiles `module_ast` and runs `entry` in the current process.
@@ -70,7 +71,7 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    let symbols: [(&str, *const u8); 34] = [
+    let symbols: [(&str, *const u8); 36] = [
         (
             "__kome_native_call",
             __kome_native_call as *const () as *const u8,
@@ -144,8 +145,16 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
             __kome_task_complete as *const () as *const u8,
         ),
         (
+            "__kome_task_spawn",
+            __kome_task_spawn as *const () as *const u8,
+        ),
+        (
             "__kome_task_cancel",
             __kome_task_cancel as *const () as *const u8,
+        ),
+        (
+            "__kome_task_is_cancelled",
+            __kome_task_is_cancelled as *const () as *const u8,
         ),
         (
             "__kome_task_wait",
