@@ -1,4 +1,9 @@
 //! Reference-counted task state and the stable ABI used by generated code.
+//!
+//! The first scheduler is single-threaded and run-to-completion: generated
+//! code marks a task running, computes its result, and completes it through
+//! this ABI. Waiting is expressed as a condition-variable boundary so a later
+//! cooperative executor can suspend and wake waiters without changing codegen.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};

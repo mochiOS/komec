@@ -4,6 +4,8 @@
 //!
 //! - `__kome_native_call(name, argc, args, ret_tag)` dispatches `@native`
 //!   calls through a [`NativeRegistry`] by function name.
+//! - `__kome_task_*` owns task state, result storage, waiting, reference
+//!   counting, and the cancellation/failure states used by generated code.
 //!
 //! The same symbols serve the JIT backend (linked into the compiler process)
 //! and AOT builds (archived into `libkome_native_rt.a` and linked into the

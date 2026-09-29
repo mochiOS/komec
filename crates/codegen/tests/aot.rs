@@ -180,21 +180,26 @@ fn builds_and_runs_tasks_with_generic_results() {
         r#"
 @native("core.write_line")
 fn println(value: Number)
+@native("core.write_line")
+fn print_text(value: String)
 struct Container<T> { value: T }
 fn answer() -> Number { return 42 }
+fn text() -> String { return "Kome" }
 fn wrapped() -> Container<Number> {
     return Container<Number> { value: 21 }
 }
 fn main() {
     let number = task answer()
+    let string = task text()
     let container = task wrapped()
     println(wait number)
+    print_text(wait string)
     let result = wait container
     println(result.value * 2)
 }
 "#,
     );
-    assert_eq!(stdout, "42\n42\n");
+    assert_eq!(stdout, "42\nKome\n42\n");
 }
 
 #[test]

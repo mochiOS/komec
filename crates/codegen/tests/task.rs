@@ -147,3 +147,20 @@ fn main() {
     );
     assert_eq!(values, vec![Value::String(KomeString::new("generic"))]);
 }
+
+#[test]
+fn preserves_boolean_and_contextual_integer_results() {
+    let values = run_and_capture(
+        r#"
+@native("test.capture")
+fn report(value: bool)
+fn main() {
+    let flag = task true
+    let integer: Task<i32> = task 42
+    let value: i32 = wait integer
+    report(wait flag)
+}
+"#,
+    );
+    assert_eq!(values, vec![Value::Boolean(true)]);
+}
