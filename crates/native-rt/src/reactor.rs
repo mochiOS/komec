@@ -212,7 +212,9 @@ pub(crate) fn unregister_task(task: u64) {
 }
 
 pub(crate) fn unregister_fd(fd: RawFd) {
-    let waiters = REACTOR.with(|reactor| reactor.borrow_mut().unregister_fd(fd));
+    let Ok(waiters) = REACTOR.try_with(|reactor| reactor.borrow_mut().unregister_fd(fd)) else {
+        return;
+    };
     for waiter in waiters {
         unsafe { crate::task::__kome_task_wake(waiter) };
     }
