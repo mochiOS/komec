@@ -25,6 +25,8 @@ pub struct StructDeclaration {
     pub span: Span,
     pub attributes: Vec<Attribute>,
     pub name: String,
+    /// Type parameters declared between `<` and `>`.
+    pub type_parameters: Vec<GenericParameter>,
     pub fields: Option<Vec<StructField>>,
 }
 
@@ -41,6 +43,8 @@ pub struct StructField {
 pub struct TraitDeclaration {
     pub span: Span,
     pub name: String,
+    /// Type parameters declared between `<` and `>`.
+    pub type_parameters: Vec<GenericParameter>,
     pub functions: Vec<FunctionDeclaration>,
 }
 
@@ -75,9 +79,18 @@ pub enum TypeMember {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForDeclaration {
     pub span: Span,
+    /// Type parameters introduced by the implementation target.
+    pub type_parameters: Vec<GenericParameter>,
     pub target: crate::types::Type,
     pub trait_: Option<crate::types::Type>,
     pub members: Vec<TypeMember>,
+}
+
+/// A declaration-scoped generic type parameter such as `T`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenericParameter {
+    pub span: Span,
+    pub name: String,
 }
 
 // ---- Component ----
@@ -174,6 +187,8 @@ pub struct FunctionDeclaration {
     pub span: Span,
     pub attributes: Vec<Attribute>,
     pub name: String,
+    /// Type parameters declared between `<` and `>`.
+    pub type_parameters: Vec<GenericParameter>,
     pub params: Vec<crate::patterns::Pattern>,
     pub body: Option<crate::statements::BlockStatement>,
     pub return_type: Option<crate::types::Type>,

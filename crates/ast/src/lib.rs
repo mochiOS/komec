@@ -10,6 +10,7 @@
 
 pub mod declarations;
 pub mod expressions;
+pub mod generics;
 pub mod patterns;
 pub mod statements;
 pub mod types;

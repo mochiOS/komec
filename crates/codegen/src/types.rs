@@ -25,6 +25,8 @@ pub enum KomeType {
     Null,
     /// A user-defined struct. The id indexes `ModuleInfo::structs`.
     Struct(usize),
+    /// A runtime task. The id indexes `ModuleInfo::task_types`.
+    Task(usize),
     Void,
 }
 
@@ -74,7 +76,7 @@ impl KomeType {
     /// The Cranelift representation; `None` for `Void`.
     pub fn cranelift(self) -> Option<cranelift::prelude::Type> {
         match self {
-            Self::Number | Self::String | Self::Struct(_) => Some(types::I64),
+            Self::Number | Self::String | Self::Struct(_) | Self::Task(_) => Some(types::I64),
             Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
             Self::Boolean | Self::I8 | Self::U8 | Self::Null => Some(types::I8),
@@ -97,6 +99,7 @@ impl KomeType {
                 "user-defined structs cannot cross the native ABI",
                 None,
             )),
+            Self::Task(_) => Err(CodegenError::new("tasks cannot cross the native ABI", None)),
             Self::I8
             | Self::I16
             | Self::I32
@@ -131,12 +134,16 @@ impl KomeType {
             Self::F64 => "f64".into(),
             Self::Null => "Null".into(),
             Self::Struct(id) => format!("struct#{id}"),
+            Self::Task(id) => format!("Task#{id}"),
             Self::Void => "Void".into(),
         }
     }
 
     /// Returns whether values of this type use retain/release ownership.
     pub fn is_managed(self) -> bool {
-        matches!(self, Self::Number | Self::String | Self::Struct(_))
+        matches!(
+            self,
+            Self::Number | Self::String | Self::Struct(_) | Self::Task(_)
+        )
     }
 }

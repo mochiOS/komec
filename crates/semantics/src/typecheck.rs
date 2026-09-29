@@ -17,6 +17,87 @@ use kome_ast::statements::{
 use kome_ast::types::{PrimitiveTypeKind, Type};
 use kome_ast::{AstNode, Span};
 
+fn collect_semantic_parameters(type_: &SemanticType, output: &mut Vec<String>) {
+    match type_ {
+        SemanticType::TypeParameter(name) => {
+            if !output.contains(name) {
+                output.push(name.clone());
+            }
+        }
+        SemanticType::Applied(_, arguments) => {
+            for argument in arguments {
+                collect_semantic_parameters(argument, output);
+            }
+        }
+        SemanticType::Optional(inner) => collect_semantic_parameters(inner, output),
+        _ => {}
+    }
+}
+
+fn substitute_semantic(
+    type_: &SemanticType,
+    substitutions: &HashMap<String, SemanticType>,
+) -> SemanticType {
+    match type_ {
+        SemanticType::TypeParameter(name) => substitutions
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| type_.clone()),
+        SemanticType::Applied(name, arguments) => SemanticType::Applied(
+            name.clone(),
+            arguments
+                .iter()
+                .map(|value| substitute_semantic(value, substitutions))
+                .collect(),
+        ),
+        SemanticType::Optional(inner) => {
+            SemanticType::Optional(Box::new(substitute_semantic(inner, substitutions)))
+        }
+        _ => type_.clone(),
+    }
+}
+
+fn infer_type_parameters(
+    formal: &SemanticType,
+    actual: &SemanticType,
+    substitutions: &mut HashMap<String, SemanticType>,
+) -> Result<(), String> {
+    match formal {
+        SemanticType::TypeParameter(name) => {
+            if let Some(previous) = substitutions.get(name) {
+                if previous != actual {
+                    return Err(name.clone());
+                }
+            } else {
+                substitutions.insert(name.clone(), actual.clone());
+            }
+        }
+        SemanticType::Applied(name, arguments) => {
+            if let SemanticType::Applied(actual_name, actual_arguments) = actual
+                && name == actual_name
+                && arguments.len() == actual_arguments.len()
+            {
+                for (formal, actual) in arguments.iter().zip(actual_arguments) {
+                    infer_type_parameters(formal, actual, substitutions)?;
+                }
+            } else {
+                return Err(String::new());
+            }
+        }
+        SemanticType::Optional(formal) => {
+            if let SemanticType::Optional(actual) = actual {
+                infer_type_parameters(formal, actual, substitutions)?;
+            } else {
+                return Err(String::new());
+            }
+        }
+        SemanticType::Unknown => {}
+        _ if formal != actual => return Err(String::new()),
+        _ => {}
+    }
+    Ok(())
+}
+
 /// A type used during semantic type checking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemanticType {
@@ -35,6 +116,8 @@ pub enum SemanticType {
     F64,
     Null,
     Named(String),
+    Applied(String, Vec<SemanticType>),
+    TypeParameter(String),
     Optional(Box<SemanticType>),
     Void,
 
@@ -65,6 +148,16 @@ impl SemanticType {
             Self::F64 => "f64".to_owned(),
             Self::Null => "Null".to_owned(),
             Self::Named(name) => name.clone(),
+            Self::Applied(name, arguments) => format!(
+                "{}<{}>",
+                name,
+                arguments
+                    .iter()
+                    .map(Self::name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::TypeParameter(name) => name.clone(),
             Self::Optional(inner) => format!("{}?", inner.name()),
             Self::Void => "Void".to_owned(),
             Self::Unknown => "<unknown>".to_owned(),
@@ -126,6 +219,7 @@ pub struct TypeCheckResult {
 #[derive(Debug, Clone)]
 pub struct StructTypeInfo {
     pub fields: Option<HashMap<String, SemanticType>>,
+    pub type_parameters: Vec<String>,
     pub runtime: Option<String>,
 }
 
@@ -133,6 +227,7 @@ pub struct StructTypeInfo {
 #[derive(Debug, Clone)]
 pub struct TraitTypeInfo {
     pub functions: Vec<String>,
+    pub type_parameters: Vec<String>,
     signatures: HashMap<String, FunctionSignature>,
 }
 
@@ -155,6 +250,7 @@ struct ParameterType {
 struct FunctionSignature {
     params: Vec<ParameterType>,
     return_type: SemanticType,
+    type_parameters: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -220,14 +316,17 @@ impl TypeChecker {
         for declaration in &module.declarations {
             match declaration {
                 Declaration::Struct(struct_decl) => {
+                    self.check_generic_parameters(&struct_decl.type_parameters);
                     self.collect_struct(struct_decl);
                 }
 
                 Declaration::Trait(trait_decl) => {
+                    self.check_generic_parameters(&trait_decl.type_parameters);
                     self.collect_trait(trait_decl);
                 }
 
                 Declaration::Function(function) => {
+                    self.check_generic_parameters(&function.type_parameters);
                     self.collect_function(function);
                 }
 
@@ -244,8 +343,28 @@ impl TypeChecker {
         }
     }
 
+    fn check_generic_parameters(
+        &mut self,
+        parameters: &[kome_ast::declarations::GenericParameter],
+    ) {
+        let mut names = std::collections::HashSet::new();
+        for parameter in parameters {
+            if !names.insert(parameter.name.as_str()) {
+                self.errors.push(TypeCheckError {
+                    message: format!("duplicate generic parameter `{}`", parameter.name),
+                    span: parameter.span,
+                });
+            }
+        }
+    }
+
     fn collect_implementation(&mut self, declaration: &ForDeclaration) {
-        let target = Self::type_from_annotation(&declaration.target);
+        let generic_parameters = declaration
+            .type_parameters
+            .iter()
+            .map(|value| value.name.clone())
+            .collect::<Vec<_>>();
+        let target = Self::type_from_annotation_with(&declaration.target, &generic_parameters);
         let mut methods = HashMap::new();
         let mut constants = HashMap::new();
         for member in &declaration.members {
@@ -253,7 +372,7 @@ impl TypeChecker {
                 TypeMember::Function(function) => {
                     methods.insert(
                         function.name.clone(),
-                        Self::signature(function, Some(&target)),
+                        Self::signature_with(function, Some(&target), &generic_parameters),
                     );
                 }
                 TypeMember::Constant(binding) => {
@@ -263,7 +382,9 @@ impl TypeChecker {
                             binding
                                 .type_annotation
                                 .as_ref()
-                                .map(Self::type_from_annotation)
+                                .map(|value| {
+                                    Self::type_from_annotation_with(value, &generic_parameters)
+                                })
                                 .unwrap_or(SemanticType::Unknown),
                         );
                     }
@@ -272,13 +393,21 @@ impl TypeChecker {
         }
         self.implementations.push(TypeImplementationInfo {
             target,
-            trait_: declaration.trait_.as_ref().map(Self::type_from_annotation),
+            trait_: declaration
+                .trait_
+                .as_ref()
+                .map(|value| Self::type_from_annotation_with(value, &generic_parameters)),
             methods,
             constants,
         });
     }
 
     fn collect_trait(&mut self, declaration: &TraitDeclaration) {
+        let generic_parameters = declaration
+            .type_parameters
+            .iter()
+            .map(|value| value.name.clone())
+            .collect::<Vec<_>>();
         let functions = declaration
             .functions
             .iter()
@@ -287,7 +416,12 @@ impl TypeChecker {
         let signatures = declaration
             .functions
             .iter()
-            .map(|function| (function.name.clone(), Self::signature(function, None)))
+            .map(|function| {
+                (
+                    function.name.clone(),
+                    Self::signature_with(function, None, &generic_parameters),
+                )
+            })
             .collect();
 
         if self
@@ -296,6 +430,7 @@ impl TypeChecker {
                 declaration.name.clone(),
                 TraitTypeInfo {
                     functions,
+                    type_parameters: generic_parameters,
                     signatures,
                 },
             )
@@ -309,10 +444,20 @@ impl TypeChecker {
     }
 
     fn collect_struct(&mut self, struct_decl: &StructDeclaration) {
+        let type_parameters = struct_decl
+            .type_parameters
+            .iter()
+            .map(|value| value.name.clone())
+            .collect::<Vec<_>>();
         let fields = struct_decl.fields.as_ref().map(|fields| {
             fields
                 .iter()
-                .map(|field| (field.name.clone(), Self::type_from_annotation(&field.type_)))
+                .map(|field| {
+                    (
+                        field.name.clone(),
+                        Self::type_from_annotation_with(&field.type_, &type_parameters),
+                    )
+                })
                 .collect()
         });
         let runtime = struct_decl.attributes.iter().find_map(|attribute| {
@@ -331,7 +476,14 @@ impl TypeChecker {
 
         if self
             .structs
-            .insert(struct_decl.name.clone(), StructTypeInfo { fields, runtime })
+            .insert(
+                struct_decl.name.clone(),
+                StructTypeInfo {
+                    fields,
+                    type_parameters,
+                    runtime,
+                },
+            )
             .is_some()
         {
             self.errors.push(TypeCheckError {
@@ -350,6 +502,19 @@ impl TypeChecker {
         function: &FunctionDeclaration,
         self_type: Option<&SemanticType>,
     ) -> FunctionSignature {
+        let generic_parameters = function
+            .type_parameters
+            .iter()
+            .map(|value| value.name.clone())
+            .collect::<Vec<_>>();
+        Self::signature_with(function, self_type, &generic_parameters)
+    }
+
+    fn signature_with(
+        function: &FunctionDeclaration,
+        self_type: Option<&SemanticType>,
+        generic_parameters: &[String],
+    ) -> FunctionSignature {
         let mut params = Vec::new();
 
         for pattern in &function.params {
@@ -363,7 +528,7 @@ impl TypeChecker {
                 identifier
                     .type_annotation
                     .as_ref()
-                    .map(Self::type_from_annotation)
+                    .map(|value| Self::type_from_annotation_with(value, generic_parameters))
                     .unwrap_or(SemanticType::Unknown)
             };
 
@@ -376,12 +541,13 @@ impl TypeChecker {
         let return_type = function
             .return_type
             .as_ref()
-            .map(Self::type_from_annotation)
+            .map(|value| Self::type_from_annotation_with(value, generic_parameters))
             .unwrap_or(SemanticType::Void);
 
         FunctionSignature {
             params,
             return_type,
+            type_parameters: generic_parameters.to_vec(),
         }
     }
 
@@ -395,9 +561,10 @@ impl TypeChecker {
             })
             .enumerate()
         {
-            let Some(SemanticType::Named(trait_name)) = self.implementations[index].trait_.as_ref()
-            else {
-                continue;
+            let (trait_name, trait_arguments) = match self.implementations[index].trait_.as_ref() {
+                Some(SemanticType::Named(name)) => (name, Vec::new()),
+                Some(SemanticType::Applied(name, arguments)) => (name, arguments.clone()),
+                _ => continue,
             };
             let Some(trait_info) = self.traits.get(trait_name).cloned() else {
                 self.errors.push(TypeCheckError {
@@ -407,6 +574,23 @@ impl TypeChecker {
                 continue;
             };
             let target = self.implementations[index].target.clone();
+            if trait_info.type_parameters.len() != trait_arguments.len() {
+                self.errors.push(TypeCheckError {
+                    message: format!(
+                        "trait `{trait_name}` expects {} type argument(s), but received {}",
+                        trait_info.type_parameters.len(),
+                        trait_arguments.len()
+                    ),
+                    span: declaration.span,
+                });
+                continue;
+            }
+            let trait_substitutions = trait_info
+                .type_parameters
+                .iter()
+                .cloned()
+                .zip(trait_arguments)
+                .collect::<HashMap<_, _>>();
             for name in &trait_info.functions {
                 let Some(actual) = self.implementations[index].methods.get(name) else {
                     self.errors.push(TypeCheckError {
@@ -418,6 +602,11 @@ impl TypeChecker {
                     continue;
                 };
                 let mut expected = trait_info.signatures[name].clone();
+                for parameter in &mut expected.params {
+                    parameter.type_ = substitute_semantic(&parameter.type_, &trait_substitutions);
+                }
+                expected.return_type =
+                    substitute_semantic(&expected.return_type, &trait_substitutions);
                 for parameter in &mut expected.params {
                     if parameter.name == "self" && matches!(parameter.type_, SemanticType::Unknown)
                     {
@@ -484,6 +673,14 @@ impl TypeChecker {
                     }
                 }
 
+                Declaration::Struct(declaration) => {
+                    if let Some(fields) = &declaration.fields {
+                        for field in fields {
+                            self.validate_type_arity(&field.type_);
+                        }
+                    }
+                }
+
                 _ => {}
             }
         }
@@ -537,11 +734,22 @@ impl TypeChecker {
         self_type: Option<&SemanticType>,
     ) {
         self.enter_scope();
+        let mut generic_parameters = function
+            .type_parameters
+            .iter()
+            .map(|value| value.name.clone())
+            .collect::<Vec<_>>();
+        if let Some(self_type) = self_type {
+            collect_semantic_parameters(self_type, &mut generic_parameters);
+        }
 
         for pattern in &function.params {
             let Pattern::Ident(identifier) = pattern else {
                 continue;
             };
+            if let Some(annotation) = &identifier.type_annotation {
+                self.validate_type_arity(annotation);
+            }
 
             let type_ = if identifier.name == "self" && identifier.type_annotation.is_none() {
                 self_type.cloned().unwrap_or(SemanticType::Unknown)
@@ -549,7 +757,7 @@ impl TypeChecker {
                 identifier
                     .type_annotation
                     .as_ref()
-                    .map(Self::type_from_annotation)
+                    .map(|value| Self::type_from_annotation_with(value, &generic_parameters))
                     .unwrap_or(SemanticType::Unknown)
             };
 
@@ -561,8 +769,11 @@ impl TypeChecker {
         self.return_type = function
             .return_type
             .as_ref()
-            .map(Self::type_from_annotation)
+            .map(|value| Self::type_from_annotation_with(value, &generic_parameters))
             .unwrap_or(SemanticType::Void);
+        if let Some(return_type) = &function.return_type {
+            self.validate_type_arity(return_type);
+        }
 
         if let Some(body) = &function.body {
             self.visit_block_statement(body);
@@ -574,6 +785,10 @@ impl TypeChecker {
     }
 
     fn visit_implementation(&mut self, declaration: &ForDeclaration) {
+        self.validate_type_arity(&declaration.target);
+        if let Some(trait_) = &declaration.trait_ {
+            self.validate_type_arity(trait_);
+        }
         let target = Self::type_from_annotation(&declaration.target);
         self.enter_scope();
         for member in &declaration.members {
@@ -595,6 +810,9 @@ impl TypeChecker {
         let Pattern::Ident(identifier) = &binding.pattern else {
             return;
         };
+        if let Some(annotation) = &binding.type_annotation {
+            self.validate_type_arity(annotation);
+        }
 
         let annotated = binding
             .type_annotation
@@ -779,6 +997,42 @@ impl TypeChecker {
                 }
             },
 
+            Expression::Task(task) => {
+                let result_expected = match expected {
+                    Some(SemanticType::Applied(name, arguments))
+                        if name == "Task" && arguments.len() == 1 =>
+                    {
+                        arguments.first()
+                    }
+                    _ => None,
+                };
+                SemanticType::Applied(
+                    "Task".into(),
+                    vec![self.infer_expression(&task.argument, result_expected)],
+                )
+            }
+
+            Expression::Wait(wait) => {
+                let task_expected = expected
+                    .cloned()
+                    .map(|result| SemanticType::Applied("Task".into(), vec![result]));
+                match self.infer_expression(&wait.argument, task_expected.as_ref()) {
+                    SemanticType::Applied(name, mut arguments)
+                        if name == "Task" && arguments.len() == 1 =>
+                    {
+                        arguments.remove(0)
+                    }
+                    SemanticType::Unknown => SemanticType::Unknown,
+                    actual => {
+                        self.errors.push(TypeCheckError {
+                            message: format!("`wait` expects Task<T>, but found {}", actual.name()),
+                            span: wait.argument.span(),
+                        });
+                        SemanticType::Unknown
+                    }
+                }
+            }
+
             Expression::Binary(binary) => self.infer_binary_expression(binary),
 
             Expression::Call(call) => self.infer_call_expression(call),
@@ -847,6 +1101,21 @@ impl TypeChecker {
                         .and_then(|struct_| struct_.fields.as_ref())
                         .and_then(|fields| fields.get(&member.property))
                         .cloned()
+                        .unwrap_or(SemanticType::Unknown),
+                    SemanticType::Applied(name, arguments) => self
+                        .structs
+                        .get(&name)
+                        .and_then(|info| {
+                            let fields = info.fields.as_ref()?;
+                            let field = fields.get(&member.property)?;
+                            let substitutions = info
+                                .type_parameters
+                                .iter()
+                                .cloned()
+                                .zip(arguments)
+                                .collect::<HashMap<_, _>>();
+                            Some(substitute_semantic(field, &substitutions))
+                        })
                         .unwrap_or(SemanticType::Unknown),
                     _ => SemanticType::Unknown,
                 }
@@ -939,10 +1208,41 @@ impl TypeChecker {
     }
 
     fn infer_struct_expression(&mut self, struct_: &StructExpression) -> SemanticType {
-        let fields = self
-            .structs
-            .get(&struct_.name)
-            .and_then(|struct_info| struct_info.fields.clone());
+        let info = self.structs.get(&struct_.name).cloned();
+        let arguments = struct_
+            .type_arguments
+            .iter()
+            .map(Self::type_from_annotation)
+            .collect::<Vec<_>>();
+        if let Some(info) = &info
+            && info.type_parameters.len() != arguments.len()
+        {
+            self.errors.push(TypeCheckError {
+                message: format!(
+                    "struct `{}` expects {} type argument(s), but received {}",
+                    struct_.name,
+                    info.type_parameters.len(),
+                    arguments.len()
+                ),
+                span: struct_.span,
+            });
+        }
+        let substitutions = info
+            .as_ref()
+            .map(|info| {
+                info.type_parameters
+                    .iter()
+                    .cloned()
+                    .zip(arguments.iter().cloned())
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let fields = info.and_then(|info| info.fields).map(|fields| {
+            fields
+                .into_iter()
+                .map(|(name, type_)| (name, substitute_semantic(&type_, &substitutions)))
+                .collect::<HashMap<_, _>>()
+        });
 
         for field in &struct_.fields {
             let name = match &field.key {
@@ -959,7 +1259,11 @@ impl TypeChecker {
             }
         }
 
-        SemanticType::Named(struct_.name.clone())
+        if arguments.is_empty() {
+            SemanticType::Named(struct_.name.clone())
+        } else {
+            SemanticType::Applied(struct_.name.clone(), arguments)
+        }
     }
 
     fn infer_binary_expression(&mut self, binary: &BinaryExpression) -> SemanticType {
@@ -1081,7 +1385,28 @@ impl TypeChecker {
                 && self.resolve(&identifier.name).is_none()
                 && self.structs.contains_key(&identifier.name)
             {
-                Some(SemanticType::Named(identifier.name.clone()))
+                if call.type_arguments.is_empty() {
+                    Some(SemanticType::Named(identifier.name.clone()))
+                } else {
+                    let expected = self.structs[&identifier.name].type_parameters.len();
+                    if expected != call.type_arguments.len() {
+                        self.errors.push(TypeCheckError {
+                            message: format!(
+                                "type `{}` expects {expected} type argument(s), but received {}",
+                                identifier.name,
+                                call.type_arguments.len()
+                            ),
+                            span: call.span,
+                        });
+                    }
+                    Some(SemanticType::Applied(
+                        identifier.name.clone(),
+                        call.type_arguments
+                            .iter()
+                            .map(Self::type_from_annotation)
+                            .collect(),
+                    ))
+                }
             } else {
                 None
             };
@@ -1089,12 +1414,30 @@ impl TypeChecker {
                 Some(target) => target.clone(),
                 None => self.infer_expression(&member.object, None),
             };
-            let signature = self
-                .implementations
-                .iter()
-                .filter(|implementation| implementation.target == target)
-                .find_map(|implementation| implementation.methods.get(&member.property))
-                .cloned();
+            let signature = self.implementations.iter().find_map(|implementation| {
+                let mut substitutions = HashMap::new();
+                if implementation.target != target
+                    && infer_type_parameters(&implementation.target, &target, &mut substitutions)
+                        .is_err()
+                {
+                    return None;
+                }
+                implementation
+                    .methods
+                    .get(&member.property)
+                    .map(|signature| FunctionSignature {
+                        params: signature
+                            .params
+                            .iter()
+                            .map(|parameter| ParameterType {
+                                name: parameter.name.clone(),
+                                type_: substitute_semantic(&parameter.type_, &substitutions),
+                            })
+                            .collect(),
+                        return_type: substitute_semantic(&signature.return_type, &substitutions),
+                        type_parameters: Vec::new(),
+                    })
+            });
             let Some(signature) = signature else {
                 for argument in &call.args {
                     self.infer_expression(
@@ -1168,6 +1511,60 @@ impl TypeChecker {
         let Some(signature) = self.functions.get(&identifier.name).cloned() else {
             return SemanticType::Unknown;
         };
+
+        if !signature.type_parameters.is_empty() {
+            let mut substitutions = HashMap::new();
+            if !call.type_arguments.is_empty() {
+                if call.type_arguments.len() != signature.type_parameters.len() {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "function `{}` expects {} type argument(s), but received {}",
+                            identifier.name,
+                            signature.type_parameters.len(),
+                            call.type_arguments.len()
+                        ),
+                        span: call.span,
+                    });
+                }
+                for (name, argument) in signature.type_parameters.iter().zip(&call.type_arguments) {
+                    substitutions.insert(name.clone(), Self::type_from_annotation(argument));
+                }
+            }
+            let mut actuals = Vec::new();
+            for argument in &call.args {
+                let expression = match argument {
+                    CallArg::Positional(value) => value,
+                    CallArg::Named { value, .. } => value,
+                };
+                actuals.push((expression, self.infer_expression(expression, None)));
+            }
+            if call.type_arguments.is_empty() {
+                for ((_, actual), parameter) in actuals.iter().zip(&signature.params) {
+                    if let Err(name) =
+                        infer_type_parameters(&parameter.type_, actual, &mut substitutions)
+                        && !name.is_empty()
+                    {
+                        self.errors.push(TypeCheckError {
+                            message: format!("conflicting inferred types for `{name}`"),
+                            span: call.span,
+                        });
+                    }
+                }
+                for name in &signature.type_parameters {
+                    if !substitutions.contains_key(name) {
+                        self.errors.push(TypeCheckError {
+                            message: format!("generic inference failed for `{name}`"),
+                            span: call.span,
+                        });
+                    }
+                }
+            }
+            for ((expression, actual), parameter) in actuals.iter().zip(&signature.params) {
+                let expected = substitute_semantic(&parameter.type_, &substitutions);
+                self.check_compatible(&expected, actual, expression.span());
+            }
+            return substitute_semantic(&signature.return_type, &substitutions);
+        }
 
         for (index, argument) in call.args.iter().enumerate() {
             let parameter = match argument {
@@ -1252,7 +1649,57 @@ impl TypeChecker {
 
     // -- type conversion --
 
+    fn validate_type_arity(&mut self, type_: &Type) {
+        match type_ {
+            Type::Named(named) => {
+                let expected = self
+                    .structs
+                    .get(&named.name)
+                    .map(|info| info.type_parameters.len())
+                    .or_else(|| {
+                        self.traits
+                            .get(&named.name)
+                            .map(|info| info.type_parameters.len())
+                    })
+                    .or_else(|| (named.name == "Task").then_some(1));
+                if let Some(expected) = expected
+                    && expected != named.type_arguments.len()
+                {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "type `{}` expects {expected} type argument(s), but received {}",
+                            named.name,
+                            named.type_arguments.len()
+                        ),
+                        span: named.span,
+                    });
+                }
+                for argument in &named.type_arguments {
+                    self.validate_type_arity(argument);
+                }
+            }
+            Type::Optional(value) => self.validate_type_arity(&value.inner),
+            Type::List(value) => self.validate_type_arity(&value.element),
+            Type::Function(value) => {
+                for parameter in &value.params {
+                    self.validate_type_arity(&parameter.type_);
+                }
+                self.validate_type_arity(&value.return_type);
+            }
+            Type::Object(value) => {
+                for member in &value.members {
+                    self.validate_type_arity(&member.type_);
+                }
+            }
+            Type::Primitive(_) => {}
+        }
+    }
+
     fn type_from_annotation(type_: &Type) -> SemanticType {
+        Self::type_from_annotation_with(type_, &[])
+    }
+
+    fn type_from_annotation_with(type_: &Type, parameters: &[String]) -> SemanticType {
         match type_ {
             Type::Primitive(primitive) => match &primitive.kind {
                 PrimitiveTypeKind::String => SemanticType::String,
@@ -1271,11 +1718,24 @@ impl TypeChecker {
                 PrimitiveTypeKind::Null => SemanticType::Null,
             },
 
+            Type::Named(named)
+                if parameters.contains(&named.name) && named.type_arguments.is_empty() =>
+            {
+                SemanticType::TypeParameter(named.name.clone())
+            }
+            Type::Named(named) if !named.type_arguments.is_empty() => SemanticType::Applied(
+                named.name.clone(),
+                named
+                    .type_arguments
+                    .iter()
+                    .map(|value| Self::type_from_annotation_with(value, parameters))
+                    .collect(),
+            ),
             Type::Named(named) => SemanticType::Named(named.name.clone()),
 
-            Type::Optional(optional) => {
-                SemanticType::Optional(Box::new(Self::type_from_annotation(&optional.inner)))
-            }
+            Type::Optional(optional) => SemanticType::Optional(Box::new(
+                Self::type_from_annotation_with(&optional.inner, parameters),
+            )),
 
             _ => SemanticType::Unknown,
         }

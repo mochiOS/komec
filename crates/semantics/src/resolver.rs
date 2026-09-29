@@ -235,6 +235,15 @@ impl ScopeBuilder {
             },
         );
         self.enter_scope(ScopeKind::Function);
+        for parameter in &func.type_parameters {
+            self.declare(
+                parameter.span,
+                Symbol::TypeParameter {
+                    name: parameter.name.clone(),
+                    span: parameter.span,
+                },
+            );
+        }
 
         for param in &func.params {
             self.visit_pattern_binding(param);
@@ -291,14 +300,38 @@ impl ScopeBuilder {
             },
         );
 
+        self.enter_scope(ScopeKind::Type);
+        for parameter in &struct_decl.type_parameters {
+            self.declare(
+                parameter.span,
+                Symbol::TypeParameter {
+                    name: parameter.name.clone(),
+                    span: parameter.span,
+                },
+            );
+        }
+
         if let Some(fields) = &struct_decl.fields {
             for field in fields {
                 self.visit_type(&field.type_);
             }
         }
+        self.exit_scope();
     }
 
     fn visit_for_declaration(&mut self, declaration: &ForDeclaration) {
+        self.enter_scope(ScopeKind::Type);
+        for parameter in &declaration.type_parameters {
+            if self.resolve_name(&parameter.name).is_none() {
+                self.declare(
+                    parameter.span,
+                    Symbol::TypeParameter {
+                        name: parameter.name.clone(),
+                        span: parameter.span,
+                    },
+                );
+            }
+        }
         self.visit_type(&declaration.target);
 
         if let Some(trait_) = &declaration.trait_ {
@@ -306,6 +339,7 @@ impl ScopeBuilder {
         }
 
         self.visit_type_members(&declaration.members);
+        self.exit_scope();
     }
 
     fn visit_trait_declaration(&mut self, declaration: &TraitDeclaration) {
@@ -318,6 +352,15 @@ impl ScopeBuilder {
         );
 
         self.enter_scope(ScopeKind::Type);
+        for parameter in &declaration.type_parameters {
+            self.declare(
+                parameter.span,
+                Symbol::TypeParameter {
+                    name: parameter.name.clone(),
+                    span: parameter.span,
+                },
+            );
+        }
         for function in &declaration.functions {
             self.visit_function_declaration(function);
         }
@@ -483,6 +526,8 @@ impl ScopeBuilder {
             Expression::Unary(unary) => {
                 self.visit_expression(&unary.argument);
             }
+            Expression::Task(task) => self.visit_expression(&task.argument),
+            Expression::Wait(wait) => self.visit_expression(&wait.argument),
             Expression::Binary(binary) => self.visit_binary_expression(binary),
             Expression::Call(call) => self.visit_call_expression(call),
             Expression::Member(member) => self.visit_member_expression(member),
@@ -667,7 +712,9 @@ impl ScopeBuilder {
 
     fn visit_named_type(&mut self, named: &NamedType) {
         let root = named.name.split("::").next().unwrap_or(&named.name);
-        self.record_reference(root, named.span);
+        if root != "Task" {
+            self.record_reference(root, named.span);
+        }
 
         for arg in &named.type_arguments {
             self.visit_type(arg);

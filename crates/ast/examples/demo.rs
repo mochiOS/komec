@@ -107,6 +107,7 @@ fn main() {
         Expression::literal(LiteralKind::String("Hello".into()), Span::new(121, 128));
 
     let text_expression = Expression::Call(CallExpression {
+        type_arguments: Vec::new(),
         span: Span::new(116, 129),
         callee: Box::new(text_callee),
         args: vec![CallArg::Positional(text_argument)],
@@ -230,6 +231,7 @@ fn main() {
     // fn greet(name: String) { ... }
 
     let greet_function = ComponentMember::Function(FunctionDeclaration {
+        type_parameters: Vec::new(),
         span: Span::new(211, 273),
         attributes: Vec::new(),
         name: "greet".into(),

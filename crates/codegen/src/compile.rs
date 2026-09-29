@@ -19,9 +19,10 @@ use kome_ast::declarations::{
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
     Expression, GroupExpression, IdentifierExpression, LiteralExpression, LiteralKind,
-    MemberExpression, NumberLiteral, PropertyKey, StructExpression,
+    MemberExpression, NumberLiteral, PropertyKey, StructExpression, TaskExpression, WaitExpression,
 };
 use kome_ast::statements::{BlockStatement, Statement};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// The compiled signature of a Kome function.
@@ -34,21 +35,21 @@ pub struct FunctionSignature {
 /// A top-level Kome function, either compiled from Kome source or backed by
 /// a registered native.
 #[derive(Debug)]
-pub enum FunctionKind<'a> {
+pub enum FunctionKind {
     Native {
         signature: FunctionSignature,
 
         /// The symbol registered in the native runtime's [`NativeRegistry`](kome_native_rt::NativeRegistry).
-        symbol: &'a str,
+        symbol: String,
     },
 
     User {
-        declaration: &'a FunctionDeclaration,
+        declaration: FunctionDeclaration,
         signature: FunctionSignature,
     },
 }
 
-impl FunctionKind<'_> {
+impl FunctionKind {
     pub fn signature(&self) -> &FunctionSignature {
         match self {
             Self::Native { signature, .. } => signature,
@@ -59,12 +60,13 @@ impl FunctionKind<'_> {
 
 /// Static information about a module, gathered before code generation.
 #[derive(Debug)]
-pub struct ModuleInfo<'a> {
-    functions: HashMap<String, FunctionKind<'a>>,
+pub struct ModuleInfo {
+    functions: HashMap<String, FunctionKind>,
     runtime_types: HashMap<String, KomeType>,
     structs: Vec<StructInfo>,
     struct_ids: HashMap<String, usize>,
-    implementations: Vec<TypeImplementation<'a>>,
+    implementations: Vec<TypeImplementation>,
+    task_types: RefCell<Vec<KomeType>>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,21 +91,21 @@ struct ImplementationMethod {
 }
 
 #[derive(Debug)]
-struct AssociatedConstant<'a> {
-    binding: &'a Binding,
+struct AssociatedConstant {
+    binding: Binding,
     kome_type: KomeType,
 }
 
 #[derive(Debug)]
-struct TypeImplementation<'a> {
+struct TypeImplementation {
     target: KomeType,
     trait_name: Option<String>,
     methods: HashMap<String, ImplementationMethod>,
-    constants: HashMap<String, AssociatedConstant<'a>>,
+    constants: HashMap<String, AssociatedConstant>,
 }
 
-impl<'a> ModuleInfo<'a> {
-    pub fn get(&self, name: &str) -> Option<&FunctionKind<'a>> {
+impl ModuleInfo {
+    pub fn get(&self, name: &str) -> Option<&FunctionKind> {
         self.functions.get(name)
     }
 
@@ -118,8 +120,25 @@ impl<'a> ModuleInfo<'a> {
     fn type_name(&self, ty: KomeType) -> String {
         match ty {
             KomeType::Struct(id) => self.structs[id].name.clone(),
+            KomeType::Task(id) => format!("Task<{}>", self.type_name(self.task_result(id))),
             _ => ty.name(),
         }
+    }
+
+    fn task_type(&self, result: KomeType) -> KomeType {
+        let mut task_types = self.task_types.borrow_mut();
+        let id = task_types
+            .iter()
+            .position(|existing| *existing == result)
+            .unwrap_or_else(|| {
+                task_types.push(result);
+                task_types.len() - 1
+            });
+        KomeType::Task(id)
+    }
+
+    fn task_result(&self, id: usize) -> KomeType {
+        self.task_types.borrow()[id]
     }
 
     fn implementation_member(
@@ -127,9 +146,9 @@ impl<'a> ModuleInfo<'a> {
         target: KomeType,
         name: &str,
     ) -> Option<(
-        &TypeImplementation<'a>,
+        &TypeImplementation,
         Option<&ImplementationMethod>,
-        Option<&AssociatedConstant<'a>>,
+        Option<&AssociatedConstant>,
     )> {
         self.implementations
             .iter()
@@ -181,17 +200,20 @@ impl<'a> ModuleInfo<'a> {
             FunctionKind::User {
                 declaration,
                 signature,
-            } => Some((name.as_str(), *declaration, signature)),
+            } => Some((name.as_str(), declaration, signature)),
             FunctionKind::Native { .. } => None,
         })
     }
 }
 
 /// Collects function declarations and computes their signatures.
-pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
+pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
+    let module = crate::generics::monomorphize(module)?;
+    let module = &module;
     let mut functions = HashMap::new();
     let mut runtime_types = HashMap::new();
     let mut struct_ids = HashMap::new();
+    let task_types = RefCell::new(Vec::new());
 
     for declaration in &module.declarations {
         let Declaration::Struct(struct_decl) = declaration else {
@@ -230,7 +252,8 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
         })?;
         let mut fields = Vec::with_capacity(declared.len());
         for (index, field) in declared.iter().enumerate() {
-            let kome_type = type_from_annotation(&field.type_, &runtime_types, &struct_ids)?;
+            let kome_type =
+                type_from_annotation(&field.type_, &runtime_types, &struct_ids, &task_types)?;
             if kome_type == KomeType::Void {
                 return Err(CodegenError::at(
                     "struct fields cannot have type Void",
@@ -265,13 +288,17 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
             continue;
         };
 
-        let signature = analyze_signature(function, &runtime_types, &struct_ids, None)?;
+        let signature =
+            analyze_signature(function, &runtime_types, &struct_ids, &task_types, None)?;
 
         let kind = match native_symbol(function)? {
-            Some(symbol) => FunctionKind::Native { signature, symbol },
+            Some(symbol) => FunctionKind::Native {
+                signature,
+                symbol: symbol.to_owned(),
+            },
 
             None => FunctionKind::User {
-                declaration: function,
+                declaration: function.clone(),
                 signature,
             },
         };
@@ -297,7 +324,12 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
         let Declaration::For(implementation) = declaration else {
             continue;
         };
-        let target = type_from_annotation(&implementation.target, &runtime_types, &struct_ids)?;
+        let target = type_from_annotation(
+            &implementation.target,
+            &runtime_types,
+            &struct_ids,
+            &task_types,
+        )?;
         let trait_name = implementation
             .trait_
             .as_ref()
@@ -314,8 +346,13 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
         for member in &implementation.members {
             match member {
                 TypeMember::Function(function) => {
-                    let signature =
-                        analyze_signature(function, &runtime_types, &struct_ids, Some(target))?;
+                    let signature = analyze_signature(
+                        function,
+                        &runtime_types,
+                        &struct_ids,
+                        &task_types,
+                        Some(target),
+                    )?;
                     let has_self = matches!(function.params.first(), Some(kome_ast::patterns::Pattern::Ident(parameter)) if parameter.name == "self");
                     let key =
                         implementation_function_key(target, trait_name.as_deref(), &function.name);
@@ -339,7 +376,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
                         .insert(
                             key,
                             FunctionKind::User {
-                                declaration: function,
+                                declaration: function.clone(),
                                 signature,
                             },
                         )
@@ -367,10 +404,14 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
                             binding.span,
                         )
                     })?;
-                    let kome_type = type_from_annotation(annotation, &runtime_types, &struct_ids)?;
+                    let kome_type =
+                        type_from_annotation(annotation, &runtime_types, &struct_ids, &task_types)?;
                     constants.insert(
                         identifier.name.clone(),
-                        AssociatedConstant { binding, kome_type },
+                        AssociatedConstant {
+                            binding: binding.clone(),
+                            kome_type,
+                        },
                     );
                 }
             }
@@ -389,6 +430,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
                 &methods,
                 &runtime_types,
                 &struct_ids,
+                &task_types,
             )?;
         }
         implementations.push(TypeImplementation {
@@ -405,6 +447,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
         structs,
         struct_ids,
         implementations,
+        task_types,
     })
 }
 
@@ -435,9 +478,16 @@ fn validate_trait_implementation(
     methods: &HashMap<String, ImplementationMethod>,
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
+    task_types: &RefCell<Vec<KomeType>>,
 ) -> CodegenResult<()> {
     for required in &trait_decl.functions {
-        let expected = analyze_signature(required, runtime_types, struct_ids, Some(target))?;
+        let expected = analyze_signature(
+            required,
+            runtime_types,
+            struct_ids,
+            task_types,
+            Some(target),
+        )?;
         let actual = methods.get(&required.name).ok_or_else(|| {
             CodegenError::at(
                 format!(
@@ -625,6 +675,14 @@ struct ForeignFunctions {
     struct_retain: FuncId,
     struct_release: FuncId,
     struct_dealloc: FuncId,
+    task_create: FuncId,
+    task_start: FuncId,
+    task_complete: FuncId,
+    task_wait: FuncId,
+    task_result: FuncId,
+    task_retain: FuncId,
+    task_release: FuncId,
+    task_dealloc: FuncId,
 }
 
 impl ForeignFunctions {
@@ -702,6 +760,30 @@ impl ForeignFunctions {
             &[types::I64, types::I64],
             None,
         )?;
+        let task_create = declare_foreign(module, "__kome_task_create", &[], Some(types::I64))?;
+        let task_start = declare_foreign(module, "__kome_task_start", &[types::I64], None)?;
+        let task_complete = declare_foreign(
+            module,
+            "__kome_task_complete",
+            &[types::I64, types::I64],
+            None,
+        )?;
+        let task_wait =
+            declare_foreign(module, "__kome_task_wait", &[types::I64], Some(types::I8))?;
+        let task_result = declare_foreign(
+            module,
+            "__kome_task_result",
+            &[types::I64],
+            Some(types::I64),
+        )?;
+        let task_retain = declare_foreign(module, "__kome_task_retain", &[types::I64], None)?;
+        let task_release = declare_foreign(
+            module,
+            "__kome_task_release",
+            &[types::I64],
+            Some(types::I8),
+        )?;
+        let task_dealloc = declare_foreign(module, "__kome_task_dealloc", &[types::I64], None)?;
 
         Ok(Self {
             native_call,
@@ -719,6 +801,14 @@ impl ForeignFunctions {
             struct_retain,
             struct_release,
             struct_dealloc,
+            task_create,
+            task_start,
+            task_complete,
+            task_wait,
+            task_result,
+            task_retain,
+            task_release,
+            task_dealloc,
         })
     }
 }
@@ -802,6 +892,7 @@ fn analyze_signature(
     function: &FunctionDeclaration,
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
+    task_types: &RefCell<Vec<KomeType>>,
     self_type: Option<KomeType>,
 ) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
@@ -834,7 +925,7 @@ fn analyze_signature(
                     identifier.span,
                 ));
             };
-            type_from_annotation(annotation, runtime_types, struct_ids)?
+            type_from_annotation(annotation, runtime_types, struct_ids, task_types)?
         };
 
         if param_type == KomeType::Void {
@@ -848,7 +939,9 @@ fn analyze_signature(
     }
 
     let ret = match &function.return_type {
-        Some(annotation) => type_from_annotation(annotation, runtime_types, struct_ids)?,
+        Some(annotation) => {
+            type_from_annotation(annotation, runtime_types, struct_ids, task_types)?
+        }
         None => KomeType::Void,
     };
 
@@ -859,8 +952,35 @@ fn type_from_annotation(
     annotation: &kome_ast::types::Type,
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
+    task_types: &RefCell<Vec<KomeType>>,
 ) -> CodegenResult<KomeType> {
     if let kome_ast::types::Type::Named(named) = annotation {
+        if named.name == "Task" {
+            if named.type_arguments.len() != 1 {
+                return Err(CodegenError::at(
+                    format!(
+                        "type `Task` expects 1 type argument, but received {}",
+                        named.type_arguments.len()
+                    ),
+                    named.span,
+                ));
+            }
+            let result = type_from_annotation(
+                &named.type_arguments[0],
+                runtime_types,
+                struct_ids,
+                task_types,
+            )?;
+            let mut task_types = task_types.borrow_mut();
+            let id = task_types
+                .iter()
+                .position(|existing| *existing == result)
+                .unwrap_or_else(|| {
+                    task_types.push(result);
+                    task_types.len() - 1
+                });
+            return Ok(KomeType::Task(id));
+        }
         return runtime_types
             .get(&named.name)
             .copied()
@@ -933,10 +1053,10 @@ enum CalleePlan {
     Native { symbol: String },
 }
 
-struct FunctionTranslator<'b, 'c, 'a, M: Module> {
+struct FunctionTranslator<'b, 'c, M: Module> {
     builder: FunctionBuilder<'c>,
     module: &'b mut M,
-    info: &'b ModuleInfo<'a>,
+    info: &'b ModuleInfo,
     func_ids: &'b HashMap<String, FuncId>,
     foreign: &'b ForeignFunctions,
     native_symbols: &'b mut NativeSymbolPool,
@@ -1059,6 +1179,10 @@ impl ReadCounter {
                 self.visit_expression(&group.expression);
             }
 
+            Expression::Task(task) => self.visit_expression(&task.argument),
+
+            Expression::Wait(wait) => self.visit_expression(&wait.argument),
+
             Expression::Binary(binary) => {
                 self.visit_expression(&binary.left);
                 self.visit_expression(&binary.right);
@@ -1096,7 +1220,7 @@ impl ReadCounter {
     }
 }
 
-impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
+impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
     fn translate_function(
         mut self,
         declaration: &FunctionDeclaration,
@@ -1250,6 +1374,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                             annotation,
                             &self.info.runtime_types,
                             &self.info.struct_ids,
+                            &self.info.task_types,
                         )
                     })
                     .transpose()?;
@@ -1365,6 +1490,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
             Expression::Group(group) => self.evaluate_group(group),
 
+            Expression::Task(task) => self.evaluate_task(task, None),
+
+            Expression::Wait(wait) => self.evaluate_wait(wait),
+
             Expression::Binary(binary) => self.evaluate_binary(binary),
 
             Expression::Call(call) => self.evaluate_call(call),
@@ -1382,6 +1511,106 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 ),
                 other.span(),
             )),
+        }
+    }
+
+    fn evaluate_task(
+        &mut self,
+        task: &TaskExpression,
+        expected_result: Option<KomeType>,
+    ) -> CodegenResult<TypedValue> {
+        let create =
+            Module::declare_func_in_func(self.module, self.foreign.task_create, self.builder.func);
+        let call = self.builder.ins().call(create, &[]);
+        let handle = self.builder.inst_results(call)[0];
+        let start =
+            Module::declare_func_in_func(self.module, self.foreign.task_start, self.builder.func);
+        self.builder.ins().call(start, &[handle]);
+
+        let result = self.evaluate_with_expected(&task.argument, expected_result)?;
+        if result.kome_type == KomeType::Void {
+            return Err(CodegenError::at(
+                "task expressions returning Void are not supported yet",
+                task.span,
+            ));
+        }
+        let value = result.expect_value(task.argument.span())?;
+        self.take_managed_ownership(value, result.kome_type, result.ownership);
+        let slot = self.value_to_task_slot(value, result.kome_type);
+        let complete = Module::declare_func_in_func(
+            self.module,
+            self.foreign.task_complete,
+            self.builder.func,
+        );
+        self.builder.ins().call(complete, &[handle, slot]);
+
+        Ok(TypedValue::some(
+            handle,
+            self.info.task_type(result.kome_type),
+        ))
+    }
+
+    fn evaluate_wait(&mut self, wait: &WaitExpression) -> CodegenResult<TypedValue> {
+        let task = self.evaluate(&wait.argument)?;
+        let KomeType::Task(id) = task.kome_type else {
+            return Err(CodegenError::at(
+                format!(
+                    "`wait` expects Task<T>, but found {}",
+                    self.info.type_name(task.kome_type)
+                ),
+                wait.argument.span(),
+            ));
+        };
+        let handle = task.expect_value(wait.argument.span())?;
+        let wait_fn =
+            Module::declare_func_in_func(self.module, self.foreign.task_wait, self.builder.func);
+        self.builder.ins().call(wait_fn, &[handle]);
+        let result_fn =
+            Module::declare_func_in_func(self.module, self.foreign.task_result, self.builder.func);
+        let call = self.builder.ins().call(result_fn, &[handle]);
+        let result_type = self.info.task_result(id);
+        let value = self.task_slot_to_value(self.builder.inst_results(call)[0], result_type);
+        if result_type.is_managed() {
+            self.retain_managed(value, result_type);
+        }
+        self.release_owned_temporary(task, wait.argument.span())?;
+        Ok(TypedValue::some(value, result_type))
+    }
+
+    fn value_to_task_slot(&mut self, value: ir::Value, kome_type: KomeType) -> ir::Value {
+        match kome_type.cranelift().expect("task result representation") {
+            types::I8 | types::I16 | types::I32 => self.builder.ins().uextend(types::I64, value),
+            types::F32 => {
+                let bits = self
+                    .builder
+                    .ins()
+                    .bitcast(types::I32, MachMemFlags::new(), value);
+                self.builder.ins().uextend(types::I64, bits)
+            }
+            types::F64 => self
+                .builder
+                .ins()
+                .bitcast(types::I64, MachMemFlags::new(), value),
+            _ => value,
+        }
+    }
+
+    fn task_slot_to_value(&mut self, slot: ir::Value, kome_type: KomeType) -> ir::Value {
+        match kome_type.cranelift().expect("task result representation") {
+            types::I8 => self.builder.ins().ireduce(types::I8, slot),
+            types::I16 => self.builder.ins().ireduce(types::I16, slot),
+            types::I32 => self.builder.ins().ireduce(types::I32, slot),
+            types::F32 => {
+                let bits = self.builder.ins().ireduce(types::I32, slot);
+                self.builder
+                    .ins()
+                    .bitcast(types::F32, MachMemFlags::new(), bits)
+            }
+            types::F64 => self
+                .builder
+                .ins()
+                .bitcast(types::F64, MachMemFlags::new(), slot),
+            _ => slot,
         }
     }
 
@@ -1493,6 +1722,11 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         expression: &Expression,
         expected: Option<KomeType>,
     ) -> CodegenResult<TypedValue> {
+        if let Expression::Task(task) = expression
+            && let Some(KomeType::Task(id)) = expected
+        {
+            return self.evaluate_task(task, Some(self.info.task_result(id)));
+        }
         if let Expression::Literal(literal) = expression {
             if let LiteralKind::Number(number) = &literal.kind {
                 if let Some(expected) = expected {
@@ -2303,9 +2537,9 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     return Err(CodegenError::new("parameters cannot have type Void", None));
                 }
 
-                KomeType::Struct(_) => {
+                KomeType::Struct(_) | KomeType::Task(_) => {
                     return Err(CodegenError::new(
-                        "user-defined structs cannot cross the native ABI",
+                        "managed aggregate values cannot cross the native ABI",
                         None,
                     ));
                 }
@@ -2346,9 +2580,9 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
 
-            KomeType::Struct(_) => {
+            KomeType::Struct(_) | KomeType::Task(_) => {
                 return Err(CodegenError::new(
-                    "user-defined structs cannot cross the native ABI",
+                    "managed aggregate values cannot cross the native ABI",
                     None,
                 ));
             }
@@ -2400,6 +2634,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                     "{} cannot be used without an initializer",
                     self.info.struct_info(id).name
                 ),
+                None,
+            )),
+            KomeType::Task(_) => Err(CodegenError::new(
+                "Task cannot be used without an initializer",
                 None,
             )),
         }
@@ -2467,6 +2705,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             KomeType::Number => self.foreign.number_retain,
             KomeType::String => self.foreign.string_retain,
             KomeType::Struct(_) => self.foreign.struct_retain,
+            KomeType::Task(_) => self.foreign.task_retain,
             _ => return,
         };
 
@@ -2480,6 +2719,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             KomeType::String => self.foreign.string_release,
             KomeType::Struct(id) => {
                 self.release_struct(value, id);
+                return;
+            }
+            KomeType::Task(id) => {
+                self.release_task(value, id);
                 return;
             }
             _ => return,
@@ -2532,6 +2775,52 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         self.builder.switch_to_block(done);
         self.builder.seal_block(done);
     }
+
+    fn release_task(&mut self, value: ir::Value, id: usize) {
+        let release =
+            Module::declare_func_in_func(self.module, self.foreign.task_release, self.builder.func);
+        let call = self.builder.ins().call(release, &[value]);
+        let is_last = self.builder.inst_results(call)[0];
+        let destroy = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.ins().brif(is_last, destroy, &[], done, &[]);
+        self.builder.switch_to_block(destroy);
+        self.builder.seal_block(destroy);
+
+        let wait =
+            Module::declare_func_in_func(self.module, self.foreign.task_wait, self.builder.func);
+        let wait_call = self.builder.ins().call(wait, &[value]);
+        let state = self.builder.inst_results(wait_call)[0];
+        let completed = self.builder.ins().icmp_imm_u(IntCC::Equal, state, 2);
+        let release_result = self.builder.create_block();
+        let deallocate = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(completed, release_result, &[], deallocate, &[]);
+        self.builder.switch_to_block(release_result);
+        self.builder.seal_block(release_result);
+        let result_type = self.info.task_result(id);
+        if result_type.is_managed() {
+            let result = Module::declare_func_in_func(
+                self.module,
+                self.foreign.task_result,
+                self.builder.func,
+            );
+            let result_call = self.builder.ins().call(result, &[value]);
+            let result =
+                self.task_slot_to_value(self.builder.inst_results(result_call)[0], result_type);
+            self.release_managed(result, result_type);
+        }
+        self.builder.ins().jump(deallocate, &[]);
+        self.builder.switch_to_block(deallocate);
+        self.builder.seal_block(deallocate);
+        let dealloc =
+            Module::declare_func_in_func(self.module, self.foreign.task_dealloc, self.builder.func);
+        self.builder.ins().call(dealloc, &[value]);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+    }
 }
 
 fn unsupported_statement(kind: &str, statement: &Statement) -> CodegenError {
@@ -2546,6 +2835,8 @@ fn expression_kind(expression: &Expression) -> &'static str {
         Expression::Literal(_) => "literal",
         Expression::Ident(_) => "identifier",
         Expression::Unary(_) => "unary",
+        Expression::Task(_) => "task",
+        Expression::Wait(_) => "wait",
         Expression::Binary(_) => "binary",
         Expression::Call(_) => "call",
         Expression::Member(_) => "member access",

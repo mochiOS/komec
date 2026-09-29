@@ -1,0 +1,807 @@
+//! Generic specialization discovery and AST monomorphization.
+
+use crate::{CodegenError, CodegenResult};
+use kome_ast::AstNode;
+use kome_ast::declarations::{
+    Declaration, ForDeclaration, FunctionDeclaration, GenericParameter, Module, StructDeclaration,
+    TraitDeclaration, TypeMember,
+};
+use kome_ast::expressions::{CallArg, Expression, LiteralKind, PropertyKey};
+use kome_ast::generics::TypeSubstitution;
+use kome_ast::patterns::Pattern;
+use kome_ast::statements::{BlockStatement, Statement};
+use kome_ast::types::{NamedType, Type};
+use std::collections::{HashMap, HashSet};
+
+pub(crate) fn monomorphize(module: &Module) -> CodegenResult<Module> {
+    Expander::new(module).run()
+}
+
+struct Expander<'a> {
+    module: &'a Module,
+    structs: HashMap<String, &'a StructDeclaration>,
+    functions: HashMap<String, &'a FunctionDeclaration>,
+    traits: HashMap<String, &'a TraitDeclaration>,
+    output: Vec<Declaration>,
+    emitted_structs: HashMap<String, String>,
+    struct_origins: HashMap<String, (String, Vec<Type>)>,
+    emitted_functions: HashSet<String>,
+    emitted_traits: HashSet<String>,
+    emitted_impls: HashSet<(usize, String)>,
+    layout_stack: Vec<String>,
+}
+
+impl<'a> Expander<'a> {
+    fn new(module: &'a Module) -> Self {
+        let mut structs = HashMap::new();
+        let mut functions = HashMap::new();
+        let mut traits = HashMap::new();
+        for declaration in &module.declarations {
+            match declaration {
+                Declaration::Struct(value) => {
+                    structs.insert(value.name.clone(), value);
+                }
+                Declaration::Function(value) => {
+                    functions.insert(value.name.clone(), value);
+                }
+                Declaration::Trait(value) => {
+                    traits.insert(value.name.clone(), value);
+                }
+                _ => {}
+            }
+        }
+        Self {
+            module,
+            structs,
+            functions,
+            traits,
+            output: Vec::new(),
+            emitted_structs: HashMap::new(),
+            struct_origins: HashMap::new(),
+            emitted_functions: HashSet::new(),
+            emitted_traits: HashSet::new(),
+            emitted_impls: HashSet::new(),
+            layout_stack: Vec::new(),
+        }
+    }
+
+    fn run(mut self) -> CodegenResult<Module> {
+        for declaration in &self.module.declarations {
+            let parameters = match declaration {
+                Declaration::Struct(value) => &value.type_parameters,
+                Declaration::Function(value) => &value.type_parameters,
+                Declaration::Trait(value) => &value.type_parameters,
+                _ => continue,
+            };
+            let mut names = HashSet::new();
+            for parameter in parameters {
+                if !names.insert(&parameter.name) {
+                    return Err(CodegenError::at(
+                        format!("duplicate generic parameter `{}`", parameter.name),
+                        parameter.span,
+                    ));
+                }
+            }
+        }
+        for declaration in &self.module.declarations {
+            match declaration {
+                Declaration::Struct(value) if value.type_parameters.is_empty() => {
+                    self.instantiate_struct(&value.name, &[], value.span)?;
+                }
+                Declaration::Function(value) if value.type_parameters.is_empty() => {
+                    self.instantiate_function(&value.name, &[], value.span)?;
+                }
+                Declaration::Trait(value) if value.type_parameters.is_empty() => {
+                    if self.emitted_traits.insert(value.name.clone()) {
+                        self.output.push(declaration.clone());
+                    }
+                }
+                Declaration::For(value) if value.type_parameters.is_empty() => {
+                    self.emit_concrete_impl(value.clone(), &TypeSubstitution::default())?
+                }
+                Declaration::Struct(_)
+                | Declaration::Function(_)
+                | Declaration::Trait(_)
+                | Declaration::For(_) => {}
+                _ => self.output.push(declaration.clone()),
+            }
+        }
+        Ok(Module::new(self.output, self.module.span))
+    }
+
+    fn names(parameters: &[GenericParameter]) -> impl Iterator<Item = &str> {
+        parameters.iter().map(|parameter| parameter.name.as_str())
+    }
+    fn encode_type(type_: &Type) -> String {
+        match type_ {
+            Type::Primitive(value) => {
+                let name = format!("{:?}", value.kind);
+                format!("P{}_{}", name.len(), name)
+            }
+            Type::Named(value) => {
+                let arguments = value
+                    .type_arguments
+                    .iter()
+                    .map(Self::encode_type)
+                    .map(|value| format!("{}_{}", value.len(), value))
+                    .collect::<String>();
+                format!(
+                    "N{}_{}_{}_{}",
+                    value.name.len(),
+                    value.name,
+                    value.type_arguments.len(),
+                    arguments
+                )
+            }
+            Type::Optional(value) => {
+                let inner = Self::encode_type(&value.inner);
+                format!("O{}_{}", inner.len(), inner)
+            }
+            Type::List(value) => {
+                let inner = Self::encode_type(&value.element);
+                format!("L{}_{}", inner.len(), inner)
+            }
+            Type::Function(_) => "F".into(),
+            Type::Object(_) => "R".into(),
+        }
+    }
+    fn specialized_name(name: &str, arguments: &[Type]) -> String {
+        if arguments.is_empty() {
+            name.into()
+        } else {
+            format!(
+                "{}${}${}",
+                name,
+                arguments.len(),
+                arguments
+                    .iter()
+                    .map(Self::encode_type)
+                    .map(|value| format!("${}_{}", value.len(), value))
+                    .collect::<String>()
+            )
+        }
+    }
+
+    fn instantiate_struct(
+        &mut self,
+        name: &str,
+        arguments: &[Type],
+        span: kome_ast::Span,
+    ) -> CodegenResult<String> {
+        let template = self
+            .structs
+            .get(name)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::at(format!("generic struct `{name}` was not found"), span)
+            })?
+            .clone();
+        if template.type_parameters.len() != arguments.len() {
+            return Err(CodegenError::at(
+                format!(
+                    "struct `{name}` expects {} type argument(s), but received {}",
+                    template.type_parameters.len(),
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let key = Self::specialized_name(name, arguments);
+        if self.emitted_structs.contains_key(&key) {
+            return Ok(key);
+        }
+        if self.layout_stack.contains(&key) {
+            return Err(CodegenError::at(
+                format!("unsupported recursive generic layout `{key}`"),
+                span,
+            ));
+        }
+        self.layout_stack.push(key.clone());
+        let substitution = TypeSubstitution::new(Self::names(&template.type_parameters), arguments);
+        let mut concrete = template.clone();
+        concrete.name = key.clone();
+        concrete.type_parameters.clear();
+        if let Some(fields) = &mut concrete.fields {
+            for field in fields {
+                field.type_ = self.concrete_type(&field.type_, &substitution, field.span)?;
+            }
+        }
+        self.layout_stack.pop();
+        self.emitted_structs.insert(key.clone(), key.clone());
+        self.struct_origins
+            .insert(key.clone(), (name.to_owned(), arguments.to_vec()));
+        self.output.push(Declaration::Struct(concrete));
+        let implementations = self
+            .module
+            .declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                Declaration::For(value) => Some(value.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for implementation in implementations {
+            if self.impl_matches(&implementation.target, name) {
+                self.emit_concrete_impl(implementation, &substitution)?;
+            }
+        }
+        Ok(key)
+    }
+
+    fn impl_matches(&self, target: &Type, name: &str) -> bool {
+        matches!(target, Type::Named(named) if named.name == name)
+    }
+    fn concrete_type(
+        &mut self,
+        type_: &Type,
+        substitution: &TypeSubstitution,
+        span: kome_ast::Span,
+    ) -> CodegenResult<Type> {
+        let applied = substitution.apply(type_);
+        match applied {
+            Type::Named(mut named) if named.name == "Task" => {
+                if named.type_arguments.len() != 1 {
+                    return Err(CodegenError::at(
+                        format!(
+                            "type `Task` expects 1 type argument, but received {}",
+                            named.type_arguments.len()
+                        ),
+                        span,
+                    ));
+                }
+                let argument = self.concrete_type(
+                    &named.type_arguments[0],
+                    substitution,
+                    named.type_arguments[0].span(),
+                )?;
+                named.type_arguments = vec![argument];
+                Ok(Type::Named(named))
+            }
+            Type::Named(mut named) if self.structs.contains_key(&named.name) => {
+                let original = named.name.clone();
+                let args = named.type_arguments.clone();
+                named.name = self.instantiate_struct(&original, &args, span)?;
+                named.type_arguments.clear();
+                Ok(Type::Named(named))
+            }
+            Type::Named(named)
+                if substitution.get(&named.name).is_none()
+                    && named.type_arguments.is_empty()
+                    && !self.structs.contains_key(&named.name)
+                    && !self.traits.contains_key(&named.name) =>
+            {
+                Err(CodegenError::at(
+                    format!(
+                        "unresolved generic type `{}` during code generation",
+                        named.name
+                    ),
+                    span,
+                ))
+            }
+            other => Ok(other),
+        }
+    }
+
+    fn instantiate_function(
+        &mut self,
+        name: &str,
+        arguments: &[Type],
+        span: kome_ast::Span,
+    ) -> CodegenResult<String> {
+        let template = self
+            .functions
+            .get(name)
+            .copied()
+            .ok_or_else(|| CodegenError::at(format!("function `{name}` was not found"), span))?
+            .clone();
+        if template.type_parameters.len() != arguments.len() {
+            return Err(CodegenError::at(
+                format!(
+                    "function `{name}` expects {} type argument(s), but received {}",
+                    template.type_parameters.len(),
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let key = Self::specialized_name(name, arguments);
+        if !self.emitted_functions.insert(key.clone()) {
+            return Ok(key);
+        }
+        let substitution = TypeSubstitution::new(Self::names(&template.type_parameters), arguments);
+        let mut concrete = template.clone();
+        concrete.name = key.clone();
+        concrete.type_parameters.clear();
+        for pattern in &mut concrete.params {
+            if let Pattern::Ident(identifier) = pattern
+                && let Some(annotation) = &identifier.type_annotation
+            {
+                identifier.type_annotation =
+                    Some(self.concrete_type(annotation, &substitution, identifier.span)?);
+            }
+        }
+        if let Some(return_type) = &concrete.return_type {
+            concrete.return_type =
+                Some(self.concrete_type(return_type, &substitution, return_type.span())?);
+        }
+        let mut environment = HashMap::new();
+        for pattern in &concrete.params {
+            if let Pattern::Ident(identifier) = pattern
+                && let Some(type_) = &identifier.type_annotation
+            {
+                environment.insert(identifier.name.clone(), type_.clone());
+            }
+        }
+        if let Some(body) = &mut concrete.body {
+            self.rewrite_block(body, &mut environment, &substitution)?;
+        }
+        self.output.push(Declaration::Function(concrete));
+        Ok(key)
+    }
+
+    fn emit_concrete_impl(
+        &mut self,
+        mut implementation: ForDeclaration,
+        substitution: &TypeSubstitution,
+    ) -> CodegenResult<()> {
+        implementation.type_parameters.clear();
+        implementation.target =
+            self.concrete_type(&implementation.target, substitution, implementation.span)?;
+        if let Some(trait_) = &implementation.trait_.clone() {
+            implementation.trait_ =
+                Some(self.concrete_trait(trait_, substitution, implementation.span)?);
+        }
+        let implementation_key = (
+            implementation.span.start,
+            Self::encode_type(&implementation.target),
+        );
+        if !self.emitted_impls.insert(implementation_key) {
+            return Ok(());
+        }
+        let self_type = implementation.target.clone();
+        for member in &mut implementation.members {
+            match member {
+                TypeMember::Function(function) => {
+                    function.type_parameters.clear();
+                    for pattern in &mut function.params {
+                        if let Pattern::Ident(identifier) = pattern {
+                            if identifier.name == "self" && identifier.type_annotation.is_none() {
+                                identifier.type_annotation = Some(self_type.clone());
+                            } else if let Some(annotation) = &identifier.type_annotation {
+                                identifier.type_annotation = Some(self.concrete_type(
+                                    annotation,
+                                    substitution,
+                                    identifier.span,
+                                )?);
+                            }
+                        }
+                    }
+                    if let Some(return_type) = &function.return_type {
+                        function.return_type = Some(self.concrete_type(
+                            return_type,
+                            substitution,
+                            return_type.span(),
+                        )?);
+                    }
+                    let mut environment = HashMap::new();
+                    for pattern in &function.params {
+                        if let Pattern::Ident(identifier) = pattern {
+                            environment.insert(
+                                identifier.name.clone(),
+                                identifier
+                                    .type_annotation
+                                    .clone()
+                                    .unwrap_or_else(|| self_type.clone()),
+                            );
+                        }
+                    }
+                    if let Some(body) = &mut function.body {
+                        self.rewrite_block(body, &mut environment, substitution)?;
+                    }
+                }
+                TypeMember::Constant(binding) => {
+                    if let Some(type_) = &binding.type_annotation {
+                        binding.type_annotation =
+                            Some(self.concrete_type(type_, substitution, binding.span)?);
+                    }
+                }
+            }
+        }
+        self.output.push(Declaration::For(implementation));
+        Ok(())
+    }
+
+    fn concrete_trait(
+        &mut self,
+        type_: &Type,
+        substitution: &TypeSubstitution,
+        span: kome_ast::Span,
+    ) -> CodegenResult<Type> {
+        let applied = substitution.apply(type_);
+        let Type::Named(mut named) = applied else {
+            return Ok(applied);
+        };
+        let Some(template) = self.traits.get(&named.name).copied().cloned() else {
+            return Ok(Type::Named(named));
+        };
+        if template.type_parameters.len() != named.type_arguments.len() {
+            return Err(CodegenError::at(
+                format!(
+                    "trait `{}` expects {} type argument(s), but received {}",
+                    named.name,
+                    template.type_parameters.len(),
+                    named.type_arguments.len()
+                ),
+                span,
+            ));
+        }
+        let key = Self::specialized_name(&named.name, &named.type_arguments);
+        if self.emitted_traits.insert(key.clone()) {
+            let trait_substitution = TypeSubstitution::new(
+                Self::names(&template.type_parameters),
+                &named.type_arguments,
+            );
+            let mut concrete = template;
+            concrete.name = key.clone();
+            concrete.type_parameters.clear();
+            for function in &mut concrete.functions {
+                for pattern in &mut function.params {
+                    if let Pattern::Ident(identifier) = pattern
+                        && let Some(annotation) = &identifier.type_annotation
+                    {
+                        identifier.type_annotation = Some(self.concrete_type(
+                            annotation,
+                            &trait_substitution,
+                            identifier.span,
+                        )?);
+                    }
+                }
+                if let Some(ret) = &function.return_type {
+                    function.return_type =
+                        Some(self.concrete_type(ret, &trait_substitution, ret.span())?);
+                }
+            }
+            self.output.push(Declaration::Trait(concrete));
+        }
+        named.name = key;
+        named.type_arguments.clear();
+        Ok(Type::Named(named))
+    }
+
+    fn rewrite_block(
+        &mut self,
+        block: &mut BlockStatement,
+        environment: &mut HashMap<String, Type>,
+        substitution: &TypeSubstitution,
+    ) -> CodegenResult<()> {
+        for statement in &mut block.statements {
+            match statement {
+                Statement::Let(binding) => {
+                    let expected = binding
+                        .type_annotation
+                        .as_ref()
+                        .map(|type_| substitution.apply(type_));
+                    let inferred = if let Some(init) = &mut binding.init {
+                        Some(self.rewrite_expression(
+                            init,
+                            environment,
+                            substitution,
+                            expected.as_ref(),
+                        )?)
+                    } else {
+                        None
+                    };
+                    if let Pattern::Ident(identifier) = &binding.pattern {
+                        environment.insert(
+                            identifier.name.clone(),
+                            expected
+                                .or(inferred)
+                                .unwrap_or_else(|| unknown_type(binding.span)),
+                        );
+                    }
+                    if let Some(annotation) = &binding.type_annotation {
+                        binding.type_annotation =
+                            Some(self.concrete_type(annotation, substitution, binding.span)?);
+                    }
+                }
+                Statement::Expression(value) => {
+                    self.rewrite_expression(
+                        &mut value.expression,
+                        environment,
+                        substitution,
+                        None,
+                    )?;
+                }
+                Statement::Return(value) => {
+                    if let Some(argument) = &mut value.argument {
+                        self.rewrite_expression(argument, environment, substitution, None)?;
+                    }
+                }
+                Statement::Block(value) => {
+                    let mut nested = environment.clone();
+                    self.rewrite_block(value, &mut nested, substitution)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn rewrite_expression(
+        &mut self,
+        expression: &mut Expression,
+        environment: &mut HashMap<String, Type>,
+        substitution: &TypeSubstitution,
+        expected: Option<&Type>,
+    ) -> CodegenResult<Type> {
+        match expression {
+            Expression::Literal(value) => Ok(match &value.kind {
+                LiteralKind::String(_) => primitive("String", value.span),
+                LiteralKind::Number(_) | LiteralKind::Percent(_) => primitive("Number", value.span),
+                LiteralKind::Boolean(_) => primitive("bool", value.span),
+                LiteralKind::Null => primitive("Null", value.span),
+            }),
+            Expression::Ident(value) => Ok(environment
+                .get(&value.name)
+                .cloned()
+                .unwrap_or_else(|| unknown_type(value.span))),
+            Expression::Group(value) => {
+                self.rewrite_expression(&mut value.expression, environment, substitution, expected)
+            }
+            Expression::Task(value) => {
+                let inner =
+                    self.rewrite_expression(&mut value.argument, environment, substitution, None)?;
+                Ok(Type::Named(NamedType {
+                    span: value.span,
+                    name: "Task".into(),
+                    type_arguments: vec![inner],
+                }))
+            }
+            Expression::Wait(value) => {
+                let task =
+                    self.rewrite_expression(&mut value.argument, environment, substitution, None)?;
+                match task {
+                    Type::Named(named)
+                        if named.name == "Task" && named.type_arguments.len() == 1 =>
+                    {
+                        Ok(named.type_arguments.into_iter().next().unwrap())
+                    }
+                    _ => Err(CodegenError::at("`wait` expects Task<T>", value.span)),
+                }
+            }
+            Expression::Struct(value) => {
+                let arguments = value
+                    .type_arguments
+                    .iter()
+                    .map(|argument| substitution.apply(argument))
+                    .collect::<Vec<_>>();
+                let name = self.instantiate_struct(&value.name, &arguments, value.span)?;
+                value.name = name.clone();
+                value.type_arguments.clear();
+                let declaration = self
+                    .output
+                    .iter()
+                    .find_map(|declaration| match declaration {
+                        Declaration::Struct(value) if value.name == name => Some(value.clone()),
+                        _ => None,
+                    })
+                    .unwrap();
+                if let Some(fields) = declaration.fields {
+                    for property in &mut value.fields {
+                        let field_name = match &property.key {
+                            PropertyKey::Ident { name, .. }
+                            | PropertyKey::String { value: name, .. } => name,
+                            _ => continue,
+                        };
+                        let field_type = fields
+                            .iter()
+                            .find(|field| &field.name == field_name)
+                            .map(|field| &field.type_);
+                        self.rewrite_expression(
+                            &mut property.value,
+                            environment,
+                            substitution,
+                            field_type,
+                        )?;
+                    }
+                }
+                Ok(Type::Named(NamedType {
+                    span: value.span,
+                    name,
+                    type_arguments: Vec::new(),
+                }))
+            }
+            Expression::Call(call) => {
+                if let Expression::Member(member) = call.callee.as_mut()
+                    && let Expression::Ident(identifier) = member.object.as_mut()
+                    && self.structs.contains_key(&identifier.name)
+                    && !call.type_arguments.is_empty()
+                {
+                    let arguments = call
+                        .type_arguments
+                        .iter()
+                        .map(|argument| substitution.apply(argument))
+                        .collect::<Vec<_>>();
+                    identifier.name =
+                        self.instantiate_struct(&identifier.name, &arguments, call.span)?;
+                    call.type_arguments.clear();
+                }
+                if let Expression::Ident(identifier) = call.callee.as_mut()
+                    && let Some(template) = self.functions.get(&identifier.name).copied().cloned()
+                {
+                    let mut argument_types = Vec::new();
+                    for argument in &mut call.args {
+                        let value = match argument {
+                            CallArg::Positional(value) => value,
+                            CallArg::Named { value, .. } => value,
+                        };
+                        argument_types.push(self.rewrite_expression(
+                            value,
+                            environment,
+                            substitution,
+                            None,
+                        )?);
+                    }
+                    let mut type_arguments = call
+                        .type_arguments
+                        .iter()
+                        .map(|argument| substitution.apply(argument))
+                        .collect::<Vec<_>>();
+                    if type_arguments.is_empty() && !template.type_parameters.is_empty() {
+                        let mut inferred = HashMap::new();
+                        for (pattern, actual) in template.params.iter().zip(&argument_types) {
+                            if let Pattern::Ident(parameter) = pattern
+                                && let Some(formal) = &parameter.type_annotation
+                            {
+                                let actual = self.generic_view(actual);
+                                infer(
+                                    formal,
+                                    &actual,
+                                    &template.type_parameters,
+                                    &mut inferred,
+                                    call.span,
+                                )?;
+                            }
+                        }
+                        for parameter in &template.type_parameters {
+                            type_arguments.push(inferred.remove(&parameter.name).ok_or_else(
+                                || {
+                                    CodegenError::at(
+                                        format!(
+                                            "generic inference failed for `{}`",
+                                            parameter.name
+                                        ),
+                                        call.span,
+                                    )
+                                },
+                            )?);
+                        }
+                    }
+                    let specialized =
+                        self.instantiate_function(&identifier.name, &type_arguments, call.span)?;
+                    identifier.name = specialized;
+                    call.type_arguments.clear();
+                    let map = TypeSubstitution::new(
+                        Self::names(&template.type_parameters),
+                        &type_arguments,
+                    );
+                    return Ok(template
+                        .return_type
+                        .as_ref()
+                        .map(|value| map.apply(value))
+                        .unwrap_or_else(|| unknown_type(call.span)));
+                }
+                if let Expression::Member(member) = call.callee.as_mut() {
+                    self.rewrite_expression(&mut member.object, environment, substitution, None)?;
+                }
+                for argument in &mut call.args {
+                    self.rewrite_expression(
+                        match argument {
+                            CallArg::Positional(value) => value,
+                            CallArg::Named { value, .. } => value,
+                        },
+                        environment,
+                        substitution,
+                        None,
+                    )?;
+                }
+                Ok(unknown_type(call.span))
+            }
+            Expression::Member(member) => {
+                let object =
+                    self.rewrite_expression(&mut member.object, environment, substitution, None)?;
+                if let Type::Named(named) = object {
+                    for declaration in &self.output {
+                        if let Declaration::Struct(struct_) = declaration
+                            && struct_.name == named.name
+                            && let Some(fields) = &struct_.fields
+                            && let Some(field) =
+                                fields.iter().find(|field| field.name == member.property)
+                        {
+                            return Ok(field.type_.clone());
+                        }
+                    }
+                }
+                Ok(unknown_type(member.span))
+            }
+            Expression::Binary(value) => {
+                let left =
+                    self.rewrite_expression(&mut value.left, environment, substitution, expected)?;
+                self.rewrite_expression(&mut value.right, environment, substitution, Some(&left))?;
+                Ok(left)
+            }
+            Expression::Assign(value) => {
+                self.rewrite_expression(&mut value.value, environment, substitution, expected)
+            }
+            _ => Ok(expected
+                .cloned()
+                .unwrap_or_else(|| unknown_type(expression.span()))),
+        }
+    }
+
+    fn generic_view(&self, type_: &Type) -> Type {
+        if let Type::Named(named) = type_
+            && let Some((name, arguments)) = self.struct_origins.get(&named.name)
+        {
+            return Type::Named(NamedType {
+                span: named.span,
+                name: name.clone(),
+                type_arguments: arguments.clone(),
+            });
+        }
+        type_.clone()
+    }
+}
+
+fn unknown_type(span: kome_ast::Span) -> Type {
+    Type::Named(NamedType {
+        span,
+        name: "<unknown>".into(),
+        type_arguments: Vec::new(),
+    })
+}
+fn primitive(name: &str, span: kome_ast::Span) -> Type {
+    use kome_ast::types::{PrimitiveType, PrimitiveTypeKind::*};
+    let kind = match name {
+        "String" => String,
+        "Number" => Number,
+        "bool" => Bool,
+        "Null" => Null,
+        _ => unreachable!(),
+    };
+    Type::Primitive(PrimitiveType { span, kind })
+}
+fn infer(
+    formal: &Type,
+    actual: &Type,
+    parameters: &[GenericParameter],
+    inferred: &mut HashMap<String, Type>,
+    span: kome_ast::Span,
+) -> CodegenResult<()> {
+    if let Type::Named(named) = formal
+        && named.type_arguments.is_empty()
+        && parameters
+            .iter()
+            .any(|parameter| parameter.name == named.name)
+    {
+        if let Some(previous) = inferred.get(&named.name) {
+            if previous != actual {
+                return Err(CodegenError::at(
+                    format!("conflicting inferred types for `{}`", named.name),
+                    span,
+                ));
+            }
+        } else {
+            inferred.insert(named.name.clone(), actual.clone());
+        }
+        return Ok(());
+    }
+    if let (Type::Named(formal), Type::Named(actual)) = (formal, actual) {
+        if formal.name == actual.name {
+            for (left, right) in formal.type_arguments.iter().zip(&actual.type_arguments) {
+                infer(left, right, parameters, inferred, span)?;
+            }
+        }
+    }
+    Ok(())
+}

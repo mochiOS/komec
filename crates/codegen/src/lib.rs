@@ -8,6 +8,7 @@
 //! AST analysis and Cranelift IR-generation pass.
 
 pub mod compile;
+mod generics;
 
 mod error;
 mod types;

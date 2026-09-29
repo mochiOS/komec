@@ -48,6 +48,14 @@ impl Capture {
 
         number.is_unique()
     }
+
+    fn string_is_unique(&self, index: usize) -> bool {
+        let values = self.values.lock().unwrap();
+        let Value::String(string) = &values[index] else {
+            panic!("captured value is not a String")
+        };
+        string.is_unique()
+    }
 }
 
 fn run(source: &str) {
@@ -252,6 +260,107 @@ fn main() {
             Value::Number(Number::parse("10").unwrap()),
             Value::Number(Number::parse("21").unwrap())
         ]
+    );
+    clear_thread_registry();
+}
+
+#[test]
+fn executes_generic_structs_and_functions() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+struct Container<T> { value: T }
+struct Pair<A, B> { first: A, second: B }
+fn identity<T>(value: T) -> T { return value }
+fn pair<A, B>(first: A, second: B) -> Pair<A, B> { return Pair<A, B> { first: first, second: second } }
+fn main() {
+    let number = Container<Number> { value: 42 }
+    let x = identity<Number>(number.value)
+    let y = identity(8)
+    let paired = pair(7, "Kome")
+    report(x + y + paired.first)
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("57").unwrap())]
+    );
+    assert!(capture.number_is_unique(0));
+    clear_thread_registry();
+}
+
+#[test]
+fn executes_generic_implementation_and_nested_ownership() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+struct Container<T> { value: T }
+for Container<T> {
+    fn get(self) -> T { return self.value }
+}
+fn pass<T>(value: Container<T>) -> Container<T> { return value }
+fn identity<T>(value: T) -> T { return value }
+fn main() {
+    let inner = Container<String> { value: "Kome" }
+    let outer = Container<Container<String>> { value: inner }
+    report(identity<String>(outer.get().get()))
+    report(identity("inferred"))
+    report(pass(Container<String> { value: "generic" }).get())
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::String(KomeString::new("Kome")),
+            Value::String(KomeString::new("inferred")),
+            Value::String(KomeString::new("generic"))
+        ]
+    );
+    assert!(capture.string_is_unique(0));
+    assert!(capture.string_is_unique(1));
+    assert!(capture.string_is_unique(2));
+    clear_thread_registry();
+}
+
+#[test]
+fn executes_generic_trait_static_dispatch() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+trait Getter<T> { fn get(self) -> T }
+struct Container<T> { value: T }
+struct Pair<A, B> { first: A, second: B }
+for Container<T>: Getter<T> { fn get(self) -> T { return self.value } }
+for Container<T> {
+    fn make(value: T) -> Container<T> { return Container<T> { value: value } }
+    fn duplicated(self) -> Pair<T, T> { return Pair<T, T> { first: self.value, second: self.value } }
+}
+fn main() { report(Container<Number>.make(42).duplicated().first) }
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
+    clear_thread_registry();
+}
+
+#[test]
+fn executes_generic_trait_with_concrete_trait_argument() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+trait Converter<T> { fn convert(self) -> T }
+struct Foo { value: String }
+for Foo: Converter<String> { fn convert(self) -> String { return self.value } }
+fn main() { report(Foo { value: "converted" }.convert()) }
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::String(KomeString::new("converted"))]
     );
     clear_thread_registry();
 }

@@ -16,6 +16,10 @@ use kome_native_rt::string::{__kome_string_create, __kome_string_release, __kome
 use kome_native_rt::struct_value::{
     __kome_struct_alloc, __kome_struct_dealloc, __kome_struct_release, __kome_struct_retain,
 };
+use kome_native_rt::task::{
+    __kome_task_complete, __kome_task_create, __kome_task_dealloc, __kome_task_release,
+    __kome_task_result, __kome_task_retain, __kome_task_start, __kome_task_wait,
+};
 
 /// Compiles `module_ast` and runs `entry` in the current process.
 ///
@@ -60,7 +64,7 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    let symbols: [(&str, *const u8); 15] = [
+    let symbols: [(&str, *const u8); 23] = [
         (
             "__kome_native_call",
             __kome_native_call as *const () as *const u8,
@@ -120,6 +124,38 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         (
             "__kome_struct_dealloc",
             __kome_struct_dealloc as *const () as *const u8,
+        ),
+        (
+            "__kome_task_create",
+            __kome_task_create as *const () as *const u8,
+        ),
+        (
+            "__kome_task_start",
+            __kome_task_start as *const () as *const u8,
+        ),
+        (
+            "__kome_task_complete",
+            __kome_task_complete as *const () as *const u8,
+        ),
+        (
+            "__kome_task_wait",
+            __kome_task_wait as *const () as *const u8,
+        ),
+        (
+            "__kome_task_result",
+            __kome_task_result as *const () as *const u8,
+        ),
+        (
+            "__kome_task_retain",
+            __kome_task_retain as *const () as *const u8,
+        ),
+        (
+            "__kome_task_release",
+            __kome_task_release as *const () as *const u8,
+        ),
+        (
+            "__kome_task_dealloc",
+            __kome_task_dealloc as *const () as *const u8,
         ),
     ];
 

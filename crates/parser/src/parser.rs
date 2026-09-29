@@ -8,15 +8,17 @@ use kome_ast::{
     AstNode, Span,
     declarations::{
         Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
-        EnumDeclaration, ForDeclaration, FunctionDeclaration, Module, RecipeDeclaration,
-        StructDeclaration, StructField, TraitDeclaration, TypeMember, UseDeclaration,
+        EnumDeclaration, ForDeclaration, FunctionDeclaration, GenericParameter, Module,
+        RecipeDeclaration, StructDeclaration, StructField, TraitDeclaration, TypeMember,
+        UseDeclaration,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
         ClosureExpression, ComponentExpression, DotIdentifierExpression, Expression,
         GroupExpression, IndexExpression, KeyValueProperty, ListExpression, LiteralKind,
         MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty, PropertyKey,
-        StructExpression, TemplateExpression, TemplatePart, UnaryExpression, UnaryOp,
+        StructExpression, TaskExpression, TemplateExpression, TemplatePart, UnaryExpression,
+        UnaryOp, WaitExpression,
     },
     patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
@@ -25,6 +27,26 @@ use kome_ast::{
     },
     types::{NamedType, OptionalType, Parameter, PrimitiveType, PrimitiveTypeKind, Type},
 };
+
+fn implementation_type_parameters(target: &Type) -> Vec<GenericParameter> {
+    let mut parameters = Vec::new();
+    if let Type::Named(named) = target {
+        for argument in &named.type_arguments {
+            if let Type::Named(parameter) = argument
+                && parameter.type_arguments.is_empty()
+                && !parameters
+                    .iter()
+                    .any(|value: &GenericParameter| value.name == parameter.name)
+            {
+                parameters.push(GenericParameter {
+                    span: parameter.span,
+                    name: parameter.name.clone(),
+                });
+            }
+        }
+    }
+    parameters
+}
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -145,12 +167,14 @@ impl Parser {
             .first()
             .map_or(keyword.span.start, |attribute| attribute.span.start);
         let (name, name_span) = self.expect_identifier("a struct name")?;
+        let type_parameters = self.parse_generic_parameters()?;
 
         if !self.at(|kind| matches!(kind, TokenKind::LBrace)) {
             return Ok(StructDeclaration {
                 span: Span::new(start, name_span.end),
                 attributes,
                 name,
+                type_parameters,
                 fields: None,
             });
         }
@@ -189,6 +213,7 @@ impl Parser {
             span: Span::new(start, closing.span.end),
             attributes,
             name,
+            type_parameters,
             fields: Some(fields),
         })
     }
@@ -196,6 +221,7 @@ impl Parser {
     fn parse_for_declaration(&mut self) -> Result<ForDeclaration, ParseError> {
         let keyword = self.expect("`for`", |kind| matches!(kind, TokenKind::For))?;
         let target = self.parse_type()?;
+        let type_parameters = implementation_type_parameters(&target);
         let trait_ = if self.at(|kind| matches!(kind, TokenKind::Colon)) {
             self.advance();
             Some(self.parse_type()?)
@@ -206,6 +232,7 @@ impl Parser {
 
         Ok(ForDeclaration {
             span: Span::new(keyword.span.start, end),
+            type_parameters,
             target,
             trait_,
             members,
@@ -215,6 +242,7 @@ impl Parser {
     fn parse_trait_declaration(&mut self) -> Result<TraitDeclaration, ParseError> {
         let keyword = self.expect("`trait`", |kind| matches!(kind, TokenKind::Trait))?;
         let (name, _) = self.expect_identifier("a trait name")?;
+        let type_parameters = self.parse_generic_parameters()?;
         self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
         let mut functions = Vec::new();
 
@@ -238,6 +266,7 @@ impl Parser {
         Ok(TraitDeclaration {
             span: Span::new(keyword.span.start, closing.span.end),
             name,
+            type_parameters,
             functions,
         })
     }
@@ -582,6 +611,7 @@ impl Parser {
             .map_or(keyword.span.start, |attribute| attribute.span.start);
 
         let (name, _) = self.expect_identifier("a function name")?;
+        let type_parameters = self.parse_generic_parameters()?;
 
         self.expect("`(`", |kind| matches!(kind, TokenKind::LParen))?;
 
@@ -612,10 +642,32 @@ impl Parser {
             span: Span::new(start, end),
             attributes,
             name,
+            type_parameters,
             params,
             body,
             return_type,
         })
+    }
+
+    fn parse_generic_parameters(&mut self) -> Result<Vec<GenericParameter>, ParseError> {
+        if !self.at(|kind| matches!(kind, TokenKind::Lt)) {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        let mut parameters = Vec::new();
+        if self.at(|kind| matches!(kind, TokenKind::Gt)) {
+            return Err(self.expected("a generic parameter"));
+        }
+        loop {
+            let (name, span) = self.expect_identifier("a generic parameter")?;
+            parameters.push(GenericParameter { span, name });
+            if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                break;
+            }
+            self.advance();
+        }
+        self.expect("`>`", |kind| matches!(kind, TokenKind::Gt))?;
+        Ok(parameters)
     }
 
     fn parse_function_parameters(&mut self) -> Result<Vec<Pattern>, ParseError> {
@@ -1407,6 +1459,24 @@ impl Parser {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, ParseError> {
+        if self.at(|kind| matches!(kind, TokenKind::Task | TokenKind::Wait)) {
+            let operator = self.advance();
+            let argument = self.parse_unary_expression()?;
+            let span = Span::new(operator.span.start, argument.span().end);
+
+            return Ok(match operator.kind {
+                TokenKind::Task => Expression::Task(TaskExpression {
+                    span,
+                    argument: Box::new(argument),
+                }),
+                TokenKind::Wait => Expression::Wait(WaitExpression {
+                    span,
+                    argument: Box::new(argument),
+                }),
+                _ => unreachable!("the task/wait branch checked the token kind"),
+            });
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Not)) {
             let operator = self.advance();
 
@@ -1424,10 +1494,26 @@ impl Parser {
 
     fn parse_postfix_expression(&mut self) -> Result<Expression, ParseError> {
         let mut expression = self.parse_primary_expression()?;
+        let mut type_arguments = Vec::new();
 
         loop {
+            if self.at(|kind| matches!(kind, TokenKind::Lt))
+                && matches!(expression, Expression::Ident(_) | Expression::Member(_))
+            {
+                let checkpoint = self.position;
+                if let Ok(arguments) = self.parse_type_argument_list()
+                    && self.at(|kind| {
+                        matches!(kind, TokenKind::LParen | TokenKind::LBrace | TokenKind::Dot)
+                    })
+                {
+                    type_arguments = arguments;
+                    continue;
+                }
+                self.position = checkpoint;
+            }
             if self.at(|kind| matches!(kind, TokenKind::LParen)) {
-                expression = self.parse_call_expression(expression)?;
+                expression =
+                    self.parse_call_expression(expression, std::mem::take(&mut type_arguments))?;
 
                 continue;
             }
@@ -1436,7 +1522,8 @@ impl Parser {
                 && matches!(expression, Expression::Ident(_))
                 && self.is_struct_expression_start()
             {
-                expression = self.parse_struct_expression(expression)?;
+                expression =
+                    self.parse_struct_expression(expression, std::mem::take(&mut type_arguments))?;
 
                 continue;
             }
@@ -1468,7 +1555,25 @@ impl Parser {
         Ok(expression)
     }
 
-    fn parse_call_expression(&mut self, callee: Expression) -> Result<Expression, ParseError> {
+    fn parse_type_argument_list(&mut self) -> Result<Vec<Type>, ParseError> {
+        self.expect("`<`", |kind| matches!(kind, TokenKind::Lt))?;
+        let mut arguments = Vec::new();
+        loop {
+            arguments.push(self.parse_type()?);
+            if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                break;
+            }
+            self.advance();
+        }
+        self.expect("`>`", |kind| matches!(kind, TokenKind::Gt))?;
+        Ok(arguments)
+    }
+
+    fn parse_call_expression(
+        &mut self,
+        callee: Expression,
+        type_arguments: Vec<Type>,
+    ) -> Result<Expression, ParseError> {
         self.expect("`(`", |kind| matches!(kind, TokenKind::LParen))?;
 
         let mut args = Vec::new();
@@ -1496,6 +1601,7 @@ impl Parser {
         Ok(Expression::Call(CallExpression {
             span,
             callee: Box::new(callee),
+            type_arguments,
             args,
         }))
     }
@@ -1551,7 +1657,11 @@ impl Parser {
         }))
     }
 
-    fn parse_struct_expression(&mut self, head: Expression) -> Result<Expression, ParseError> {
+    fn parse_struct_expression(
+        &mut self,
+        head: Expression,
+        type_arguments: Vec<Type>,
+    ) -> Result<Expression, ParseError> {
         let Expression::Ident(identifier) = head else {
             return Err(self.expected("a struct name before `{`"));
         };
@@ -1578,6 +1688,7 @@ impl Parser {
         Ok(Expression::Struct(StructExpression {
             span: Span::new(identifier.span.start, closing.span.end),
             name: identifier.name,
+            type_arguments,
             fields,
         }))
     }

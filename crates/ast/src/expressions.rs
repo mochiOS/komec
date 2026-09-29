@@ -15,6 +15,12 @@ pub enum Expression {
     /// A unary operator expression: `!expr`.
     Unary(UnaryExpression),
 
+    /// Starts evaluation as a task: `task expression`.
+    Task(TaskExpression),
+
+    /// Waits for a task and produces its result: `wait expression`.
+    Wait(WaitExpression),
+
     /// A binary operator expression: `a + b`, `x == y`, etc.
     Binary(BinaryExpression),
 
@@ -117,6 +123,22 @@ pub struct UnaryExpression {
     pub argument: Box<Expression>,
 }
 
+// ---- Task ----
+
+/// An expression started through the task runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskExpression {
+    pub span: Span,
+    pub argument: Box<Expression>,
+}
+
+/// An expression that waits for a task result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaitExpression {
+    pub span: Span,
+    pub argument: Box<Expression>,
+}
+
 // ---- Binary ----
 
 /// A binary operator.
@@ -175,6 +197,8 @@ pub enum CallArg {
 pub struct CallExpression {
     pub span: Span,
     pub callee: Box<Expression>,
+    /// Explicit specialization arguments, as in `identity<Number>(value)`.
+    pub type_arguments: Vec<crate::types::Type>,
     pub args: Vec<CallArg>,
 }
 
@@ -201,6 +225,8 @@ pub struct ComponentExpression {
 pub struct StructExpression {
     pub span: Span,
     pub name: String,
+    /// Concrete arguments supplied to the generic struct.
+    pub type_arguments: Vec<crate::types::Type>,
     pub fields: Vec<KeyValueProperty>,
 }
 
@@ -435,6 +461,8 @@ impl AstNode for Expression {
             Expression::Literal(expression) => expression.span,
             Expression::Ident(expression) => expression.span,
             Expression::Unary(expression) => expression.span,
+            Expression::Task(expression) => expression.span,
+            Expression::Wait(expression) => expression.span,
             Expression::Binary(expression) => expression.span,
             Expression::Call(expression) => expression.span,
             Expression::Member(expression) => expression.span,

@@ -28,6 +28,8 @@ pub enum TokenKind {
     Null,
     Self_,
     Super,
+    Task,
+    Wait,
 
     Ident(String),
     String(String),
@@ -141,6 +143,8 @@ impl TokenKind {
             "null" => Self::Null,
             "self" => Self::Self_,
             "super" => Self::Super,
+            "task" => Self::Task,
+            "wait" => Self::Wait,
             _ => Self::Ident(identifier),
         }
     }

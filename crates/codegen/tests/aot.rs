@@ -25,6 +25,22 @@ fn ensure_runtime_library() -> Option<PathBuf> {
         }
     }
 
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let status = Command::new(env!("CARGO"))
+        .args(["build", "-p", "kome_native_rt", "--quiet"])
+        .current_dir(&workspace_root)
+        .status()
+        .ok()?;
+
+    if !status.success() {
+        return None;
+    }
+
+    let freshly_built = workspace_root.join("target/debug").join(library);
+    if freshly_built.is_file() {
+        return Some(freshly_built);
+    }
+
     if let Ok(executable) = std::env::current_exe() {
         if let Some(directory) = executable.parent() {
             for candidate in [
@@ -39,19 +55,7 @@ fn ensure_runtime_library() -> Option<PathBuf> {
         }
     }
 
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    let status = Command::new(env!("CARGO"))
-        .args(["build", "-p", "kome_native_rt", "--quiet"])
-        .current_dir(&workspace_root)
-        .status()
-        .ok()?;
-
-    if !status.success() {
-        return None;
-    }
-
-    Some(workspace_root.join("target/debug").join(library))
+    None
 }
 
 fn cc_available() -> bool {
@@ -151,6 +155,46 @@ fn main() {
 "#,
     );
     assert_eq!(stdout, "0\n42\n");
+}
+
+#[test]
+fn builds_and_runs_monomorphized_generics() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+struct Box<T> { value: T }
+fn identity<T>(value: T) -> T { return value }
+fn main() {
+    let value = Box<Number> { value: identity(42) }
+    println(value.value)
+}
+"#,
+    );
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
+fn builds_and_runs_tasks_with_generic_results() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+struct Container<T> { value: T }
+fn answer() -> Number { return 42 }
+fn wrapped() -> Container<Number> {
+    return Container<Number> { value: 21 }
+}
+fn main() {
+    let number = task answer()
+    let container = task wrapped()
+    println(wait number)
+    let result = wait container
+    println(result.value * 2)
+}
+"#,
+    );
+    assert_eq!(stdout, "42\n42\n");
 }
 
 #[test]
