@@ -188,6 +188,10 @@ thread_local! {
     static REACTOR: RefCell<Reactor> = RefCell::new(Reactor::new());
 }
 
+pub(crate) fn ensure_current() {
+    REACTOR.with(|_| {});
+}
+
 pub(crate) fn register(fd: RawFd, task: u64, writable: bool) -> io::Result<()> {
     REACTOR.with(|reactor| reactor.borrow_mut().register(fd, task, writable))
 }

@@ -487,6 +487,7 @@ fn drive_until(handle: u64, deadline: Option<Instant>) -> TaskState {
 /// Allocates a pending manual task with one owning reference.
 #[unsafe(no_mangle)]
 pub extern "C" fn __kome_task_create() -> u64 {
+    crate::reactor::ensure_current();
     Box::into_raw(Box::new(TaskRecord {
         id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed) as TaskId,
         references: AtomicUsize::new(1),
