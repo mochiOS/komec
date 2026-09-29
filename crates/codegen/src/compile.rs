@@ -780,6 +780,8 @@ struct ForeignFunctions {
     string_create: FuncId,
     string_retain: FuncId,
     string_release: FuncId,
+    socket_retain: FuncId,
+    socket_release: FuncId,
     struct_alloc: FuncId,
     struct_retain: FuncId,
     struct_release: FuncId,
@@ -860,6 +862,8 @@ impl ForeignFunctions {
 
         let string_retain = declare_foreign(module, "__kome_string_retain", &[types::I64], None)?;
         let string_release = declare_foreign(module, "__kome_string_release", &[types::I64], None)?;
+        let socket_retain = declare_foreign(module, "__kome_socket_retain", &[types::I64], None)?;
+        let socket_release = declare_foreign(module, "__kome_socket_release", &[types::I64], None)?;
         let struct_alloc = declare_foreign(
             module,
             "__kome_struct_alloc",
@@ -966,6 +970,8 @@ impl ForeignFunctions {
             string_create,
             string_retain,
             string_release,
+            socket_retain,
+            socket_release,
             struct_alloc,
             struct_retain,
             struct_release,
@@ -3186,7 +3192,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .store(MachMemFlags::new(), tag, tag_address, 0);
 
             let payload = match param_type {
-                KomeType::Number | KomeType::String => *value,
+                KomeType::Number | KomeType::String | KomeType::Socket => *value,
 
                 KomeType::Boolean | KomeType::Null => {
                     self.builder.ins().uextend(types::I64, *value)
@@ -3251,7 +3257,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 return Ok(TypedValue::void());
             }
 
-            KomeType::Number | KomeType::String => payload,
+            KomeType::Number | KomeType::String | KomeType::Socket => payload,
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
 
@@ -3290,6 +3296,10 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             )),
             KomeType::String => Err(CodegenError::new(
                 "String cannot be zero-initialized without constructing a runtime value",
+                None,
+            )),
+            KomeType::Socket => Err(CodegenError::new(
+                "Socket cannot be used without an initializer",
                 None,
             )),
             KomeType::F64 => Ok(self.builder.ins().f64const(0.0)),
@@ -3383,6 +3393,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let function = match kome_type {
             KomeType::Number => self.foreign.number_retain,
             KomeType::String => self.foreign.string_retain,
+            KomeType::Socket => self.foreign.socket_retain,
             KomeType::Struct(_) => self.foreign.struct_retain,
             KomeType::Task(_) => self.foreign.task_retain,
             KomeType::List(_) => self.foreign.list_retain,
@@ -3397,6 +3408,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let function = match kome_type {
             KomeType::Number => self.foreign.number_release,
             KomeType::String => self.foreign.string_release,
+            KomeType::Socket => self.foreign.socket_release,
             KomeType::Struct(id) => {
                 self.release_struct(value, id);
                 return;

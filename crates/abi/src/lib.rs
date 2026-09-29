@@ -19,6 +19,9 @@ pub const TAG_BOOLEAN: i64 = 3;
 /// Payload holds a raw Kome `String` runtime handle.
 pub const TAG_STRING: i64 = 4;
 
+/// Payload holds a raw Kome `Socket` runtime handle.
+pub const TAG_SOCKET: i64 = 5;
+
 /// One marshalled argument or return value exchanged with the native runtime.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]

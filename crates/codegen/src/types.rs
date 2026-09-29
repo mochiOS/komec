@@ -11,6 +11,7 @@ use kome_ast::types::{PrimitiveTypeKind, Type};
 pub enum KomeType {
     Number,
     String,
+    Socket,
     Boolean,
     I8,
     I16,
@@ -49,6 +50,7 @@ impl KomeType {
         match name {
             "string" => Ok(Self::String),
             "number" => Ok(Self::Number),
+            "socket" => Ok(Self::Socket),
             _ => Err(CodegenError::at(
                 format!("unsupported runtime type `{name}`"),
                 span,
@@ -78,9 +80,12 @@ impl KomeType {
     /// The Cranelift representation; `None` for `Void`.
     pub fn cranelift(self) -> Option<cranelift::prelude::Type> {
         match self {
-            Self::Number | Self::String | Self::Struct(_) | Self::Task(_) | Self::List(_) => {
-                Some(types::I64)
-            }
+            Self::Number
+            | Self::String
+            | Self::Socket
+            | Self::Struct(_)
+            | Self::Task(_)
+            | Self::List(_) => Some(types::I64),
             Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
             Self::Boolean | Self::I8 | Self::U8 | Self::Null => Some(types::I8),
@@ -96,6 +101,7 @@ impl KomeType {
         match self {
             Self::Number => Ok(abi::TAG_NUMBER),
             Self::String => Ok(abi::TAG_STRING),
+            Self::Socket => Ok(abi::TAG_SOCKET),
             Self::Boolean => Ok(abi::TAG_BOOLEAN),
             Self::Null => Ok(abi::TAG_NULL),
             Self::Void => Ok(abi::TAG_VOID),
@@ -126,6 +132,7 @@ impl KomeType {
         match self {
             Self::Number => "Number".into(),
             Self::String => "String".into(),
+            Self::Socket => "Socket".into(),
             Self::Boolean => "bool".into(),
             Self::I8 => "i8".into(),
             Self::I16 => "i16".into(),
@@ -149,7 +156,12 @@ impl KomeType {
     pub fn is_managed(self) -> bool {
         matches!(
             self,
-            Self::Number | Self::String | Self::Struct(_) | Self::Task(_) | Self::List(_)
+            Self::Number
+                | Self::String
+                | Self::Socket
+                | Self::Struct(_)
+                | Self::Task(_)
+                | Self::List(_)
         )
     }
 }
