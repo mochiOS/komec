@@ -130,6 +130,30 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_structs_static_members_and_trait_dispatch() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+struct Point { x: Number, y: Number }
+trait Sum { fn sum(self) -> Number }
+for Point: Sum { fn sum(self) -> Number { return self.x + self.y } }
+for Point {
+    const ORIGIN: Point = Point { x: 0, y: 0 }
+    fn make(x: Number, y: Number) -> Point { return Point { x: x, y: y } }
+}
+fn bounce(point: Point) -> Point { return point }
+fn main() {
+    let origin = Point.ORIGIN
+    println(origin.sum())
+    println(bounce(Point.make(20, 22)).sum())
+}
+"#,
+    );
+    assert_eq!(stdout, "0\n42\n");
+}
+
+#[test]
 fn built_binary_has_no_rust_runtime_dependency() {
     // The point of this check is that the binary links only against system
     // libraries; running it in a minimal environment proves the runtime is

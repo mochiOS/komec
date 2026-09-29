@@ -1,6 +1,7 @@
 //! JIT execution tests using a thread-local native registry for capture.
 
 use kome_native_rt::number::Number;
+use kome_native_rt::string::KomeString;
 use kome_native_rt::{
     NativeRegistry, RuntimeError, Value, clear_thread_registry, set_thread_registry,
 };
@@ -161,29 +162,98 @@ fn identity(value: RuntimeText) -> RuntimeText {
 }
 
 #[test]
-fn reports_unsupported_struct_construction() {
-    let module =
-        kome_parser::parse("struct Point { x: Number }\nfn main() { Point { x: 1 } }").unwrap();
-    let error = kome_jit::execute(&module, "main").unwrap_err();
+fn executes_struct_construction_fields_and_methods() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
 
+struct Point { x: Number, y: Number }
+
+for Point {
+    fn sum(self) -> Number { return self.x + self.y }
+    fn moved(self, dx: Number, dy: Number) -> Point {
+        return Point { x: self.x + dx, y: self.y + dy }
+    }
+}
+
+fn main() {
+    let point = Point { x: 10, y: 20 }
+    var moved = point
+    moved = point.moved(5, 10)
+    report(moved.sum())
+}
+"#);
     assert_eq!(
-        error.message(),
-        "expression `struct construction` is not supported yet"
+        capture.recorded(),
+        vec![Value::Number(Number::parse("45").unwrap())]
     );
+    clear_thread_registry();
 }
 
 #[test]
-fn reports_unsupported_method_and_trait_dispatch() {
-    let module = kome_parser::parse(
-        "for bool: Add { fn add(self, other: bool) -> bool { return self } }\nfn main() { true.add(false) }",
-    )
-    .unwrap();
-    let error = kome_jit::execute(&module, "main").unwrap_err();
+fn executes_static_methods_constants_nested_structs_and_strings() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: String)
 
+struct User { name: String, score: Number }
+struct BoxedUser { user: User }
+
+for User {
+    const UNKNOWN: User = User { name: "unknown", score: 0 }
+    fn make(name: String, score: Number) -> User { return User { name: name, score: score } }
+    fn renamed(self, name: String) -> User { return User { name: name, score: self.score } }
+}
+
+fn identity(value: BoxedUser) -> BoxedUser { return value }
+
+fn main() {
+    let unknown = User.UNKNOWN
+    report(unknown.name)
+    let original = User.make("alice", 42)
+    let nested = identity(BoxedUser { user: original })
+    let copy = nested
+    report(nested.user.name)
+    report(copy.user.renamed("bob").name)
+}
+"#);
     assert_eq!(
-        error.message(),
-        "method and trait dispatch are not supported yet"
+        capture.recorded(),
+        vec![
+            Value::String(KomeString::new("unknown")),
+            Value::String(KomeString::new("alice")),
+            Value::String(KomeString::new("bob"))
+        ]
     );
+    clear_thread_registry();
+}
+
+#[test]
+fn executes_statically_dispatched_trait_methods_for_multiple_types() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+trait Value { fn value(self) -> Number }
+struct A { n: Number }
+struct B { n: Number }
+for A: Value { fn value(self) -> Number { return self.n } }
+for B: Value { fn value(self) -> Number { return self.n + 1 } }
+fn main() {
+    report(A { n: 10 }.value())
+    report(B { n: 20 }.value())
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::Number(Number::parse("10").unwrap()),
+            Value::Number(Number::parse("21").unwrap())
+        ]
+    );
+    clear_thread_registry();
 }
 
 #[test]

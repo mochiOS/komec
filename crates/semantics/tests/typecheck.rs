@@ -439,3 +439,66 @@ fn main() {
 
     assert!(result.errors.is_empty());
 }
+
+#[test]
+fn validates_and_types_static_and_instance_implementation_members() {
+    let module = parse(
+        r#"
+struct Point { x: Number }
+trait Value { fn value(self) -> Number }
+for Point: Value { fn value(self) -> Number { return self.x } }
+for Point {
+    const ZERO: Point = Point { x: 0 }
+    fn make(x: Number) -> Point { return Point { x: x } }
+}
+fn main() {
+    let zero = Point.ZERO
+    let point = Point.make(zero.value())
+    let value: Number = point.value()
+}
+"#,
+    )
+    .unwrap();
+    let result = TypeChecker::check(&module);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+}
+
+#[test]
+fn rejects_trait_implementation_missing_a_required_method() {
+    let module = parse(
+        r#"
+struct Point { x: Number }
+trait Add { fn add(self, other: Point) -> Point }
+for Point: Add {}
+"#,
+    )
+    .unwrap();
+    let result = TypeChecker::check(&module);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.message.contains("missing required method `add`"))
+    );
+}
+
+#[test]
+fn rejects_trait_implementation_with_an_incompatible_signature() {
+    let module = parse(
+        r#"
+struct Point { x: Number }
+trait Add { fn add(self, other: Point) -> Point }
+for Point: Add {
+    fn add(self, other: Number) -> Number { return other }
+}
+"#,
+    )
+    .unwrap();
+    let result = TypeChecker::check(&module);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.message.contains("incompatible signature"))
+    );
+}
