@@ -11,6 +11,7 @@
 
 pub mod number;
 pub mod string;
+pub mod struct_value;
 
 use crate::number::Number;
 use crate::string::KomeString;
