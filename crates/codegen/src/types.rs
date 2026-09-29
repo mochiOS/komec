@@ -7,7 +7,7 @@ use kome_ast::AstNode;
 use kome_ast::types::{PrimitiveTypeKind, Type};
 
 /// The subset of Kome types that compiles to native code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KomeType {
     Number,
     String,
@@ -23,6 +23,8 @@ pub enum KomeType {
     F32,
     F64,
     Null,
+    /// A user-defined struct. The id indexes `ModuleInfo::structs`.
+    Struct(usize),
     Void,
 }
 
@@ -72,7 +74,7 @@ impl KomeType {
     /// The Cranelift representation; `None` for `Void`.
     pub fn cranelift(self) -> Option<cranelift::prelude::Type> {
         match self {
-            Self::Number | Self::String => Some(types::I64),
+            Self::Number | Self::String | Self::Struct(_) => Some(types::I64),
             Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
             Self::Boolean | Self::I8 | Self::U8 | Self::Null => Some(types::I8),
@@ -91,6 +93,10 @@ impl KomeType {
             Self::Boolean => Ok(abi::TAG_BOOLEAN),
             Self::Null => Ok(abi::TAG_NULL),
             Self::Void => Ok(abi::TAG_VOID),
+            Self::Struct(_) => Err(CodegenError::new(
+                "user-defined structs cannot cross the native ABI",
+                None,
+            )),
             Self::I8
             | Self::I16
             | Self::I32
@@ -107,27 +113,30 @@ impl KomeType {
         }
     }
 
-    pub fn name(self) -> &'static str {
+    /// Returns a diagnostic name for this code-generation type.
+    pub fn name(self) -> String {
         match self {
-            Self::Number => "Number",
-            Self::String => "String",
-            Self::Boolean => "bool",
-            Self::I8 => "i8",
-            Self::I16 => "i16",
-            Self::I32 => "i32",
-            Self::I64 => "i64",
-            Self::U8 => "u8",
-            Self::U16 => "u16",
-            Self::U32 => "u32",
-            Self::U64 => "u64",
-            Self::F32 => "f32",
-            Self::F64 => "f64",
-            Self::Null => "Null",
-            Self::Void => "Void",
+            Self::Number => "Number".into(),
+            Self::String => "String".into(),
+            Self::Boolean => "bool".into(),
+            Self::I8 => "i8".into(),
+            Self::I16 => "i16".into(),
+            Self::I32 => "i32".into(),
+            Self::I64 => "i64".into(),
+            Self::U8 => "u8".into(),
+            Self::U16 => "u16".into(),
+            Self::U32 => "u32".into(),
+            Self::U64 => "u64".into(),
+            Self::F32 => "f32".into(),
+            Self::F64 => "f64".into(),
+            Self::Null => "Null".into(),
+            Self::Struct(id) => format!("struct#{id}"),
+            Self::Void => "Void".into(),
         }
     }
 
+    /// Returns whether values of this type use retain/release ownership.
     pub fn is_managed(self) -> bool {
-        matches!(self, Self::Number | Self::String)
+        matches!(self, Self::Number | Self::String | Self::Struct(_))
     }
 }

@@ -13,12 +13,13 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use kome_ast::AstNode;
 use kome_ast::Span;
 use kome_ast::declarations::{
-    Declaration, FunctionDeclaration, Module as KomeModule, StructDeclaration,
+    Binding, Declaration, ForDeclaration, FunctionDeclaration, Module as KomeModule,
+    StructDeclaration, TraitDeclaration, TypeMember,
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
     Expression, GroupExpression, IdentifierExpression, LiteralExpression, LiteralKind,
-    NumberLiteral,
+    MemberExpression, NumberLiteral, PropertyKey, StructExpression,
 };
 use kome_ast::statements::{BlockStatement, Statement};
 use std::collections::HashMap;
@@ -61,6 +62,44 @@ impl FunctionKind<'_> {
 pub struct ModuleInfo<'a> {
     functions: HashMap<String, FunctionKind<'a>>,
     runtime_types: HashMap<String, KomeType>,
+    structs: Vec<StructInfo>,
+    struct_ids: HashMap<String, usize>,
+    implementations: Vec<TypeImplementation<'a>>,
+}
+
+#[derive(Debug, Clone)]
+struct StructFieldInfo {
+    name: String,
+    kome_type: KomeType,
+    offset: i32,
+}
+
+#[derive(Debug, Clone)]
+struct StructInfo {
+    name: String,
+    fields: Vec<StructFieldInfo>,
+    size: u32,
+}
+
+#[derive(Debug, Clone)]
+struct ImplementationMethod {
+    function_key: String,
+    signature: FunctionSignature,
+    has_self: bool,
+}
+
+#[derive(Debug)]
+struct AssociatedConstant<'a> {
+    binding: &'a Binding,
+    kome_type: KomeType,
+}
+
+#[derive(Debug)]
+struct TypeImplementation<'a> {
+    target: KomeType,
+    trait_name: Option<String>,
+    methods: HashMap<String, ImplementationMethod>,
+    constants: HashMap<String, AssociatedConstant<'a>>,
 }
 
 impl<'a> ModuleInfo<'a> {
@@ -70,6 +109,43 @@ impl<'a> ModuleInfo<'a> {
 
     pub fn runtime_type(&self, name: &str) -> Option<KomeType> {
         self.runtime_types.get(name).copied()
+    }
+
+    fn struct_info(&self, id: usize) -> &StructInfo {
+        &self.structs[id]
+    }
+
+    fn type_name(&self, ty: KomeType) -> String {
+        match ty {
+            KomeType::Struct(id) => self.structs[id].name.clone(),
+            _ => ty.name(),
+        }
+    }
+
+    fn implementation_member(
+        &self,
+        target: KomeType,
+        name: &str,
+    ) -> Option<(
+        &TypeImplementation<'a>,
+        Option<&ImplementationMethod>,
+        Option<&AssociatedConstant<'a>>,
+    )> {
+        self.implementations
+            .iter()
+            .filter_map(|implementation| {
+                if implementation.target != target {
+                    return None;
+                }
+                let method = implementation.methods.get(name);
+                let constant = implementation.constants.get(name);
+                (method.is_some() || constant.is_some()).then_some((
+                    implementation,
+                    method,
+                    constant,
+                ))
+            })
+            .min_by_key(|(implementation, _, _)| implementation.trait_name.is_some())
     }
 
     /// The entry point's signature, validated for direct invocation.
@@ -115,6 +191,7 @@ impl<'a> ModuleInfo<'a> {
 pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
     let mut functions = HashMap::new();
     let mut runtime_types = HashMap::new();
+    let mut struct_ids = HashMap::new();
 
     for declaration in &module.declarations {
         let Declaration::Struct(struct_decl) = declaration else {
@@ -123,15 +200,72 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
 
         if let Some(runtime_type) = runtime_type(struct_decl)? {
             runtime_types.insert(struct_decl.name.clone(), runtime_type);
+        } else {
+            let next = struct_ids.len();
+            if struct_ids.insert(struct_decl.name.clone(), next).is_some() {
+                return Err(CodegenError::at(
+                    format!("duplicate struct `{}`", struct_decl.name),
+                    struct_decl.span,
+                ));
+            }
         }
     }
+
+    let mut structs = vec![None; struct_ids.len()];
+    for declaration in &module.declarations {
+        let Declaration::Struct(struct_decl) = declaration else {
+            continue;
+        };
+        let Some(&id) = struct_ids.get(&struct_decl.name) else {
+            continue;
+        };
+        let declared = struct_decl.fields.as_ref().ok_or_else(|| {
+            CodegenError::at(
+                format!(
+                    "opaque struct `{}` has no code generation layout",
+                    struct_decl.name
+                ),
+                struct_decl.span,
+            )
+        })?;
+        let mut fields = Vec::with_capacity(declared.len());
+        for (index, field) in declared.iter().enumerate() {
+            let kome_type = type_from_annotation(&field.type_, &runtime_types, &struct_ids)?;
+            if kome_type == KomeType::Void {
+                return Err(CodegenError::at(
+                    "struct fields cannot have type Void",
+                    field.span,
+                ));
+            }
+            if fields
+                .iter()
+                .any(|existing: &StructFieldInfo| existing.name == field.name)
+            {
+                return Err(CodegenError::at(
+                    format!("duplicate field `{}`", field.name),
+                    field.span,
+                ));
+            }
+            fields.push(StructFieldInfo {
+                name: field.name.clone(),
+                kome_type,
+                offset: (index * 8) as i32,
+            });
+        }
+        structs[id] = Some(StructInfo {
+            name: struct_decl.name.clone(),
+            size: (fields.len() * 8) as u32,
+            fields,
+        });
+    }
+    let structs = structs.into_iter().map(Option::unwrap).collect::<Vec<_>>();
 
     for declaration in &module.declarations {
         let Declaration::Function(function) = declaration else {
             continue;
         };
 
-        let signature = analyze_signature(function, &runtime_types)?;
+        let signature = analyze_signature(function, &runtime_types, &struct_ids, None)?;
 
         let kind = match native_symbol(function)? {
             Some(symbol) => FunctionKind::Native { signature, symbol },
@@ -150,10 +284,180 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo<'_>> {
         }
     }
 
+    let traits = module
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Trait(declaration) => Some((declaration.name.clone(), declaration)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut implementations = Vec::new();
+    for declaration in &module.declarations {
+        let Declaration::For(implementation) = declaration else {
+            continue;
+        };
+        let target = type_from_annotation(&implementation.target, &runtime_types, &struct_ids)?;
+        let trait_name = implementation
+            .trait_
+            .as_ref()
+            .map(|annotation| match annotation {
+                kome_ast::types::Type::Named(named) => Ok(named.name.clone()),
+                _ => Err(CodegenError::at(
+                    "implementation trait must be a named type",
+                    annotation.span(),
+                )),
+            })
+            .transpose()?;
+        let mut methods = HashMap::new();
+        let mut constants = HashMap::new();
+        for member in &implementation.members {
+            match member {
+                TypeMember::Function(function) => {
+                    let signature =
+                        analyze_signature(function, &runtime_types, &struct_ids, Some(target))?;
+                    let has_self = matches!(function.params.first(), Some(kome_ast::patterns::Pattern::Ident(parameter)) if parameter.name == "self");
+                    let key =
+                        implementation_function_key(target, trait_name.as_deref(), &function.name);
+                    if methods
+                        .insert(
+                            function.name.clone(),
+                            ImplementationMethod {
+                                function_key: key.clone(),
+                                signature: signature.clone(),
+                                has_self,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(CodegenError::at(
+                            format!("duplicate implementation method `{}`", function.name),
+                            function.span,
+                        ));
+                    }
+                    if functions
+                        .insert(
+                            key,
+                            FunctionKind::User {
+                                declaration: function,
+                                signature,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(CodegenError::at(
+                            format!("duplicate implementation method `{}`", function.name),
+                            function.span,
+                        ));
+                    }
+                }
+                TypeMember::Constant(binding) => {
+                    let kome_ast::patterns::Pattern::Ident(identifier) = &binding.pattern else {
+                        return Err(CodegenError::at(
+                            "associated constants require an identifier",
+                            binding.span,
+                        ));
+                    };
+                    let annotation = binding.type_annotation.as_ref().ok_or_else(|| {
+                        CodegenError::at(
+                            format!(
+                                "associated constant `{}` requires a type annotation",
+                                identifier.name
+                            ),
+                            binding.span,
+                        )
+                    })?;
+                    let kome_type = type_from_annotation(annotation, &runtime_types, &struct_ids)?;
+                    constants.insert(
+                        identifier.name.clone(),
+                        AssociatedConstant { binding, kome_type },
+                    );
+                }
+            }
+        }
+        if let Some(trait_name) = &trait_name {
+            let trait_decl = traits.get(trait_name).ok_or_else(|| {
+                CodegenError::at(
+                    format!("trait `{trait_name}` was not found"),
+                    implementation.span,
+                )
+            })?;
+            validate_trait_implementation(
+                implementation,
+                trait_decl,
+                target,
+                &methods,
+                &runtime_types,
+                &struct_ids,
+            )?;
+        }
+        implementations.push(TypeImplementation {
+            target,
+            trait_name,
+            methods,
+            constants,
+        });
+    }
+
     Ok(ModuleInfo {
         functions,
         runtime_types,
+        structs,
+        struct_ids,
+        implementations,
     })
+}
+
+fn type_code(ty: KomeType) -> String {
+    match ty {
+        KomeType::Struct(id) => format!("S{id}"),
+        _ => ty.name(),
+    }
+}
+
+fn encode_symbol_part(value: &str) -> String {
+    format!("{}_{}", value.len(), value)
+}
+
+fn implementation_function_key(target: KomeType, trait_name: Option<&str>, method: &str) -> String {
+    format!(
+        "impl${}${}${}",
+        encode_symbol_part(&type_code(target)),
+        encode_symbol_part(trait_name.unwrap_or("")),
+        encode_symbol_part(method)
+    )
+}
+
+fn validate_trait_implementation(
+    implementation: &ForDeclaration,
+    trait_decl: &TraitDeclaration,
+    target: KomeType,
+    methods: &HashMap<String, ImplementationMethod>,
+    runtime_types: &HashMap<String, KomeType>,
+    struct_ids: &HashMap<String, usize>,
+) -> CodegenResult<()> {
+    for required in &trait_decl.functions {
+        let expected = analyze_signature(required, runtime_types, struct_ids, Some(target))?;
+        let actual = methods.get(&required.name).ok_or_else(|| {
+            CodegenError::at(
+                format!(
+                    "implementation of `{}` is missing required method `{}`",
+                    trait_decl.name, required.name
+                ),
+                implementation.span,
+            )
+        })?;
+        if actual.signature.params != expected.params || actual.signature.ret != expected.ret {
+            return Err(CodegenError::at(
+                format!(
+                    "method `{}` has an incompatible signature for trait `{}`",
+                    required.name, trait_decl.name
+                ),
+                implementation.span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn runtime_type(struct_decl: &StructDeclaration) -> CodegenResult<Option<KomeType>> {
@@ -295,7 +599,7 @@ pub fn compile_module<M: Module>(
             .define_function(func_id, &mut context)
             .map_err(|error| {
                 CodegenError::at(
-                    format!("failed to compile function `{name}`: {error}"),
+                    format!("failed to compile function `{name}`: {error:?}"),
                     declaration.span,
                 )
             })?;
@@ -317,6 +621,10 @@ struct ForeignFunctions {
     string_create: FuncId,
     string_retain: FuncId,
     string_release: FuncId,
+    struct_alloc: FuncId,
+    struct_retain: FuncId,
+    struct_release: FuncId,
+    struct_dealloc: FuncId,
 }
 
 impl ForeignFunctions {
@@ -375,6 +683,25 @@ impl ForeignFunctions {
 
         let string_retain = declare_foreign(module, "__kome_string_retain", &[types::I64], None)?;
         let string_release = declare_foreign(module, "__kome_string_release", &[types::I64], None)?;
+        let struct_alloc = declare_foreign(
+            module,
+            "__kome_struct_alloc",
+            &[types::I64],
+            Some(types::I64),
+        )?;
+        let struct_retain = declare_foreign(module, "__kome_struct_retain", &[types::I64], None)?;
+        let struct_release = declare_foreign(
+            module,
+            "__kome_struct_release",
+            &[types::I64],
+            Some(types::I8),
+        )?;
+        let struct_dealloc = declare_foreign(
+            module,
+            "__kome_struct_dealloc",
+            &[types::I64, types::I64],
+            None,
+        )?;
 
         Ok(Self {
             native_call,
@@ -388,6 +715,10 @@ impl ForeignFunctions {
             string_create,
             string_retain,
             string_release,
+            struct_alloc,
+            struct_retain,
+            struct_release,
+            struct_dealloc,
         })
     }
 }
@@ -470,6 +801,8 @@ fn build_signature<M: Module>(
 fn analyze_signature(
     function: &FunctionDeclaration,
     runtime_types: &HashMap<String, KomeType>,
+    struct_ids: &HashMap<String, usize>,
+    self_type: Option<KomeType>,
 ) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
 
@@ -484,17 +817,25 @@ fn analyze_signature(
             ));
         };
 
-        let Some(annotation) = &identifier.type_annotation else {
-            return Err(CodegenError::at(
-                format!(
-                    "parameter `{}` of function `{}` requires a type annotation",
-                    identifier.name, function.name
-                ),
-                identifier.span,
-            ));
+        let param_type = if identifier.name == "self" && identifier.type_annotation.is_none() {
+            self_type.ok_or_else(|| {
+                CodegenError::at(
+                    "`self` is only valid in a type implementation",
+                    identifier.span,
+                )
+            })?
+        } else {
+            let Some(annotation) = &identifier.type_annotation else {
+                return Err(CodegenError::at(
+                    format!(
+                        "parameter `{}` of function `{}` requires a type annotation",
+                        identifier.name, function.name
+                    ),
+                    identifier.span,
+                ));
+            };
+            type_from_annotation(annotation, runtime_types, struct_ids)?
         };
-
-        let param_type = type_from_annotation(annotation, runtime_types)?;
 
         if param_type == KomeType::Void {
             return Err(CodegenError::at(
@@ -507,7 +848,7 @@ fn analyze_signature(
     }
 
     let ret = match &function.return_type {
-        Some(annotation) => type_from_annotation(annotation, runtime_types)?,
+        Some(annotation) => type_from_annotation(annotation, runtime_types, struct_ids)?,
         None => KomeType::Void,
     };
 
@@ -517,14 +858,19 @@ fn analyze_signature(
 fn type_from_annotation(
     annotation: &kome_ast::types::Type,
     runtime_types: &HashMap<String, KomeType>,
+    struct_ids: &HashMap<String, usize>,
 ) -> CodegenResult<KomeType> {
     if let kome_ast::types::Type::Named(named) = annotation {
-        return runtime_types.get(&named.name).copied().ok_or_else(|| {
-            CodegenError::at(
-                format!("type `{}` has no runtime representation", named.name),
-                named.span,
-            )
-        });
+        return runtime_types
+            .get(&named.name)
+            .copied()
+            .or_else(|| struct_ids.get(&named.name).copied().map(KomeType::Struct))
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!("type `{}` has no runtime representation", named.name),
+                    named.span,
+                )
+            });
     }
 
     KomeType::from_annotation(annotation)
@@ -719,6 +1065,7 @@ impl ReadCounter {
             }
 
             Expression::Call(call) => {
+                self.visit_expression(&call.callee);
                 for argument in &call.args {
                     match argument {
                         CallArg::Positional(value) => {
@@ -734,6 +1081,14 @@ impl ReadCounter {
 
             Expression::Assign(assignment) => {
                 self.visit_expression(&assignment.value);
+            }
+
+            Expression::Member(member) => self.visit_expression(&member.object),
+
+            Expression::Struct(struct_) => {
+                for field in &struct_.fields {
+                    self.visit_expression(&field.value);
+                }
             }
 
             _ => {}
@@ -823,10 +1178,9 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             let scope = self.scopes.pop().expect("scope stack is never empty");
 
             for scoped in scope.values() {
-                if scoped.kome_type == KomeType::Number && scoped.owns_value {
+                if scoped.kome_type.is_managed() && scoped.owns_value {
                     let value = self.builder.use_var(scoped.variable);
-
-                    self.release_number(value);
+                    self.release_managed(value, scoped.kome_type);
                 }
             }
         } else {
@@ -891,7 +1245,13 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 let annotated_type = binding
                     .type_annotation
                     .as_ref()
-                    .map(|annotation| type_from_annotation(annotation, &self.info.runtime_types))
+                    .map(|annotation| {
+                        type_from_annotation(
+                            annotation,
+                            &self.info.runtime_types,
+                            &self.info.struct_ids,
+                        )
+                    })
                     .transpose()?;
 
                 let typed = match &binding.init {
@@ -1010,6 +1370,10 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             Expression::Call(call) => self.evaluate_call(call),
 
             Expression::Assign(assign) => self.evaluate_assign(assign),
+
+            Expression::Struct(struct_) => self.evaluate_struct(struct_),
+
+            Expression::Member(member) => self.evaluate_member(member),
 
             other => Err(CodegenError::at(
                 format!(
@@ -1187,16 +1551,21 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 ))
             }
 
-            KomeType::F64 | KomeType::Number => {
+            KomeType::F64 => {
                 let value = number.0.parse::<f64>().map_err(|_| {
                     CodegenError::at(format!("`{}` is not a valid number", number.0), span)
                 })?;
 
                 Ok(TypedValue::some(
                     self.builder.ins().f64const(value),
-                    expected,
+                    KomeType::F64,
                 ))
             }
+
+            KomeType::Number => self.evaluate_literal(&LiteralExpression {
+                span,
+                kind: LiteralKind::Number(number.clone()),
+            }),
 
             _ => self.evaluate_literal(&LiteralExpression {
                 span,
@@ -1213,6 +1582,203 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             .builder
             .ins()
             .symbol_value(self.module.target_config().pointer_type(), global))
+    }
+
+    fn evaluate_struct(&mut self, expression: &StructExpression) -> CodegenResult<TypedValue> {
+        let id = self
+            .info
+            .struct_ids
+            .get(&expression.name)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!(
+                        "struct `{}` was not found or has a runtime representation",
+                        expression.name
+                    ),
+                    expression.span,
+                )
+            })?;
+        let layout = self.info.struct_info(id).clone();
+        if expression.fields.len() != layout.fields.len() {
+            return Err(CodegenError::at(
+                format!(
+                    "struct `{}` expects {} field(s), but received {}",
+                    expression.name,
+                    layout.fields.len(),
+                    expression.fields.len()
+                ),
+                expression.span,
+            ));
+        }
+        let size = self
+            .builder
+            .ins()
+            .iconst(types::I64, i64::from(layout.size));
+        let alloc =
+            Module::declare_func_in_func(self.module, self.foreign.struct_alloc, self.builder.func);
+        let call = self.builder.ins().call(alloc, &[size]);
+        let pointer = self.builder.inst_results(call)[0];
+
+        for field in &layout.fields {
+            let property = expression
+                .fields
+                .iter()
+                .find(|property| match &property.key {
+                    PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
+                        name == &field.name
+                    }
+                    PropertyKey::Number { .. } | PropertyKey::Computed { .. } => false,
+                })
+                .ok_or_else(|| {
+                    CodegenError::at(
+                        format!("missing field `{}` in `{}`", field.name, expression.name),
+                        expression.span,
+                    )
+                })?;
+            let duplicates = expression
+                .fields
+                .iter()
+                .filter(|candidate| match &candidate.key {
+                    PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
+                        name == &field.name
+                    }
+                    PropertyKey::Number { .. } | PropertyKey::Computed { .. } => false,
+                })
+                .count();
+            if duplicates != 1 {
+                return Err(CodegenError::at(
+                    format!("duplicate field `{}`", field.name),
+                    property.span,
+                ));
+            }
+            let typed = self.evaluate_with_expected(&property.value, Some(field.kome_type))?;
+            if typed.kome_type != field.kome_type {
+                return Err(CodegenError::at(
+                    format!(
+                        "field `{}` expects {}, but received {}",
+                        field.name,
+                        self.info.type_name(field.kome_type),
+                        self.info.type_name(typed.kome_type)
+                    ),
+                    property.value.span(),
+                ));
+            }
+            let value = self.own_value(typed, property.value.span())?;
+            self.builder
+                .ins()
+                .store(MachMemFlags::new(), value, pointer, field.offset);
+        }
+        for property in &expression.fields {
+            let name = match &property.key {
+                PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => name,
+                PropertyKey::Number { .. } | PropertyKey::Computed { .. } => {
+                    return Err(CodegenError::at(
+                        "struct field names must be identifiers",
+                        property.span,
+                    ));
+                }
+            };
+            if !layout.fields.iter().any(|field| field.name == *name) {
+                return Err(CodegenError::at(
+                    format!("struct `{}` has no field `{name}`", expression.name),
+                    property.span,
+                ));
+            }
+        }
+        Ok(TypedValue::some(pointer, KomeType::Struct(id)))
+    }
+
+    fn evaluate_member(&mut self, member: &MemberExpression) -> CodegenResult<TypedValue> {
+        if let Expression::Ident(identifier) = member.object.as_ref()
+            && !self
+                .scopes
+                .iter()
+                .any(|scope| scope.contains_key(&identifier.name))
+            && let Some(&id) = self.info.struct_ids.get(&identifier.name)
+        {
+            let target = KomeType::Struct(id);
+            let (_, _, constant) = self
+                .info
+                .implementation_member(target, &member.property)
+                .ok_or_else(|| {
+                    CodegenError::at(
+                        format!(
+                            "type `{}` has no static member `{}`",
+                            identifier.name, member.property
+                        ),
+                        member.span,
+                    )
+                })?;
+            let constant = constant.ok_or_else(|| {
+                CodegenError::at(
+                    format!(
+                        "`{}.{}` is a method and must be called",
+                        identifier.name, member.property
+                    ),
+                    member.span,
+                )
+            })?;
+            let initializer = constant.binding.init.clone().ok_or_else(|| {
+                CodegenError::at(
+                    format!(
+                        "associated constant `{}` has no initializer",
+                        member.property
+                    ),
+                    constant.binding.span,
+                )
+            })?;
+            let expected = constant.kome_type;
+            let value = self.evaluate_with_expected(&initializer, Some(expected))?;
+            if value.kome_type != expected {
+                return Err(CodegenError::at(
+                    "associated constant initializer has the wrong type",
+                    initializer.span(),
+                ));
+            }
+            return Ok(value);
+        }
+
+        let object = self.evaluate(&member.object)?;
+        let KomeType::Struct(id) = object.kome_type else {
+            return Err(CodegenError::at(
+                format!(
+                    "type `{}` has no field `{}`",
+                    self.info.type_name(object.kome_type),
+                    member.property
+                ),
+                member.span,
+            ));
+        };
+        let field = self
+            .info
+            .struct_info(id)
+            .fields
+            .iter()
+            .find(|field| field.name == member.property)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!(
+                        "struct `{}` has no field `{}`",
+                        self.info.struct_info(id).name,
+                        member.property
+                    ),
+                    member.span,
+                )
+            })?;
+        let pointer = object.expect_value(member.object.span())?;
+        let value = self.builder.ins().load(
+            field.kome_type.cranelift().expect("field representation"),
+            MachMemFlags::new(),
+            pointer,
+            field.offset,
+        );
+        if field.kome_type.is_managed() {
+            self.retain_managed(value, field.kome_type);
+        }
+        self.release_owned_temporary(object, member.object.span())?;
+        Ok(TypedValue::some(value, field.kome_type))
     }
 
     fn release_owned_temporary(&mut self, value: TypedValue, span: Span) -> CodegenResult<()> {
@@ -1368,11 +1934,8 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
     }
 
     fn evaluate_call(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
-        if matches!(call.callee.as_ref(), Expression::Member(_)) {
-            return Err(CodegenError::at(
-                "method and trait dispatch are not supported yet",
-                call.span,
-            ));
+        if let Expression::Member(member) = call.callee.as_ref() {
+            return self.evaluate_method_call(member, call);
         }
 
         let Expression::Ident(callee) = call.callee.as_ref() else {
@@ -1468,7 +2031,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         }
 
         let result = match plan {
-            CalleePlan::User => self.emit_user_call(callee, &arguments, &signature)?,
+            CalleePlan::User => self.emit_user_call(&callee.name, &arguments, &signature)?,
             CalleePlan::Native { symbol } => {
                 self.emit_native_call(&symbol, &arguments, &signature)?
             }
@@ -1478,6 +2041,122 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             self.release_owned_temporary(argument, call.span)?;
         }
 
+        Ok(result)
+    }
+
+    fn evaluate_method_call(
+        &mut self,
+        member: &MemberExpression,
+        call: &CallExpression,
+    ) -> CodegenResult<TypedValue> {
+        let static_target = if let Expression::Ident(identifier) = member.object.as_ref()
+            && !self
+                .scopes
+                .iter()
+                .any(|scope| scope.contains_key(&identifier.name))
+        {
+            self.info
+                .struct_ids
+                .get(&identifier.name)
+                .copied()
+                .map(KomeType::Struct)
+                .or_else(|| self.info.runtime_types.get(&identifier.name).copied())
+        } else {
+            None
+        };
+
+        let mut evaluated = Vec::new();
+        let target = if let Some(target) = static_target {
+            target
+        } else {
+            let receiver = self.evaluate(&member.object)?;
+            let target = receiver.kome_type;
+            evaluated.push(receiver);
+            target
+        };
+        let (_, method, _) = self
+            .info
+            .implementation_member(target, &member.property)
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!(
+                        "type `{}` has no method `{}`",
+                        self.info.type_name(target),
+                        member.property
+                    ),
+                    member.span,
+                )
+            })?;
+        let method = method.cloned().ok_or_else(|| {
+            CodegenError::at(
+                format!(
+                    "`{}` is an associated constant and cannot be called",
+                    member.property
+                ),
+                member.span,
+            )
+        })?;
+        if method.has_self == static_target.is_some() {
+            let kind = if method.has_self {
+                "instance"
+            } else {
+                "static"
+            };
+            return Err(CodegenError::at(
+                format!("method `{}` is {kind}", member.property),
+                member.span,
+            ));
+        }
+        let supplied = call.args.len() + usize::from(method.has_self);
+        if supplied != method.signature.params.len() {
+            return Err(CodegenError::at(
+                format!(
+                    "method `{}` expects {} argument(s), but received {}",
+                    member.property,
+                    method.signature.params.len() - usize::from(method.has_self),
+                    call.args.len()
+                ),
+                call.span,
+            ));
+        }
+        let mut arguments = Vec::with_capacity(supplied);
+        if let Some(receiver) = evaluated.first() {
+            arguments.push(receiver.expect_value(member.object.span())?);
+        }
+        let skip = usize::from(method.has_self);
+        for (argument, expected) in call
+            .args
+            .iter()
+            .zip(method.signature.params.iter().skip(skip))
+        {
+            let expression = match argument {
+                CallArg::Positional(expression) => expression,
+                CallArg::Named { span, .. } => {
+                    return Err(CodegenError::at(
+                        "named arguments are not supported yet",
+                        *span,
+                    ));
+                }
+            };
+            let typed = self.evaluate_with_expected(expression, Some(*expected))?;
+            if typed.kome_type != *expected {
+                return Err(CodegenError::at(
+                    format!(
+                        "argument for `{}` expects {}, but received {}",
+                        member.property,
+                        self.info.type_name(*expected),
+                        self.info.type_name(typed.kome_type)
+                    ),
+                    expression.span(),
+                ));
+            }
+            arguments.push(typed.expect_value(expression.span())?);
+            evaluated.push(typed);
+        }
+        let result = self.emit_user_call(&method.function_key, &arguments, &method.signature)?;
+        for value in evaluated {
+            self.release_owned_temporary(value, call.span)?;
+        }
         Ok(result)
     }
 
@@ -1519,16 +2198,15 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             AssignOp::Assign => {
                 let value = self.own_value(typed, assignment.value.span())?;
 
-                if scoped.kome_type == KomeType::Number
-                    && self.scopes[scope][&identifier.name].owns_value
+                if scoped.kome_type.is_managed() && self.scopes[scope][&identifier.name].owns_value
                 {
                     let old = self.builder.use_var(scoped.variable);
-                    self.release_number(old);
+                    self.release_managed(old, scoped.kome_type);
                 }
 
                 self.builder.def_var(scoped.variable, value);
 
-                if scoped.kome_type == KomeType::Number {
+                if scoped.kome_type.is_managed() {
                     self.scopes[scope]
                         .get_mut(&identifier.name)
                         .unwrap()
@@ -1546,11 +2224,11 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
 
     fn emit_user_call(
         &mut self,
-        callee: &IdentifierExpression,
+        function_key: &str,
         arguments: &[ir::Value],
         signature: &FunctionSignature,
     ) -> CodegenResult<TypedValue> {
-        let func_id = self.func_ids[&callee.name];
+        let func_id = self.func_ids[function_key];
 
         let func_ref = Module::declare_func_in_func(self.module, func_id, self.builder.func);
 
@@ -1624,6 +2302,13 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 KomeType::Void => {
                     return Err(CodegenError::new("parameters cannot have type Void", None));
                 }
+
+                KomeType::Struct(_) => {
+                    return Err(CodegenError::new(
+                        "user-defined structs cannot cross the native ABI",
+                        None,
+                    ));
+                }
             };
 
             let payload_address = self.builder.ins().iadd_imm_s(buffer, offset + 8);
@@ -1660,6 +2345,13 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
             KomeType::Number | KomeType::String => payload,
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
+
+            KomeType::Struct(_) => {
+                return Err(CodegenError::new(
+                    "user-defined structs cannot cross the native ABI",
+                    None,
+                ));
+            }
 
             KomeType::I8
             | KomeType::I16
@@ -1703,6 +2395,13 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
                 "internal error: Void has no zero value",
                 None,
             )),
+            KomeType::Struct(id) => Err(CodegenError::new(
+                format!(
+                    "{} cannot be used without an initializer",
+                    self.info.struct_info(id).name
+                ),
+                None,
+            )),
         }
     }
 
@@ -1711,16 +2410,6 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         let function = Module::declare_func_in_func(
             self.module,
             self.foreign.number_retain,
-            self.builder.func,
-        );
-
-        self.builder.ins().call(function, &[value]);
-    }
-
-    fn release_number(&mut self, value: ir::Value) {
-        let function = Module::declare_func_in_func(
-            self.module,
-            self.foreign.number_release,
             self.builder.func,
         );
 
@@ -1777,6 +2466,7 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         let function = match kome_type {
             KomeType::Number => self.foreign.number_retain,
             KomeType::String => self.foreign.string_retain,
+            KomeType::Struct(_) => self.foreign.struct_retain,
             _ => return,
         };
 
@@ -1788,11 +2478,59 @@ impl<'b, 'c, 'a, M: Module> FunctionTranslator<'b, 'c, 'a, M> {
         let function = match kome_type {
             KomeType::Number => self.foreign.number_release,
             KomeType::String => self.foreign.string_release,
+            KomeType::Struct(id) => {
+                self.release_struct(value, id);
+                return;
+            }
             _ => return,
         };
 
         let function = Module::declare_func_in_func(self.module, function, self.builder.func);
         self.builder.ins().call(function, &[value]);
+    }
+
+    fn release_struct(&mut self, value: ir::Value, id: usize) {
+        let release = Module::declare_func_in_func(
+            self.module,
+            self.foreign.struct_release,
+            self.builder.func,
+        );
+        let call = self.builder.ins().call(release, &[value]);
+        let is_last = self.builder.inst_results(call)[0];
+        let destroy = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.ins().brif(is_last, destroy, &[], done, &[]);
+        self.builder.switch_to_block(destroy);
+        self.builder.seal_block(destroy);
+        let layout = self.info.struct_info(id).clone();
+        for field in &layout.fields {
+            if field.kome_type.is_managed() {
+                let representation = field
+                    .kome_type
+                    .cranelift()
+                    .expect("field has representation");
+                let field_value = self.builder.ins().load(
+                    representation,
+                    MachMemFlags::new(),
+                    value,
+                    field.offset,
+                );
+                self.release_managed(field_value, field.kome_type);
+            }
+        }
+        let size = self
+            .builder
+            .ins()
+            .iconst(types::I64, i64::from(layout.size));
+        let dealloc = Module::declare_func_in_func(
+            self.module,
+            self.foreign.struct_dealloc,
+            self.builder.func,
+        );
+        self.builder.ins().call(dealloc, &[value, size]);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
     }
 }
 
