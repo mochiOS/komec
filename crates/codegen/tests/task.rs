@@ -164,3 +164,20 @@ fn main() {
     );
     assert_eq!(values, vec![Value::Boolean(true)]);
 }
+
+#[test]
+fn cancels_completed_tasks_without_losing_the_result() {
+    let values = run_and_capture(
+        r#"
+@native("test.capture")
+fn report(value: String)
+fn main() {
+    let work = task "kept"
+    cancel work
+    cancel work
+    report(wait work)
+}
+"#,
+    );
+    assert_eq!(values, vec![Value::String(KomeString::new("kept"))]);
+}

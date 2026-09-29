@@ -1,7 +1,8 @@
 use kome_native_rt::task::{
     __kome_task_cancel, __kome_task_complete, __kome_task_create, __kome_task_dealloc,
-    __kome_task_error, __kome_task_fail, __kome_task_id, __kome_task_release, __kome_task_result,
-    __kome_task_start, __kome_task_wait, TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED,
+    __kome_task_error, __kome_task_fail, __kome_task_id, __kome_task_is_cancelled,
+    __kome_task_release, __kome_task_result, __kome_task_start, __kome_task_wait, TASK_CANCELLED,
+    TASK_COMPLETED, TASK_FAILED,
 };
 
 #[test]
@@ -51,6 +52,22 @@ fn wakes_waiters_when_cancelled() {
     unsafe {
         __kome_task_cancel(task);
         assert_eq!(__kome_task_wait(task), TASK_CANCELLED);
+        assert_eq!(__kome_task_release(task), 1);
+        __kome_task_dealloc(task);
+    }
+}
+
+#[test]
+fn running_tasks_record_a_cooperative_cancellation_request() {
+    let task = __kome_task_create();
+    unsafe {
+        __kome_task_start(task);
+        __kome_task_cancel(task);
+        __kome_task_cancel(task);
+        assert_eq!(__kome_task_is_cancelled(task), 1);
+        __kome_task_complete(task, 42);
+        assert_eq!(__kome_task_wait(task), TASK_COMPLETED);
+        assert_eq!(__kome_task_result(task), 42);
         assert_eq!(__kome_task_release(task), 1);
         __kome_task_dealloc(task);
     }

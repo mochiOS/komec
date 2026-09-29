@@ -14,11 +14,11 @@ use kome_ast::{
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
-        ClosureExpression, ComponentExpression, DotIdentifierExpression, Expression,
-        GroupExpression, IndexExpression, KeyValueProperty, ListExpression, LiteralKind,
-        MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty, PropertyKey,
-        StructExpression, TaskExpression, TemplateExpression, TemplatePart, UnaryExpression,
-        UnaryOp, WaitExpression,
+        CancelExpression, ClosureExpression, ComponentExpression, DotIdentifierExpression,
+        Expression, GroupExpression, IndexExpression, KeyValueProperty, ListExpression,
+        LiteralKind, MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty,
+        PropertyKey, StructExpression, TaskExpression, TemplateExpression, TemplatePart,
+        UnaryExpression, UnaryOp, WaitExpression,
     },
     patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
@@ -1459,7 +1459,7 @@ impl Parser {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, ParseError> {
-        if self.at(|kind| matches!(kind, TokenKind::Task | TokenKind::Wait)) {
+        if self.at(|kind| matches!(kind, TokenKind::Task | TokenKind::Wait | TokenKind::Cancel)) {
             let operator = self.advance();
             let argument = self.parse_unary_expression()?;
             let span = Span::new(operator.span.start, argument.span().end);
@@ -1470,6 +1470,10 @@ impl Parser {
                     argument: Box::new(argument),
                 }),
                 TokenKind::Wait => Expression::Wait(WaitExpression {
+                    span,
+                    argument: Box::new(argument),
+                }),
+                TokenKind::Cancel => Expression::Cancel(CancelExpression {
                     span,
                     argument: Box::new(argument),
                 }),

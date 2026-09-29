@@ -1033,6 +1033,19 @@ impl TypeChecker {
                 }
             }
 
+            Expression::Cancel(cancel) => {
+                let actual = self.infer_expression(&cancel.argument, None);
+                if !matches!(actual, SemanticType::Applied(ref name, ref arguments) if name == "Task" && arguments.len() == 1)
+                    && actual != SemanticType::Unknown
+                {
+                    self.errors.push(TypeCheckError {
+                        message: format!("`cancel` expects Task<T>, but found {}", actual.name()),
+                        span: cancel.argument.span(),
+                    });
+                }
+                SemanticType::Void
+            }
+
             Expression::Binary(binary) => self.infer_binary_expression(binary),
 
             Expression::Call(call) => self.infer_call_expression(call),

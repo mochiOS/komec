@@ -18,8 +18,9 @@ use kome_ast::declarations::{
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
-    Expression, GroupExpression, IdentifierExpression, LiteralExpression, LiteralKind,
-    MemberExpression, NumberLiteral, PropertyKey, StructExpression, TaskExpression, WaitExpression,
+    CancelExpression, Expression, GroupExpression, IdentifierExpression, LiteralExpression,
+    LiteralKind, MemberExpression, NumberLiteral, PropertyKey, StructExpression, TaskExpression,
+    WaitExpression,
 };
 use kome_ast::statements::{BlockStatement, Statement};
 use std::cell::RefCell;
@@ -678,6 +679,7 @@ struct ForeignFunctions {
     task_create: FuncId,
     task_start: FuncId,
     task_complete: FuncId,
+    task_cancel: FuncId,
     task_wait: FuncId,
     task_result: FuncId,
     task_retain: FuncId,
@@ -768,6 +770,7 @@ impl ForeignFunctions {
             &[types::I64, types::I64],
             None,
         )?;
+        let task_cancel = declare_foreign(module, "__kome_task_cancel", &[types::I64], None)?;
         let task_wait =
             declare_foreign(module, "__kome_task_wait", &[types::I64], Some(types::I8))?;
         let task_result = declare_foreign(
@@ -804,6 +807,7 @@ impl ForeignFunctions {
             task_create,
             task_start,
             task_complete,
+            task_cancel,
             task_wait,
             task_result,
             task_retain,
@@ -1183,6 +1187,8 @@ impl ReadCounter {
 
             Expression::Wait(wait) => self.visit_expression(&wait.argument),
 
+            Expression::Cancel(cancel) => self.visit_expression(&cancel.argument),
+
             Expression::Binary(binary) => {
                 self.visit_expression(&binary.left);
                 self.visit_expression(&binary.right);
@@ -1494,6 +1500,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::Wait(wait) => self.evaluate_wait(wait),
 
+            Expression::Cancel(cancel) => self.evaluate_cancel(cancel),
+
             Expression::Binary(binary) => self.evaluate_binary(binary),
 
             Expression::Call(call) => self.evaluate_call(call),
@@ -1575,6 +1583,25 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         }
         self.release_owned_temporary(task, wait.argument.span())?;
         Ok(TypedValue::some(value, result_type))
+    }
+
+    fn evaluate_cancel(&mut self, cancel: &CancelExpression) -> CodegenResult<TypedValue> {
+        let task = self.evaluate(&cancel.argument)?;
+        if !matches!(task.kome_type, KomeType::Task(_)) {
+            return Err(CodegenError::at(
+                format!(
+                    "`cancel` expects Task<T>, but found {}",
+                    self.info.type_name(task.kome_type)
+                ),
+                cancel.argument.span(),
+            ));
+        }
+        let handle = task.expect_value(cancel.argument.span())?;
+        let function =
+            Module::declare_func_in_func(self.module, self.foreign.task_cancel, self.builder.func);
+        self.builder.ins().call(function, &[handle]);
+        self.release_owned_temporary(task, cancel.argument.span())?;
+        Ok(TypedValue::void())
     }
 
     fn value_to_task_slot(&mut self, value: ir::Value, kome_type: KomeType) -> ir::Value {
@@ -2837,6 +2864,7 @@ fn expression_kind(expression: &Expression) -> &'static str {
         Expression::Unary(_) => "unary",
         Expression::Task(_) => "task",
         Expression::Wait(_) => "wait",
+        Expression::Cancel(_) => "cancel",
         Expression::Binary(_) => "binary",
         Expression::Call(_) => "call",
         Expression::Member(_) => "member access",

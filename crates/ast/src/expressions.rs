@@ -21,6 +21,9 @@ pub enum Expression {
     /// Waits for a task and produces its result: `wait expression`.
     Wait(WaitExpression),
 
+    /// Requests cancellation of a task: `cancel expression`.
+    Cancel(CancelExpression),
+
     /// A binary operator expression: `a + b`, `x == y`, etc.
     Binary(BinaryExpression),
 
@@ -135,6 +138,13 @@ pub struct TaskExpression {
 /// An expression that waits for a task result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaitExpression {
+    pub span: Span,
+    pub argument: Box<Expression>,
+}
+
+/// An expression that requests cooperative task cancellation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CancelExpression {
     pub span: Span,
     pub argument: Box<Expression>,
 }
@@ -463,6 +473,7 @@ impl AstNode for Expression {
             Expression::Unary(expression) => expression.span,
             Expression::Task(expression) => expression.span,
             Expression::Wait(expression) => expression.span,
+            Expression::Cancel(expression) => expression.span,
             Expression::Binary(expression) => expression.span,
             Expression::Call(expression) => expression.span,
             Expression::Member(expression) => expression.span,

@@ -30,6 +30,7 @@ pub enum TokenKind {
     Super,
     Task,
     Wait,
+    Cancel,
 
     Ident(String),
     String(String),
@@ -145,6 +146,7 @@ impl TokenKind {
             "super" => Self::Super,
             "task" => Self::Task,
             "wait" => Self::Wait,
+            "cancel" => Self::Cancel,
             _ => Self::Ident(identifier),
         }
     }

@@ -51,3 +51,20 @@ fn main() { let pending: Task<String> = task load() }
     .unwrap();
     assert!(!TypeChecker::check(&module).errors.is_empty());
 }
+
+#[test]
+fn types_cancel_as_void_and_rejects_non_tasks() {
+    let valid = kome_parser::parse(
+        "fn value() -> Number { return 1 } fn main() { let work = task value() cancel work }",
+    )
+    .unwrap();
+    assert!(TypeChecker::check(&valid).errors.is_empty());
+
+    let invalid = kome_parser::parse("fn main() { cancel 42 }").unwrap();
+    assert!(
+        TypeChecker::check(&invalid)
+            .errors
+            .iter()
+            .any(|error| error.message.contains("`cancel` expects Task<T>"))
+    );
+}

@@ -569,6 +569,10 @@ impl<'a> Expander<'a> {
                     _ => Err(CodegenError::at("`wait` expects Task<T>", value.span)),
                 }
             }
+            Expression::Cancel(value) => {
+                self.rewrite_expression(&mut value.argument, environment, substitution, None)?;
+                Ok(unknown_type(value.span))
+            }
             Expression::Struct(value) => {
                 let arguments = value
                     .type_arguments

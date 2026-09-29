@@ -528,6 +528,7 @@ impl ScopeBuilder {
             }
             Expression::Task(task) => self.visit_expression(&task.argument),
             Expression::Wait(wait) => self.visit_expression(&wait.argument),
+            Expression::Cancel(cancel) => self.visit_expression(&cancel.argument),
             Expression::Binary(binary) => self.visit_binary_expression(binary),
             Expression::Call(call) => self.visit_call_expression(call),
             Expression::Member(member) => self.visit_member_expression(member),

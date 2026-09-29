@@ -23,6 +23,8 @@ pub const TASK_COMPLETED: u8 = 2;
 pub const TASK_CANCELLED: u8 = 3;
 /// Numeric ABI value for [`TaskState::Failed`].
 pub const TASK_FAILED: u8 = 4;
+/// Numeric ABI value for [`TaskState::CancellationRequested`].
+pub const TASK_CANCELLATION_REQUESTED: u8 = 5;
 
 /// Observable lifecycle state of a runtime task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +35,7 @@ pub enum TaskState {
     Completed = TASK_COMPLETED,
     Cancelled = TASK_CANCELLED,
     Failed = TASK_FAILED,
+    CancellationRequested = TASK_CANCELLATION_REQUESTED,
 }
 
 /// Result stored by a task after it leaves the pending/running states.
@@ -139,11 +142,36 @@ pub unsafe extern "C" fn __kome_task_cancel(handle: u64) {
         .data
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !matches!(data.state, TaskState::Completed | TaskState::Failed) {
-        data.state = TaskState::Cancelled;
-        data.result = Some(TaskResult::Cancelled);
-        task.ready.notify_all();
+    match data.state {
+        TaskState::Pending => {
+            data.state = TaskState::Cancelled;
+            data.result = Some(TaskResult::Cancelled);
+            task.ready.notify_all();
+        }
+        TaskState::Running => data.state = TaskState::CancellationRequested,
+        TaskState::CancellationRequested
+        | TaskState::Completed
+        | TaskState::Failed
+        | TaskState::Cancelled => {}
     }
+}
+
+/// Returns whether cancellation was requested or completed for a task.
+///
+/// # Safety
+///
+/// `handle` must identify a live task.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_task_is_cancelled(handle: u64) -> u8 {
+    let task = unsafe { record(handle) };
+    let data = task
+        .data
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    u8::from(matches!(
+        data.state,
+        TaskState::Cancelled | TaskState::CancellationRequested
+    ))
 }
 
 /// Blocks until the task reaches a terminal state and returns that state.
@@ -161,7 +189,10 @@ pub unsafe extern "C" fn __kome_task_wait(handle: u64) -> u8 {
         .data
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    while matches!(data.state, TaskState::Pending | TaskState::Running) {
+    while matches!(
+        data.state,
+        TaskState::Pending | TaskState::Running | TaskState::CancellationRequested
+    ) {
         data = task
             .ready
             .wait(data)

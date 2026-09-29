@@ -336,6 +336,8 @@ impl InitializationChecker {
 
             Expression::Wait(wait) => self.visit_expression(&wait.argument),
 
+            Expression::Cancel(cancel) => self.visit_expression(&cancel.argument),
+
             Expression::Binary(binary) => {
                 self.visit_expression(&binary.left);
                 self.visit_expression(&binary.right);

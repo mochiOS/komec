@@ -29,3 +29,12 @@ fn task_and_wait_bind_more_tightly_than_addition() {
     };
     assert!(matches!(wait.argument.as_ref(), Expression::Task(_)));
 }
+
+#[test]
+fn parses_cancel_as_a_prefix_expression() {
+    let Expression::Cancel(cancel) = kome_parser::parse_expression("cancel pending").unwrap()
+    else {
+        panic!("expected cancel expression")
+    };
+    assert!(matches!(cancel.argument.as_ref(), Expression::Ident(_)));
+}
