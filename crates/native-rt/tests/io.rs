@@ -1,4 +1,4 @@
-use kome_native_rt::io::{sleep, socket_read, socket_write};
+use kome_native_rt::io::{sleep, socket_connect, socket_read, socket_write};
 use kome_native_rt::string::{KomeString, release};
 use kome_native_rt::task::{
     __kome_task_dealloc, __kome_task_release, __kome_task_result, __kome_task_spawn,
@@ -97,4 +97,16 @@ fn socket_read_suspends_until_epoll_reports_readiness() {
         assert_eq!(__kome_task_release(writer), 1);
         __kome_task_dealloc(writer);
     }
+}
+
+#[test]
+fn managed_socket_connects_to_a_tcp_listener() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || listener.accept().unwrap());
+
+    let socket = socket_connect("127.0.0.1", port).unwrap();
+    assert!(!socket.is_closed());
+    socket.close().unwrap();
+    let _ = server.join().unwrap();
 }

@@ -88,6 +88,7 @@ struct Socket { fd: Number }
 for Socket {
     fn read(self) -> String { return socketRead(self.fd, 64) }
 }
+
 fn cancelAfter(value: Task<String>) -> Number {
     sleep(1)
     cancel value
@@ -103,6 +104,58 @@ fn main() {
         Some(sockets),
     );
     assert_eq!(values, vec![Value::Number(Number::from_i64(1))]);
+}
+
+#[test]
+fn runtime_socket_connects_reads_writes_and_closes() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4];
+        connection.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"ping");
+        connection.write_all(b"pong").unwrap();
+    });
+    let source = format!(
+        r#"
+@runtime("socket")
+struct Socket
+@native("io.socket_connect")
+fn socketConnect(host: String, port: Number) -> Socket
+@native("io.socket_read")
+fn socketRead(socket: Socket, maximum: Number) -> String
+@native("io.socket_write")
+fn socketWrite(socket: Socket, value: String) -> Number
+@native("io.socket_close")
+fn socketClose(socket: Socket) -> Null
+for Socket {{
+    fn connect(host: String, port: Number) -> Socket {{
+        return socketConnect(host, port)
+    }}
+    fn read(self, maximum: Number) -> String {{
+        return socketRead(self, maximum)
+    }}
+    fn write(self, value: String) -> Number {{
+        return socketWrite(self, value)
+    }}
+    fn close(self) {{ socketClose(self) }}
+}}
+@native("test.capture")
+fn report(value: String)
+fn main() {{
+    let socket = wait task Socket.connect("127.0.0.1", {port})
+    let written = wait task socket.write("ping")
+    let response = wait task socket.read(4)
+    report(response)
+    socket.close()
+}}
+"#
+    );
+    let values = run_with_registry(&source, None);
+    server.join().unwrap();
+    assert_eq!(values, vec![Value::String(KomeString::new("pong"))]);
 }
 
 fn run_with_registry(

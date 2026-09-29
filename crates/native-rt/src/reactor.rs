@@ -107,6 +107,17 @@ impl Reactor {
         }
     }
 
+    fn unregister_fd(&mut self, fd: RawFd) -> Vec<u64> {
+        let Some(mut waiters) = self.waiters.remove(&fd) else {
+            return Vec::new();
+        };
+        unsafe { libc::epoll_ctl(self.epoll, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+        waiters.readers.append(&mut waiters.writers);
+        waiters.readers.sort_unstable();
+        waiters.readers.dedup();
+        waiters.readers
+    }
+
     fn poll(&mut self, timeout: Option<Duration>) -> io::Result<Vec<u64>> {
         let milliseconds = timeout.map_or(-1, |duration| {
             duration
@@ -198,6 +209,13 @@ pub(crate) fn register(fd: RawFd, task: u64, writable: bool) -> io::Result<()> {
 
 pub(crate) fn unregister_task(task: u64) {
     REACTOR.with(|reactor| reactor.borrow_mut().unregister_task(task));
+}
+
+pub(crate) fn unregister_fd(fd: RawFd) {
+    let waiters = REACTOR.with(|reactor| reactor.borrow_mut().unregister_fd(fd));
+    for waiter in waiters {
+        unsafe { crate::task::__kome_task_wake(waiter) };
+    }
 }
 
 pub(crate) fn poll(timeout: Option<Duration>) -> io::Result<Vec<u64>> {

@@ -157,6 +157,7 @@ fn close_heap(socket: &HeapSocket) -> io::Result<()> {
     if fd == CLOSED_FD {
         return Ok(());
     }
+    crate::reactor::unregister_fd(fd);
     if unsafe { libc::close(fd) } < 0 {
         return Err(io::Error::last_os_error());
     }

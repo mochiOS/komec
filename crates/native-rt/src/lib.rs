@@ -123,8 +123,10 @@ pub fn builtin_registry() -> NativeRegistry {
     registry.register("core.write", write);
     registry.register("core.write_line", write_line);
     registry.register("io.sleep", io_sleep);
+    registry.register("io.socket_connect", io_socket_connect);
     registry.register("io.socket_read", io_socket_read);
     registry.register("io.socket_write", io_socket_write);
+    registry.register("io.socket_close", io_socket_close);
     registry
 }
 
@@ -149,31 +151,69 @@ fn io_sleep(arguments: &[Value]) -> Result<Value, RuntimeError> {
     Ok(Value::Null)
 }
 
+fn io_socket_connect(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::String(host), port] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_connect expects a String host and Number port",
+        ));
+    };
+    let port = integer_argument(port, "socket port")?;
+    let port = u16::try_from(port)
+        .map_err(|_| RuntimeError::native("socket port must be between 0 and 65535"))?;
+    io::socket_connect(host.as_str(), port)
+        .map(Value::Socket)
+        .map_err(|error| RuntimeError::native(format!("socket connect failed: {error}")))
+}
+
 fn io_socket_read(arguments: &[Value]) -> Result<Value, RuntimeError> {
-    let [fd, maximum] = arguments else {
+    let [socket, maximum] = arguments else {
         return Err(RuntimeError::native("io.socket_read expects two arguments"));
     };
-    let fd = integer_argument(fd, "socket fd")?;
     let maximum = integer_argument(maximum, "maximum read size")?;
-    let fd = i32::try_from(fd).map_err(|_| RuntimeError::native("socket fd is out of range"))?;
     let maximum = usize::try_from(maximum)
         .map_err(|_| RuntimeError::native("maximum read size must not be negative"))?;
-    io::socket_read(fd, maximum)
+    let result = match socket {
+        Value::Socket(socket) => io::managed_socket_read(socket, maximum),
+        legacy_fd => {
+            let fd = integer_argument(legacy_fd, "socket fd")?;
+            let fd =
+                i32::try_from(fd).map_err(|_| RuntimeError::native("socket fd is out of range"))?;
+            io::socket_read(fd, maximum)
+        }
+    };
+    result
         .map(Value::String)
         .map_err(|error| RuntimeError::native(format!("socket read failed: {error}")))
 }
 
 fn io_socket_write(arguments: &[Value]) -> Result<Value, RuntimeError> {
-    let [fd, Value::String(value)] = arguments else {
+    let [socket, Value::String(value)] = arguments else {
         return Err(RuntimeError::native(
             "io.socket_write expects a socket fd and String",
         ));
     };
-    let fd = integer_argument(fd, "socket fd")?;
-    let fd = i32::try_from(fd).map_err(|_| RuntimeError::native("socket fd is out of range"))?;
-    io::socket_write(fd, value)
+    let result = match socket {
+        Value::Socket(socket) => io::managed_socket_write(socket, value),
+        legacy_fd => {
+            let fd = integer_argument(legacy_fd, "socket fd")?;
+            let fd =
+                i32::try_from(fd).map_err(|_| RuntimeError::native("socket fd is out of range"))?;
+            io::socket_write(fd, value)
+        }
+    };
+    result
         .map(|written| Value::Number(Number::from_i64(written as i64)))
         .map_err(|error| RuntimeError::native(format!("socket write failed: {error}")))
+}
+
+fn io_socket_close(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::Socket(socket)] = arguments else {
+        return Err(RuntimeError::native("io.socket_close expects a Socket"));
+    };
+    socket
+        .close()
+        .map(|()| Value::Null)
+        .map_err(|error| RuntimeError::native(format!("socket close failed: {error}")))
 }
 
 /// Replaces the registry used by `@native` calls on the current thread.

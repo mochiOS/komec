@@ -24,6 +24,7 @@ struct Expander<'a> {
     structs: HashMap<String, &'a StructDeclaration>,
     functions: HashMap<String, &'a FunctionDeclaration>,
     traits: HashMap<String, &'a TraitDeclaration>,
+    implementations: Vec<&'a ForDeclaration>,
     output: Vec<Declaration>,
     emitted_structs: HashMap<String, String>,
     struct_origins: HashMap<String, (String, Vec<Type>)>,
@@ -39,6 +40,7 @@ impl<'a> Expander<'a> {
         let mut structs = HashMap::new();
         let mut functions = HashMap::new();
         let mut traits = HashMap::new();
+        let mut implementations = Vec::new();
         for declaration in &module.declarations {
             match declaration {
                 Declaration::Struct(value) => {
@@ -50,6 +52,7 @@ impl<'a> Expander<'a> {
                 Declaration::Trait(value) => {
                     traits.insert(value.name.clone(), value);
                 }
+                Declaration::For(value) => implementations.push(value),
                 _ => {}
             }
         }
@@ -58,6 +61,7 @@ impl<'a> Expander<'a> {
             structs,
             functions,
             traits,
+            implementations,
             output: Vec::new(),
             emitted_structs: HashMap::new(),
             struct_origins: HashMap::new(),
@@ -803,9 +807,27 @@ impl<'a> Expander<'a> {
                         .map(|value| map.apply(value))
                         .unwrap_or_else(|| unknown_type(call.span)));
                 }
-                if let Expression::Member(member) = call.callee.as_mut() {
-                    self.rewrite_expression(&mut member.object, environment, substitution, None)?;
-                }
+                let member_result = if let Expression::Member(member) = call.callee.as_mut() {
+                    let target = if let Expression::Ident(identifier) = member.object.as_ref()
+                        && self.structs.contains_key(&identifier.name)
+                    {
+                        Type::Named(NamedType {
+                            span: identifier.span,
+                            name: identifier.name.clone(),
+                            type_arguments: Vec::new(),
+                        })
+                    } else {
+                        self.rewrite_expression(
+                            &mut member.object,
+                            environment,
+                            substitution,
+                            None,
+                        )?
+                    };
+                    self.method_return_type(&target, &member.property)
+                } else {
+                    None
+                };
                 for argument in &mut call.args {
                     self.rewrite_expression(
                         match argument {
@@ -817,7 +839,7 @@ impl<'a> Expander<'a> {
                         None,
                     )?;
                 }
-                Ok(unknown_type(call.span))
+                Ok(member_result.unwrap_or_else(|| unknown_type(call.span)))
             }
             Expression::Member(member) => {
                 let object =
@@ -862,6 +884,52 @@ impl<'a> Expander<'a> {
             });
         }
         type_.clone()
+    }
+
+    fn method_return_type(&self, target: &Type, method: &str) -> Option<Type> {
+        let actual = self.generic_view(target);
+        for implementation in &self.implementations {
+            let mut inferred = HashMap::new();
+            if infer(
+                &implementation.target,
+                &actual,
+                &implementation.type_parameters,
+                &mut inferred,
+                implementation.span,
+            )
+            .is_err()
+            {
+                continue;
+            }
+            let formal = self.generic_view(&implementation.target);
+            if implementation.type_parameters.is_empty()
+                && Self::encode_type(&formal) != Self::encode_type(&actual)
+            {
+                continue;
+            }
+            let Some(function) = implementation
+                .members
+                .iter()
+                .find_map(|member| match member {
+                    TypeMember::Function(function) if function.name == method => Some(function),
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+            let Some(return_type) = function.return_type.as_ref() else {
+                continue;
+            };
+            let arguments = implementation
+                .type_parameters
+                .iter()
+                .map(|parameter| inferred.get(&parameter.name).cloned())
+                .collect::<Option<Vec<_>>>()?;
+            let substitution =
+                TypeSubstitution::new(Self::names(&implementation.type_parameters), &arguments);
+            return Some(substitution.apply(return_type));
+        }
+        None
     }
 }
 
