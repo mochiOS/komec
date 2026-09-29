@@ -232,6 +232,26 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_cooperative_sleep() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: String)
+@native("io.sleep")
+fn sleep(milliseconds: Number) -> Null
+fn delayed() -> String {
+    sleep(5)
+    return "awake"
+}
+fn main() {
+    println(wait task delayed())
+}
+"#,
+    );
+    assert_eq!(stdout, "awake\n");
+}
+
+#[test]
 fn built_binary_has_no_rust_runtime_dependency() {
     // The point of this check is that the binary links only against system
     // libraries; running it in a minimal environment proves the runtime is

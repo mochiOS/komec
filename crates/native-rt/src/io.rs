@@ -52,6 +52,9 @@ pub fn socket_read(fd: RawFd, maximum: usize) -> io::Result<KomeString> {
             io::ErrorKind::WouldBlock => {
                 let status = __kome_task_wait_readable(fd);
                 if status < 0 {
+                    if status == -libc::ECANCELED {
+                        return Ok(KomeString::new(""));
+                    }
                     return Err(io::Error::from_raw_os_error(-status));
                 }
             }
@@ -87,6 +90,9 @@ pub fn socket_write(fd: RawFd, value: &KomeString) -> io::Result<usize> {
             io::ErrorKind::WouldBlock => {
                 let status = __kome_task_wait_writable(fd);
                 if status < 0 {
+                    if status == -libc::ECANCELED {
+                        return Ok(written);
+                    }
                     return Err(io::Error::from_raw_os_error(-status));
                 }
             }

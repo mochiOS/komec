@@ -57,6 +57,7 @@ pub enum RuntimeError {
 }
 
 impl RuntimeError {
+    /// Creates an error reported by a native runtime function.
     pub fn native(message: impl Into<String>) -> Self {
         Self::Native {
             message: message.into(),
@@ -86,10 +87,12 @@ pub struct NativeRegistry {
 }
 
 impl NativeRegistry {
+    /// Creates an empty native-function registry.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Registers or replaces a native function under `name`.
     pub fn register<F>(&mut self, name: impl Into<String>, function: F)
     where
         F: Fn(&[Value]) -> Result<Value, RuntimeError> + Send + Sync + 'static,
@@ -97,6 +100,7 @@ impl NativeRegistry {
         self.functions.insert(name.into(), Box::new(function));
     }
 
+    /// Calls a registered native function.
     pub fn call(&self, name: &str, arguments: &[Value]) -> Result<Value, RuntimeError> {
         let function =
             self.functions

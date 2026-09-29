@@ -437,7 +437,11 @@ fn wait_for_io(fd: libc::c_int, writable: bool) -> libc::c_int {
     }
     suspend_current();
     crate::reactor::unregister_task(waiter);
-    0
+    if cancellation_requested(waiter) {
+        -libc::ECANCELED
+    } else {
+        0
+    }
 }
 
 /// Suspends the current task until `fd` becomes readable.
