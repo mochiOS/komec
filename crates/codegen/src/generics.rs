@@ -268,6 +268,9 @@ impl<'a> Expander<'a> {
                 named.type_arguments.clear();
                 Ok(Type::Named(named))
             }
+            Type::Named(named) if self.emitted_structs.contains_key(&named.name) => {
+                Ok(Type::Named(named))
+            }
             Type::Named(named)
                 if substitution.get(&named.name).is_none()
                     && named.type_arguments.is_empty()

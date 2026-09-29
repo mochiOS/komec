@@ -208,20 +208,27 @@ fn builds_and_runs_task_control_operations() {
         r#"
 @native("core.write_line")
 fn println(value: Number)
+fn child() -> Number { return 70 }
+fn parent() -> Number {
+    let child_task = task child()
+    return wait child_task
+}
 fn main() {
     let completed = task 5
+    let completed_value = wait completed
     cancel completed
-    println(wait completed)
+    println(completed_value)
     let values = all(task 10, task 20, task 30)
     println(values[0])
     println(values[1])
     println(values[2])
     println(race(task 40, task 50))
     println(timeout(task 60, 100))
+    println(wait task parent())
 }
 "#,
     );
-    assert_eq!(stdout, "5\n10\n20\n30\n40\n60\n");
+    assert_eq!(stdout, "5\n10\n20\n30\n40\n60\n70\n");
 }
 
 #[test]

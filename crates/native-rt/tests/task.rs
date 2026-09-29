@@ -34,6 +34,17 @@ unsafe extern "C" fn cooperative_parent(_task: u64, _captures: *const u64, execu
     result
 }
 
+unsafe extern "C" fn cooperative_timeout(_task: u64, _captures: *const u64, execute: u8) -> u64 {
+    if execute == 0 {
+        return 0;
+    }
+    let pending = __kome_task_create();
+    let state = unsafe { __kome_task_wait_timeout(pending, 1) };
+    assert_eq!(unsafe { __kome_task_release(pending) }, 1);
+    unsafe { __kome_task_dealloc(pending) };
+    u64::from(state)
+}
+
 #[test]
 fn suspends_a_waiter_and_resumes_it_after_the_dependency_completes() {
     let task =
@@ -42,6 +53,24 @@ fn suspends_a_waiter_and_resumes_it_after_the_dependency_completes() {
     unsafe {
         assert_eq!(__kome_task_wait(task), TASK_COMPLETED);
         assert_eq!(__kome_task_result(task), 42);
+        assert_eq!(__kome_task_release(task), 1);
+        __kome_task_dealloc(task);
+    }
+}
+
+#[test]
+fn timeout_suspends_the_current_task_until_the_scheduler_deadline() {
+    let captures: [u64; 0] = [];
+    let task = unsafe {
+        kome_native_rt::task::__kome_task_spawn(
+            cooperative_timeout,
+            captures.as_ptr(),
+            captures.len(),
+        )
+    };
+    unsafe {
+        assert_eq!(__kome_task_wait(task), TASK_COMPLETED);
+        assert_eq!(__kome_task_result(task), u64::from(TASK_CANCELLED));
         assert_eq!(__kome_task_release(task), 1);
         __kome_task_dealloc(task);
     }

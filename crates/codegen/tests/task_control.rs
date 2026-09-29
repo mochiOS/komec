@@ -134,3 +134,23 @@ fn main() {
         ]
     );
 }
+
+#[test]
+fn task_combinators_suspend_and_resume_inside_another_task() {
+    let values = run_and_capture(
+        r#"
+@native("test.capture")
+fn report(value: Number)
+fn controls() -> Number {
+    let values = all(task 10, task 20)
+    let winner = race(task 1, task 2)
+    let timed = timeout(task 21, 100)
+    return values[0] + winner + timed - 11
+}
+fn main() {
+    report(wait task controls())
+}
+"#,
+    );
+    assert_eq!(values, vec![Value::Number(Number::parse("21").unwrap())]);
+}

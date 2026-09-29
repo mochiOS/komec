@@ -79,6 +79,7 @@ unsafe impl Send for Fiber {}
 
 struct TaskData {
     state: TaskState,
+    cancel_requested: bool,
     result: Option<TaskResult>,
     completion_order: u64,
     waiters: Vec<u64>,
@@ -134,6 +135,14 @@ fn state(handle: u64) -> TaskState {
         .state
 }
 
+fn cancellation_requested(handle: u64) -> bool {
+    let task = unsafe { record(handle) };
+    task.data
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .cancel_requested
+}
+
 fn scheduler_signal() {
     let (generation, ready) = SCHEDULER_WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
     let mut generation = generation
@@ -185,6 +194,7 @@ fn terminal_transition(handle: u64, result: TaskResult, next: TaskState) {
         }
         data.result = Some(result);
         data.state = next;
+        data.cancel_requested = next == TaskState::Cancelled;
         if next == TaskState::Completed {
             data.completion_order = NEXT_COMPLETION.fetch_add(1, Ordering::Relaxed);
         }
@@ -208,7 +218,7 @@ unsafe extern "C" fn task_trampoline(handle: usize) {
         )
     };
     let result = unsafe { entry(handle, captures.as_ptr(), 1) };
-    if state(handle) == TaskState::CancellationRequested {
+    if cancellation_requested(handle) {
         terminal_transition(handle, TaskResult::Cancelled, TaskState::Cancelled);
     } else {
         unsafe { __kome_task_complete(handle, result) };
@@ -248,7 +258,10 @@ fn run_one() -> bool {
             .data
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !matches!(data.state, TaskState::Pending | TaskState::Runnable) {
+        if !matches!(
+            data.state,
+            TaskState::Pending | TaskState::Runnable | TaskState::CancellationRequested
+        ) {
             return true;
         }
         data.state = TaskState::Running;
@@ -278,7 +291,6 @@ fn suspend_current() {
             .data
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        data.state = TaskState::Suspended;
         data.fiber
             .as_mut()
             .expect("running task has a fiber")
@@ -288,6 +300,28 @@ fn suspend_current() {
     let scheduler_context = SCHEDULER
         .with(|scheduler| scheduler.borrow_mut().context.as_mut() as *mut libc::ucontext_t);
     unsafe { libc::swapcontext(task_context, scheduler_context) };
+}
+
+fn mark_current_suspended(handle: u64) {
+    let task = unsafe { record(handle) };
+    let mut data = task
+        .data
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    debug_assert_eq!(data.state, TaskState::Running);
+    data.state = TaskState::Suspended;
+}
+
+fn restore_current_running(handle: u64) {
+    remove_runnable(handle);
+    let task = unsafe { record(handle) };
+    let mut data = task
+        .data
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if matches!(data.state, TaskState::Suspended | TaskState::Runnable) {
+        data.state = TaskState::Running;
+    }
 }
 
 fn register_waiter(target: u64, waiter: u64) -> bool {
@@ -323,6 +357,14 @@ fn nearest_timer() -> Option<Instant> {
             .map(|timer| timer.deadline)
             .min()
     })
+}
+
+fn remove_timer(waiter: u64, target: u64, deadline: Instant) {
+    SCHEDULER.with(|scheduler| {
+        scheduler.borrow_mut().timers.retain(|timer| {
+            timer.waiter != waiter || timer.target != target || timer.deadline != deadline
+        });
+    });
 }
 
 fn process_timers() {
@@ -394,6 +436,7 @@ pub extern "C" fn __kome_task_create() -> u64 {
         references: AtomicUsize::new(1),
         data: Mutex::new(TaskData {
             state: TaskState::Pending,
+            cancel_requested: false,
             result: None,
             completion_order: 0,
             waiters: Vec::new(),
@@ -482,7 +525,7 @@ pub unsafe extern "C" fn __kome_task_fail(handle: u64, error: u64) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __kome_task_cancel(handle: u64) {
     let task = unsafe { record(handle) };
-    let cleanup = {
+    let (terminal, cleanup, waiters) = {
         let mut data = task
             .data
             .lock()
@@ -491,31 +534,34 @@ pub unsafe extern "C" fn __kome_task_cancel(handle: u64) {
             TaskState::Pending | TaskState::Runnable => {
                 data.state = TaskState::Cancelled;
                 data.result = Some(TaskResult::Cancelled);
-                data.entry.zip(data.captures.take())
+                (
+                    true,
+                    data.entry.zip(data.captures.take()),
+                    std::mem::take(&mut data.waiters),
+                )
             }
             TaskState::Running | TaskState::Suspended => {
                 data.state = TaskState::CancellationRequested;
-                None
+                data.cancel_requested = true;
+                (false, None, Vec::new())
             }
             TaskState::CancellationRequested
             | TaskState::Completed
             | TaskState::Failed
-            | TaskState::Cancelled => None,
+            | TaskState::Cancelled => (false, None, Vec::new()),
         }
     };
-    if let Some((entry, captures)) = cleanup {
+    if terminal {
         remove_runnable(handle);
-        unsafe { entry(handle, captures.as_ptr(), 0) };
-        let waiters = {
-            let mut data = task
-                .data
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            std::mem::take(&mut data.waiters)
-        };
+        if let Some((entry, captures)) = cleanup {
+            unsafe { entry(handle, captures.as_ptr(), 0) };
+        }
         task.ready.notify_all();
         wake_waiters(waiters);
     } else {
+        if state(handle) == TaskState::CancellationRequested {
+            enqueue(handle);
+        }
         scheduler_signal();
     }
 }
@@ -568,9 +614,12 @@ pub unsafe extern "C" fn __kome_task_wait(handle: u64) -> u8 {
             if current.is_terminal() {
                 return current as u8;
             }
+            mark_current_suspended(waiter);
             if register_waiter(handle, waiter) {
                 suspend_current();
                 unregister_waiter(handle, waiter);
+            } else {
+                restore_current_running(waiter);
             }
         }
     }
@@ -590,6 +639,7 @@ pub unsafe extern "C" fn __kome_task_wait_timeout(handle: u64, milliseconds: u64
         if current.is_terminal() {
             return current as u8;
         }
+        mark_current_suspended(waiter);
         if register_waiter(handle, waiter) {
             SCHEDULER.with(|scheduler| {
                 scheduler.borrow_mut().timers.push(Timer {
@@ -600,6 +650,9 @@ pub unsafe extern "C" fn __kome_task_wait_timeout(handle: u64, milliseconds: u64
             });
             suspend_current();
             unregister_waiter(handle, waiter);
+            remove_timer(waiter, handle, deadline);
+        } else {
+            restore_current_running(waiter);
         }
         return state(handle) as u8;
     }
@@ -645,10 +698,16 @@ pub unsafe extern "C" fn __kome_task_race(handles: *const u64, length: usize) ->
             return usize::MAX;
         }
         if let Some(waiter) = current_task() {
+            mark_current_suspended(waiter);
+            let mut registered = false;
             for handle in handles.iter().copied() {
-                register_waiter(handle, waiter);
+                registered |= register_waiter(handle, waiter);
             }
-            suspend_current();
+            if registered {
+                suspend_current();
+            } else {
+                restore_current_running(waiter);
+            }
             for handle in handles.iter().copied() {
                 unregister_waiter(handle, waiter);
             }
@@ -721,10 +780,7 @@ pub unsafe extern "C" fn __kome_task_error(handle: u64) -> u64 {
 /// `handle` must identify a live task.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __kome_task_is_cancelled(handle: u64) -> u8 {
-    u8::from(matches!(
-        state(handle),
-        TaskState::Cancelled | TaskState::CancellationRequested
-    ))
+    u8::from(cancellation_requested(handle) || state(handle) == TaskState::Cancelled)
 }
 
 /// Returns the unique id assigned to a task handle.
