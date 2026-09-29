@@ -53,6 +53,13 @@ impl StandardLibrary {
         let home = kome_home()?;
         let config_path = home.join("komeup.toml");
 
+        if !config_path.is_file() {
+            let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/stdlib");
+            if bundled.is_dir() {
+                return Self::load(bundled);
+            }
+        }
+
         let source = read_source(&config_path)?;
 
         let config = toml::from_str::<KomeupConfig>(&source)

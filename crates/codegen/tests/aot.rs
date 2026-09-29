@@ -67,6 +67,18 @@ fn cc_available() -> bool {
 }
 
 fn build_and_run(source: &str) -> String {
+    let output = build_program(source);
+    let invocation = Command::new(&output)
+        .output()
+        .expect("built executable should run");
+
+    let _ = std::fs::remove_file(&output);
+
+    assert_success(&invocation);
+    String::from_utf8_lossy(&invocation.stdout).into_owned()
+}
+
+fn build_program(source: &str) -> PathBuf {
     let Some(_runtime_library) = ensure_runtime_library() else {
         panic!("could not locate or build libkome_native_rt.a");
     };
@@ -79,12 +91,10 @@ fn build_and_run(source: &str) -> String {
 
     kome_aot::build_executable(&module, &output).unwrap();
 
-    let invocation = Command::new(&output)
-        .output()
-        .expect("built executable should run");
+    output
+}
 
-    let _ = std::fs::remove_file(&output);
-
+fn assert_success(invocation: &std::process::Output) {
     assert!(
         invocation.status.success(),
         "executable failed: code={:?} signal={:?} stdout={} stderr={}",
@@ -93,8 +103,6 @@ fn build_and_run(source: &str) -> String {
         String::from_utf8_lossy(&invocation.stdout),
         String::from_utf8_lossy(&invocation.stderr),
     );
-
-    String::from_utf8_lossy(&invocation.stdout).into_owned()
 }
 
 #[test]
@@ -249,6 +257,62 @@ fn main() {
 "#,
     );
     assert_eq!(stdout, "awake\n");
+}
+
+#[test]
+fn builds_and_runs_runtime_socket_io() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let source = format!(
+        r#"
+@runtime("socket")
+struct Socket
+@native("io.socket_connect")
+fn socketConnect(host: String, port: Number) -> Socket
+@native("io.socket_read")
+fn socketRead(socket: Socket, maximum: Number) -> String
+@native("io.socket_write")
+fn socketWrite(socket: Socket, value: String) -> Number
+@native("io.socket_close")
+fn socketClose(socket: Socket) -> Null
+@native("core.write_line")
+fn println(value: String)
+for Socket {{
+    fn connect(host: String, port: Number) -> Socket {{
+        return socketConnect(host, port)
+    }}
+    fn read(self, maximum: Number) -> String {{
+        return socketRead(self, maximum)
+    }}
+    fn write(self, value: String) -> Number {{
+        return socketWrite(self, value)
+    }}
+    fn close(self) {{ socketClose(self) }}
+}}
+fn main() {{
+    let socket = wait task Socket.connect("127.0.0.1", {port})
+    let written = wait task socket.write("ping")
+    println(wait task socket.read(4))
+    socket.close()
+}}
+"#
+    );
+    let output = build_program(&source);
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut connection, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4];
+        connection.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"ping");
+        connection.write_all(b"pong").unwrap();
+    });
+    let invocation = Command::new(&output)
+        .output()
+        .expect("built socket executable should run");
+    let _ = std::fs::remove_file(&output);
+    server.join().unwrap();
+    assert_success(&invocation);
+    assert_eq!(String::from_utf8_lossy(&invocation.stdout), "pong\n");
 }
 
 #[test]

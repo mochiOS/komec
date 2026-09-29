@@ -134,26 +134,15 @@ fn build_program(path: &Path, output: Option<&std::ffi::OsStr>) -> Result<(), St
 }
 
 fn load_checked_module(path: &Path) -> Result<Module, String> {
-    // let standard_library = StandardLibrary::discover()?;
-
-    // let prelude_resolution = ScopeBuilder::resolve(standard_library.prelude());
-
-    // if !prelude_resolution.errors.is_empty() {
-    //     print_resolution_errors(standard_library.prelude_path(), &prelude_resolution.errors);
-
-    //     return Err(format!(
-    //         "standard library check failed with {} semantic error(s)",
-    //         prelude_resolution.errors.len(),
-    //     ));
-    // }
+    let standard_library = stdlib::StandardLibrary::discover()?;
 
     let source = fs::read_to_string(path)
         .map_err(|error| format!("failed to read `{}`: {error}", path.display(),))?;
 
-    let module =
+    let application =
         kome_parser::parse(&source).map_err(|error| format!("{}: {error}", path.display()))?;
 
-    // let module = standard_library.merge_with_imports(application)?;
+    let module = standard_library.merge_with_imports(application)?;
 
     let resolution = ScopeBuilder::resolve(&module);
 
