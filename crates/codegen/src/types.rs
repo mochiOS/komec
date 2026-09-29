@@ -27,6 +27,8 @@ pub enum KomeType {
     Struct(usize),
     /// A runtime task. The id indexes `ModuleInfo::task_types`.
     Task(usize),
+    /// A homogeneous runtime list. The id indexes `ModuleInfo::list_types`.
+    List(usize),
     Void,
 }
 
@@ -76,7 +78,9 @@ impl KomeType {
     /// The Cranelift representation; `None` for `Void`.
     pub fn cranelift(self) -> Option<cranelift::prelude::Type> {
         match self {
-            Self::Number | Self::String | Self::Struct(_) | Self::Task(_) => Some(types::I64),
+            Self::Number | Self::String | Self::Struct(_) | Self::Task(_) | Self::List(_) => {
+                Some(types::I64)
+            }
             Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
             Self::Boolean | Self::I8 | Self::U8 | Self::Null => Some(types::I8),
@@ -100,6 +104,7 @@ impl KomeType {
                 None,
             )),
             Self::Task(_) => Err(CodegenError::new("tasks cannot cross the native ABI", None)),
+            Self::List(_) => Err(CodegenError::new("lists cannot cross the native ABI", None)),
             Self::I8
             | Self::I16
             | Self::I32
@@ -135,6 +140,7 @@ impl KomeType {
             Self::Null => "Null".into(),
             Self::Struct(id) => format!("struct#{id}"),
             Self::Task(id) => format!("Task#{id}"),
+            Self::List(id) => format!("List#{id}"),
             Self::Void => "Void".into(),
         }
     }
@@ -143,7 +149,7 @@ impl KomeType {
     pub fn is_managed(self) -> bool {
         matches!(
             self,
-            Self::Number | Self::String | Self::Struct(_) | Self::Task(_)
+            Self::Number | Self::String | Self::Struct(_) | Self::Task(_) | Self::List(_)
         )
     }
 }

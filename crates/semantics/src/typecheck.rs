@@ -30,6 +30,7 @@ fn collect_semantic_parameters(type_: &SemanticType, output: &mut Vec<String>) {
             }
         }
         SemanticType::Optional(inner) => collect_semantic_parameters(inner, output),
+        SemanticType::List(inner) => collect_semantic_parameters(inner, output),
         _ => {}
     }
 }
@@ -52,6 +53,9 @@ fn substitute_semantic(
         ),
         SemanticType::Optional(inner) => {
             SemanticType::Optional(Box::new(substitute_semantic(inner, substitutions)))
+        }
+        SemanticType::List(inner) => {
+            SemanticType::List(Box::new(substitute_semantic(inner, substitutions)))
         }
         _ => type_.clone(),
     }
@@ -80,6 +84,13 @@ fn infer_type_parameters(
                 for (formal, actual) in arguments.iter().zip(actual_arguments) {
                     infer_type_parameters(formal, actual, substitutions)?;
                 }
+            } else {
+                return Err(String::new());
+            }
+        }
+        SemanticType::List(formal) => {
+            if let SemanticType::List(actual) = actual {
+                infer_type_parameters(formal, actual, substitutions)?;
             } else {
                 return Err(String::new());
             }
@@ -119,6 +130,7 @@ pub enum SemanticType {
     Applied(String, Vec<SemanticType>),
     TypeParameter(String),
     Optional(Box<SemanticType>),
+    List(Box<SemanticType>),
     Void,
 
     /// A type that cannot be determined by the current type-checking pass.
@@ -159,6 +171,7 @@ impl SemanticType {
             ),
             Self::TypeParameter(name) => name.clone(),
             Self::Optional(inner) => format!("{}?", inner.name()),
+            Self::List(inner) => format!("{}[]", inner.name()),
             Self::Void => "Void".to_owned(),
             Self::Unknown => "<unknown>".to_owned(),
         }
@@ -1135,20 +1148,27 @@ impl TypeChecker {
             }
 
             Expression::Index(index) => {
-                self.infer_expression(&index.object, None);
+                let object = self.infer_expression(&index.object, None);
                 self.infer_expression(&index.index, None);
-
-                SemanticType::Unknown
+                match object {
+                    SemanticType::List(element) => *element,
+                    _ => SemanticType::Unknown,
+                }
             }
 
             Expression::List(list) => {
+                let mut inferred = None;
                 for element in &list.elems {
                     if let Some(element) = element {
-                        self.infer_expression(element, None);
+                        let actual = self.infer_expression(element, inferred.as_ref());
+                        if let Some(expected) = &inferred {
+                            self.check_compatible(expected, &actual, element.span());
+                        } else {
+                            inferred = Some(actual);
+                        }
                     }
                 }
-
-                SemanticType::Unknown
+                SemanticType::List(Box::new(inferred.unwrap_or(SemanticType::Unknown)))
             }
 
             Expression::Object(object) => self.infer_object_expression(object, expected),
@@ -1393,6 +1413,11 @@ impl TypeChecker {
     }
 
     fn infer_call_expression(&mut self, call: &CallExpression) -> SemanticType {
+        if let Expression::Ident(identifier) = call.callee.as_ref()
+            && matches!(identifier.name.as_str(), "all" | "race" | "timeout")
+        {
+            return self.infer_task_builtin(&identifier.name, call);
+        }
         if let Expression::Member(member) = call.callee.as_ref() {
             let static_target = if let Expression::Ident(identifier) = member.object.as_ref()
                 && self.resolve(&identifier.name).is_none()
@@ -1607,6 +1632,75 @@ impl TypeChecker {
         signature.return_type
     }
 
+    fn infer_task_builtin(&mut self, name: &str, call: &CallExpression) -> SemanticType {
+        let task_count = if name == "timeout" {
+            if call.args.len() != 2 {
+                self.errors.push(TypeCheckError {
+                    message: "`timeout` expects a Task and a millisecond duration".into(),
+                    span: call.span,
+                });
+            }
+            1
+        } else {
+            if call.args.is_empty() {
+                self.errors.push(TypeCheckError {
+                    message: format!("`{name}` requires at least one Task"),
+                    span: call.span,
+                });
+            }
+            call.args.len()
+        };
+        let mut result = None;
+        for argument in call.args.iter().take(task_count) {
+            let expression = match argument {
+                CallArg::Positional(value) => value,
+                CallArg::Named { value, .. } => value,
+            };
+            let actual = self.infer_expression(expression, None);
+            let SemanticType::Applied(task, arguments) = actual else {
+                self.errors.push(TypeCheckError {
+                    message: format!("`{name}` expects Task<T> arguments"),
+                    span: expression.span(),
+                });
+                continue;
+            };
+            if task != "Task" || arguments.len() != 1 {
+                self.errors.push(TypeCheckError {
+                    message: format!("`{name}` expects Task<T> arguments"),
+                    span: expression.span(),
+                });
+                continue;
+            }
+            let actual = arguments[0].clone();
+            if let Some(expected) = &result {
+                if !self.types_compatible(expected, &actual) {
+                    self.errors.push(TypeCheckError {
+                        message: format!("`{name}` Task result types must match"),
+                        span: expression.span(),
+                    });
+                }
+            } else {
+                result = Some(actual);
+            }
+        }
+        if name == "timeout"
+            && let Some(argument) = call.args.get(1)
+        {
+            let expression = match argument {
+                CallArg::Positional(value) => value,
+                CallArg::Named { value, .. } => value,
+            };
+            let duration = self.infer_expression(expression, Some(&SemanticType::Number));
+            self.check_compatible(&SemanticType::Number, &duration, expression.span());
+        }
+        let result = result.unwrap_or(SemanticType::Unknown);
+        if name == "all" {
+            SemanticType::List(Box::new(result))
+        } else {
+            result
+        }
+    }
+
     fn infer_component_expression(&mut self, component: &ComponentExpression) -> SemanticType {
         let Some(signature) = self.components.get(&component.name).cloned() else {
             for argument in &component.args {
@@ -1749,6 +1843,11 @@ impl TypeChecker {
             Type::Optional(optional) => SemanticType::Optional(Box::new(
                 Self::type_from_annotation_with(&optional.inner, parameters),
             )),
+
+            Type::List(list) => SemanticType::List(Box::new(Self::type_from_annotation_with(
+                &list.element,
+                parameters,
+            ))),
 
             _ => SemanticType::Unknown,
         }

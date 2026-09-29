@@ -68,3 +68,44 @@ fn types_cancel_as_void_and_rejects_non_tasks() {
             .any(|error| error.message.contains("`cancel` expects Task<T>"))
     );
 }
+
+#[test]
+fn types_all_race_and_timeout_builtins() {
+    let module = kome_parser::parse(
+        r#"
+fn number() -> Number { return 1 }
+fn main() {
+    let a = task number()
+    let b = task number()
+    let values = all(a, b)
+    let first: Number = values[0]
+    let winner: Number = race(a, b)
+    let bounded: Number = timeout(a, 50)
+}
+"#,
+    )
+    .unwrap();
+    assert!(ScopeBuilder::resolve(&module).errors.is_empty());
+    let result = TypeChecker::check(&module);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+}
+
+#[test]
+fn diagnoses_invalid_task_combinators() {
+    for (source, expected) in [
+        ("fn main() { all() }", "requires at least one Task"),
+        ("fn main() { race() }", "requires at least one Task"),
+        ("fn main() { all(1) }", "expects Task<T>"),
+        ("fn main() { race(task 1, task \"x\") }", "types must match"),
+        ("fn main() { timeout(task 1, \"x\") }", "expected Number"),
+    ] {
+        let module = kome_parser::parse(source).unwrap();
+        assert!(
+            TypeChecker::check(&module)
+                .errors
+                .iter()
+                .any(|error| error.message.contains(expected)),
+            "missing `{expected}` for {source}"
+        );
+    }
+}

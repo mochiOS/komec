@@ -8,6 +8,10 @@ use kome_ast::declarations::Module as KomeModule;
 use kome_codegen::compile::{analyze_module, compile_module, mangled_name};
 use kome_codegen::{CodegenError, CodegenResult};
 use kome_native_rt::__kome_native_call;
+use kome_native_rt::list::{
+    __kome_list_alloc, __kome_list_dealloc, __kome_list_len, __kome_list_release,
+    __kome_list_retain,
+};
 use kome_native_rt::number::{
     __kome_number_add, __kome_number_compare, __kome_number_mul, __kome_number_parse,
     __kome_number_release, __kome_number_retain, __kome_number_sub,
@@ -17,9 +21,10 @@ use kome_native_rt::struct_value::{
     __kome_struct_alloc, __kome_struct_dealloc, __kome_struct_release, __kome_struct_retain,
 };
 use kome_native_rt::task::{
-    __kome_task_cancel, __kome_task_complete, __kome_task_create, __kome_task_dealloc,
-    __kome_task_release, __kome_task_result, __kome_task_retain, __kome_task_start,
-    __kome_task_wait,
+    __kome_task_all, __kome_task_cancel, __kome_task_complete, __kome_task_create,
+    __kome_task_dealloc, __kome_task_race, __kome_task_release, __kome_task_require_completed,
+    __kome_task_require_race_winner, __kome_task_result, __kome_task_retain, __kome_task_start,
+    __kome_task_wait, __kome_task_wait_timeout,
 };
 
 /// Compiles `module_ast` and runs `entry` in the current process.
@@ -65,7 +70,7 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    let symbols: [(&str, *const u8); 24] = [
+    let symbols: [(&str, *const u8); 34] = [
         (
             "__kome_native_call",
             __kome_native_call as *const () as *const u8,
@@ -162,6 +167,40 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
             "__kome_task_dealloc",
             __kome_task_dealloc as *const () as *const u8,
         ),
+        (
+            "__kome_task_race",
+            __kome_task_race as *const () as *const u8,
+        ),
+        ("__kome_task_all", __kome_task_all as *const () as *const u8),
+        (
+            "__kome_task_require_completed",
+            __kome_task_require_completed as *const () as *const u8,
+        ),
+        (
+            "__kome_task_require_race_winner",
+            __kome_task_require_race_winner as *const () as *const u8,
+        ),
+        (
+            "__kome_task_wait_timeout",
+            __kome_task_wait_timeout as *const () as *const u8,
+        ),
+        (
+            "__kome_list_alloc",
+            __kome_list_alloc as *const () as *const u8,
+        ),
+        (
+            "__kome_list_retain",
+            __kome_list_retain as *const () as *const u8,
+        ),
+        (
+            "__kome_list_release",
+            __kome_list_release as *const () as *const u8,
+        ),
+        (
+            "__kome_list_dealloc",
+            __kome_list_dealloc as *const () as *const u8,
+        ),
+        ("__kome_list_len", __kome_list_len as *const () as *const u8),
     ];
 
     for (name, pointer) in symbols {

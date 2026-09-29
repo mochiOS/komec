@@ -91,6 +91,13 @@ impl ScopeBuilder {
     fn visit_sources(&mut self, sources: &[(SourceId, &Module)], builtins: &[&str]) {
         self.enter_scope(ScopeKind::Module);
 
+        for name in ["all", "race", "timeout"] {
+            self.declare(
+                Span::new(0, 0),
+                Symbol::BuiltinFunction { name: name.into() },
+            );
+        }
+
         for name in builtins {
             self.declare(
                 Span::new(0, 0),

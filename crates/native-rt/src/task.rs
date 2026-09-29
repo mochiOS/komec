@@ -5,10 +5,14 @@
 //! this ABI. Waiting is expressed as a condition-variable boundary so a later
 //! cooperative executor can suspend and wake waiters without changing codegen.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::Duration;
 
 static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1);
+static NEXT_COMPLETION: AtomicU64 = AtomicU64::new(1);
+static SCHEDULER_WAKE: OnceLock<(Mutex<u64>, Condvar)> = OnceLock::new();
 
 /// Stable identifier assigned to one runtime task.
 pub type TaskId = u64;
@@ -50,6 +54,7 @@ pub enum TaskResult {
 struct TaskData {
     state: TaskState,
     result: Option<TaskResult>,
+    completion_order: u64,
 }
 
 #[derive(Debug)]
@@ -73,6 +78,7 @@ pub extern "C" fn __kome_task_create() -> u64 {
         data: Mutex::new(TaskData {
             state: TaskState::Pending,
             result: None,
+            completion_order: 0,
         }),
         ready: Condvar::new(),
     })) as u64
@@ -110,7 +116,9 @@ pub unsafe extern "C" fn __kome_task_complete(handle: u64, result: u64) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     data.result = Some(TaskResult::Completed(result));
     data.state = TaskState::Completed;
+    data.completion_order = NEXT_COMPLETION.fetch_add(1, Ordering::Relaxed);
     task.ready.notify_all();
+    wake_scheduler();
 }
 
 /// Stores a runtime error code and wakes every waiter.
@@ -128,6 +136,7 @@ pub unsafe extern "C" fn __kome_task_fail(handle: u64, error: u64) {
     data.result = Some(TaskResult::Failed(error));
     data.state = TaskState::Failed;
     task.ready.notify_all();
+    wake_scheduler();
 }
 
 /// Cancels a task that has not completed and wakes every waiter.
@@ -147,6 +156,7 @@ pub unsafe extern "C" fn __kome_task_cancel(handle: u64) {
             data.state = TaskState::Cancelled;
             data.result = Some(TaskResult::Cancelled);
             task.ready.notify_all();
+            wake_scheduler();
         }
         TaskState::Running => data.state = TaskState::CancellationRequested,
         TaskState::CancellationRequested
@@ -154,6 +164,185 @@ pub unsafe extern "C" fn __kome_task_cancel(handle: u64) {
         | TaskState::Failed
         | TaskState::Cancelled => {}
     }
+}
+
+fn wake_scheduler() {
+    let (generation, ready) = SCHEDULER_WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
+    let mut generation = generation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *generation = generation.wrapping_add(1);
+    ready.notify_all();
+}
+
+/// Returns a task's current lifecycle state without waiting.
+///
+/// # Safety
+///
+/// `handle` must identify a live task.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_task_state(handle: u64) -> u8 {
+    let task = unsafe { record(handle) };
+    task.data
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .state as u8
+}
+
+/// Waits up to `milliseconds` for a task and returns its resulting state.
+///
+/// A deadline expiration requests cancellation before returning.
+///
+/// # Safety
+///
+/// `handle` must identify a live task.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_task_wait_timeout(handle: u64, milliseconds: u64) -> u8 {
+    let task = unsafe { record(handle) };
+    let data = task
+        .data
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (data, timed_out) = task
+        .ready
+        .wait_timeout_while(data, Duration::from_millis(milliseconds), |data| {
+            matches!(
+                data.state,
+                TaskState::Pending | TaskState::Running | TaskState::CancellationRequested
+            )
+        })
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = data.state;
+    drop(data);
+    if timed_out.timed_out()
+        && matches!(
+            state,
+            TaskState::Pending | TaskState::Running | TaskState::CancellationRequested
+        )
+    {
+        unsafe { __kome_task_cancel(handle) };
+        return unsafe { __kome_task_state(handle) };
+    }
+    state as u8
+}
+
+/// Waits for and returns the index of the first successfully completed task.
+///
+/// `usize::MAX` is returned when every task is failed or cancelled.
+///
+/// # Safety
+///
+/// `handles` must point to `length` live task handles for the duration of the
+/// call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_task_race(handles: *const u64, length: usize) -> usize {
+    let handles = unsafe { std::slice::from_raw_parts(handles, length) };
+    loop {
+        let (generation, ready) = SCHEDULER_WAKE.get_or_init(|| (Mutex::new(0), Condvar::new()));
+        let observed = *generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut winner = None;
+        let mut active = false;
+        for (index, handle) in handles.iter().copied().enumerate() {
+            let task = unsafe { record(handle) };
+            let data = task
+                .data
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match data.state {
+                TaskState::Completed => {
+                    if winner.is_none_or(|(_, order)| data.completion_order < order) {
+                        winner = Some((index, data.completion_order));
+                    }
+                }
+                TaskState::Pending | TaskState::Running | TaskState::CancellationRequested => {
+                    active = true;
+                }
+                TaskState::Cancelled | TaskState::Failed => {}
+            }
+        }
+        if let Some((index, _)) = winner {
+            for (loser, handle) in handles.iter().copied().enumerate() {
+                if loser != index {
+                    unsafe { __kome_task_cancel(handle) };
+                }
+            }
+            return index;
+        }
+        if !active {
+            return usize::MAX;
+        }
+        let mut current = generation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *current == observed {
+            current = ready
+                .wait(current)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+/// Waits for all tasks, cancelling the remainder after the first failure.
+///
+/// The returned value is [`TASK_COMPLETED`] on success or the terminal state
+/// that prevented the aggregate from completing.
+///
+/// # Safety
+///
+/// `handles` must point to `length` live task handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_task_all(handles: *const u64, length: usize) -> u8 {
+    let handles = unsafe { std::slice::from_raw_parts(handles, length) };
+    for (index, handle) in handles.iter().copied().enumerate() {
+        let state = unsafe { __kome_task_wait(handle) };
+        if state != TASK_COMPLETED {
+            for other in handles.iter().copied().skip(index + 1) {
+                unsafe { __kome_task_cancel(other) };
+            }
+            return state;
+        }
+    }
+    TASK_COMPLETED
+}
+
+/// Propagates a non-successful task operation as a runtime error.
+///
+/// `operation` is `0` for wait, `1` for all, `2` for race, and `3` for
+/// timeout. Successful states return normally; errors terminate through the
+/// same diagnostic path used by other unrecoverable Kome runtime errors.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_task_require_completed(state: u8, operation: u8) {
+    if state == TASK_COMPLETED {
+        return;
+    }
+    let operation = match operation {
+        1 => "all",
+        2 => "race",
+        3 => "timeout",
+        _ => "wait",
+    };
+    let reason = match state {
+        TASK_CANCELLED | TASK_CANCELLATION_REQUESTED => "task was cancelled",
+        TASK_FAILED => "task failed",
+        _ => "task did not complete",
+    };
+    let _ = writeln!(std::io::stderr(), "runtime error: {operation}: {reason}");
+    std::process::exit(1);
+}
+
+/// Validates that a race produced a successful winner and returns its index.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_task_require_race_winner(index: usize) -> usize {
+    if index != usize::MAX {
+        return index;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "runtime error: race: every task failed or was cancelled"
+    );
+    std::process::exit(1);
 }
 
 /// Returns whether cancellation was requested or completed for a task.

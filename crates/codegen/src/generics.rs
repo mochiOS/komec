@@ -616,6 +616,39 @@ impl<'a> Expander<'a> {
                 }))
             }
             Expression::Call(call) => {
+                if let Expression::Ident(identifier) = call.callee.as_ref()
+                    && matches!(identifier.name.as_str(), "all" | "race" | "timeout")
+                {
+                    let name = identifier.name.clone();
+                    let mut task_result = None;
+                    for argument in &mut call.args {
+                        let type_ = self.rewrite_expression(
+                            match argument {
+                                CallArg::Positional(value) => value,
+                                CallArg::Named { value, .. } => value,
+                            },
+                            environment,
+                            substitution,
+                            None,
+                        )?;
+                        if task_result.is_none()
+                            && let Type::Named(named) = type_
+                            && named.name == "Task"
+                            && named.type_arguments.len() == 1
+                        {
+                            task_result = named.type_arguments.into_iter().next();
+                        }
+                    }
+                    let result = task_result.unwrap_or_else(|| unknown_type(call.span));
+                    return Ok(if name == "all" {
+                        Type::List(kome_ast::types::ListType {
+                            span: call.span,
+                            element: Box::new(result),
+                        })
+                    } else {
+                        result
+                    });
+                }
                 if let Expression::Member(member) = call.callee.as_mut()
                     && let Expression::Ident(identifier) = member.object.as_mut()
                     && self.structs.contains_key(&identifier.name)

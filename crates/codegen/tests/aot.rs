@@ -203,6 +203,28 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_task_control_operations() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+fn main() {
+    let completed = task 5
+    cancel completed
+    println(wait completed)
+    let values = all(task 10, task 20, task 30)
+    println(values[0])
+    println(values[1])
+    println(values[2])
+    println(race(task 40, task 50))
+    println(timeout(task 60, 100))
+}
+"#,
+    );
+    assert_eq!(stdout, "5\n10\n20\n30\n40\n60\n");
+}
+
+#[test]
 fn built_binary_has_no_rust_runtime_dependency() {
     // The point of this check is that the binary links only against system
     // libraries; running it in a minimal environment proves the runtime is

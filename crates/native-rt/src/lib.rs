@@ -11,6 +11,7 @@
 //! and AOT builds (archived into `libkome_native_rt.a` and linked into the
 //! produced executable).
 
+pub mod list;
 pub mod number;
 pub mod string;
 pub mod struct_value;

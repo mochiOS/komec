@@ -68,6 +68,7 @@ pub struct ModuleInfo {
     struct_ids: HashMap<String, usize>,
     implementations: Vec<TypeImplementation>,
     task_types: RefCell<Vec<KomeType>>,
+    list_types: RefCell<Vec<KomeType>>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +123,7 @@ impl ModuleInfo {
         match ty {
             KomeType::Struct(id) => self.structs[id].name.clone(),
             KomeType::Task(id) => format!("Task<{}>", self.type_name(self.task_result(id))),
+            KomeType::List(id) => format!("{}[]", self.type_name(self.list_element(id))),
             _ => ty.name(),
         }
     }
@@ -140,6 +142,22 @@ impl ModuleInfo {
 
     fn task_result(&self, id: usize) -> KomeType {
         self.task_types.borrow()[id]
+    }
+
+    fn list_type(&self, element: KomeType) -> KomeType {
+        let mut list_types = self.list_types.borrow_mut();
+        let id = list_types
+            .iter()
+            .position(|existing| *existing == element)
+            .unwrap_or_else(|| {
+                list_types.push(element);
+                list_types.len() - 1
+            });
+        KomeType::List(id)
+    }
+
+    fn list_element(&self, id: usize) -> KomeType {
+        self.list_types.borrow()[id]
     }
 
     fn implementation_member(
@@ -215,6 +233,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
     let mut runtime_types = HashMap::new();
     let mut struct_ids = HashMap::new();
     let task_types = RefCell::new(Vec::new());
+    let list_types = RefCell::new(Vec::new());
 
     for declaration in &module.declarations {
         let Declaration::Struct(struct_decl) = declaration else {
@@ -449,6 +468,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         struct_ids,
         implementations,
         task_types,
+        list_types,
     })
 }
 
@@ -685,6 +705,16 @@ struct ForeignFunctions {
     task_retain: FuncId,
     task_release: FuncId,
     task_dealloc: FuncId,
+    task_race: FuncId,
+    task_wait_timeout: FuncId,
+    task_all: FuncId,
+    task_require_completed: FuncId,
+    task_require_race_winner: FuncId,
+    list_alloc: FuncId,
+    list_retain: FuncId,
+    list_release: FuncId,
+    list_dealloc: FuncId,
+    list_len: FuncId,
 }
 
 impl ForeignFunctions {
@@ -787,6 +817,47 @@ impl ForeignFunctions {
             Some(types::I8),
         )?;
         let task_dealloc = declare_foreign(module, "__kome_task_dealloc", &[types::I64], None)?;
+        let task_race = declare_foreign(
+            module,
+            "__kome_task_race",
+            &[types::I64, types::I64],
+            Some(types::I64),
+        )?;
+        let task_wait_timeout = declare_foreign(
+            module,
+            "__kome_task_wait_timeout",
+            &[types::I64, types::I64],
+            Some(types::I8),
+        )?;
+        let task_all = declare_foreign(
+            module,
+            "__kome_task_all",
+            &[types::I64, types::I64],
+            Some(types::I8),
+        )?;
+        let task_require_completed = declare_foreign(
+            module,
+            "__kome_task_require_completed",
+            &[types::I8, types::I8],
+            None,
+        )?;
+        let task_require_race_winner = declare_foreign(
+            module,
+            "__kome_task_require_race_winner",
+            &[types::I64],
+            Some(types::I64),
+        )?;
+        let list_alloc =
+            declare_foreign(module, "__kome_list_alloc", &[types::I64], Some(types::I64))?;
+        let list_retain = declare_foreign(module, "__kome_list_retain", &[types::I64], None)?;
+        let list_release = declare_foreign(
+            module,
+            "__kome_list_release",
+            &[types::I64],
+            Some(types::I8),
+        )?;
+        let list_dealloc = declare_foreign(module, "__kome_list_dealloc", &[types::I64], None)?;
+        let list_len = declare_foreign(module, "__kome_list_len", &[types::I64], Some(types::I64))?;
 
         Ok(Self {
             native_call,
@@ -813,6 +884,16 @@ impl ForeignFunctions {
             task_retain,
             task_release,
             task_dealloc,
+            task_race,
+            task_wait_timeout,
+            task_all,
+            task_require_completed,
+            task_require_race_winner,
+            list_alloc,
+            list_retain,
+            list_release,
+            list_dealloc,
+            list_len,
         })
     }
 }
@@ -1215,6 +1296,11 @@ impl ReadCounter {
 
             Expression::Member(member) => self.visit_expression(&member.object),
 
+            Expression::Index(index) => {
+                self.visit_expression(&index.object);
+                self.visit_expression(&index.index);
+            }
+
             Expression::Struct(struct_) => {
                 for field in &struct_.fields {
                     self.visit_expression(&field.value);
@@ -1512,6 +1598,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::Member(member) => self.evaluate_member(member),
 
+            Expression::Index(index) => self.evaluate_index(index),
+
             other => Err(CodegenError::at(
                 format!(
                     "expression `{}` is not supported yet",
@@ -1572,7 +1660,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let handle = task.expect_value(wait.argument.span())?;
         let wait_fn =
             Module::declare_func_in_func(self.module, self.foreign.task_wait, self.builder.func);
-        self.builder.ins().call(wait_fn, &[handle]);
+        let wait_call = self.builder.ins().call(wait_fn, &[handle]);
+        let state = self.builder.inst_results(wait_call)[0];
+        self.require_task_completed(state, 0);
         let result_fn =
             Module::declare_func_in_func(self.module, self.foreign.task_result, self.builder.func);
         let call = self.builder.ins().call(result_fn, &[handle]);
@@ -1620,6 +1710,16 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .bitcast(types::I64, MachMemFlags::new(), value),
             _ => value,
         }
+    }
+
+    fn require_task_completed(&mut self, state: ir::Value, operation: i64) {
+        let operation = self.builder.ins().iconst(types::I8, operation);
+        let require = Module::declare_func_in_func(
+            self.module,
+            self.foreign.task_require_completed,
+            self.builder.func,
+        );
+        self.builder.ins().call(require, &[state, operation]);
     }
 
     fn task_slot_to_value(&mut self, slot: ir::Value, kome_type: KomeType) -> ir::Value {
@@ -2042,6 +2142,54 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         Ok(TypedValue::some(value, field.kome_type))
     }
 
+    fn evaluate_index(
+        &mut self,
+        index: &kome_ast::expressions::IndexExpression,
+    ) -> CodegenResult<TypedValue> {
+        let object = self.evaluate(&index.object)?;
+        let KomeType::List(id) = object.kome_type else {
+            return Err(CodegenError::at(
+                "indexing expects a List",
+                index.object.span(),
+            ));
+        };
+        let Expression::Literal(LiteralExpression {
+            kind: LiteralKind::Number(number),
+            ..
+        }) = index.index.as_ref()
+        else {
+            return Err(CodegenError::at(
+                "list indices must currently be integer literals",
+                index.index.span(),
+            ));
+        };
+        let index_value = number.0.parse::<i32>().map_err(|_| {
+            CodegenError::at(
+                "list index must be a non-negative integer",
+                index.index.span(),
+            )
+        })?;
+        if index_value < 0 {
+            return Err(CodegenError::at(
+                "list index must be a non-negative integer",
+                index.index.span(),
+            ));
+        }
+        let element_type = self.info.list_element(id);
+        let slot = self.builder.ins().load(
+            types::I64,
+            MachMemFlags::new(),
+            object.expect_value(index.object.span())?,
+            index_value * 8,
+        );
+        let value = self.task_slot_to_value(slot, element_type);
+        if element_type.is_managed() {
+            self.retain_managed(value, element_type);
+        }
+        self.release_owned_temporary(object, index.object.span())?;
+        Ok(TypedValue::some(value, element_type))
+    }
+
     fn release_owned_temporary(&mut self, value: TypedValue, span: Span) -> CodegenResult<()> {
         if value.kome_type.is_managed() && value.ownership == ValueOwnership::Owned {
             self.release_managed(value.expect_value(span)?, value.kome_type);
@@ -2194,7 +2342,241 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         }
     }
 
+    fn evaluate_task_arguments(
+        &mut self,
+        name: &str,
+        call: &CallExpression,
+    ) -> CodegenResult<(Vec<TypedValue>, KomeType)> {
+        if call.args.is_empty() {
+            return Err(CodegenError::at(
+                format!("`{name}` requires at least one Task"),
+                call.span,
+            ));
+        }
+        let mut tasks = Vec::with_capacity(call.args.len());
+        let mut result_type = None;
+        for argument in &call.args {
+            let expression = match argument {
+                CallArg::Positional(value) => value,
+                CallArg::Named { span, .. } => {
+                    return Err(CodegenError::at("named arguments are not supported", *span));
+                }
+            };
+            let task = self.evaluate(expression)?;
+            let KomeType::Task(id) = task.kome_type else {
+                return Err(CodegenError::at(
+                    format!("`{name}` expects Task<T> arguments"),
+                    expression.span(),
+                ));
+            };
+            let actual = self.info.task_result(id);
+            if let Some(expected) = result_type {
+                if expected != actual {
+                    return Err(CodegenError::at(
+                        format!("`{name}` Task result types must match"),
+                        expression.span(),
+                    ));
+                }
+            } else {
+                result_type = Some(actual);
+            }
+            tasks.push(task);
+        }
+        Ok((tasks, result_type.expect("nonempty task arguments")))
+    }
+
+    fn wait_task_value(
+        &mut self,
+        task: TypedValue,
+        result_type: KomeType,
+        span: Span,
+    ) -> CodegenResult<ir::Value> {
+        let handle = task.expect_value(span)?;
+        let wait =
+            Module::declare_func_in_func(self.module, self.foreign.task_wait, self.builder.func);
+        let wait_call = self.builder.ins().call(wait, &[handle]);
+        let state = self.builder.inst_results(wait_call)[0];
+        self.require_task_completed(state, 0);
+        let result =
+            Module::declare_func_in_func(self.module, self.foreign.task_result, self.builder.func);
+        let call = self.builder.ins().call(result, &[handle]);
+        let value = self.task_slot_to_value(self.builder.inst_results(call)[0], result_type);
+        if result_type.is_managed() {
+            self.retain_managed(value, result_type);
+        }
+        self.release_owned_temporary(task, span)?;
+        Ok(value)
+    }
+
+    fn evaluate_all(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
+        let (tasks, result_type) = self.evaluate_task_arguments("all", call)?;
+        let length = self.builder.ins().iconst(types::I64, tasks.len() as i64);
+        let handles = self.builder.create_sized_stack_slot(StackSlotData {
+            kind: cranelift::codegen::ir::StackSlotKind::ExplicitSlot,
+            size: (tasks.len() * 8) as StackSize,
+            align_shift: 3,
+            key: None,
+        });
+        let buffer =
+            self.builder
+                .ins()
+                .stack_addr(self.module.target_config().pointer_type(), handles, 0);
+        for (index, task) in tasks.iter().enumerate() {
+            self.builder.ins().store(
+                MachMemFlags::new(),
+                task.expect_value(call.span)?,
+                buffer,
+                (index * 8) as i32,
+            );
+        }
+        let all =
+            Module::declare_func_in_func(self.module, self.foreign.task_all, self.builder.func);
+        let all_call = self.builder.ins().call(all, &[buffer, length]);
+        let state = self.builder.inst_results(all_call)[0];
+        self.require_task_completed(state, 1);
+        let alloc =
+            Module::declare_func_in_func(self.module, self.foreign.list_alloc, self.builder.func);
+        let allocation = self.builder.ins().call(alloc, &[length]);
+        let list = self.builder.inst_results(allocation)[0];
+        for (index, task) in tasks.into_iter().enumerate() {
+            let value = self.wait_task_value(task, result_type, call.span)?;
+            let slot = self.value_to_task_slot(value, result_type);
+            self.builder
+                .ins()
+                .store(MachMemFlags::new(), slot, list, (index * 8) as i32);
+        }
+        Ok(TypedValue::some(list, self.info.list_type(result_type)))
+    }
+
+    fn evaluate_race(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
+        let (tasks, result_type) = self.evaluate_task_arguments("race", call)?;
+        let slot = self.builder.create_sized_stack_slot(StackSlotData {
+            kind: cranelift::codegen::ir::StackSlotKind::ExplicitSlot,
+            size: (tasks.len() * 8) as StackSize,
+            align_shift: 3,
+            key: None,
+        });
+        let buffer =
+            self.builder
+                .ins()
+                .stack_addr(self.module.target_config().pointer_type(), slot, 0);
+        for (index, task) in tasks.iter().enumerate() {
+            self.builder.ins().store(
+                MachMemFlags::new(),
+                task.expect_value(call.span)?,
+                buffer,
+                (index * 8) as i32,
+            );
+        }
+        let length = self.builder.ins().iconst(types::I64, tasks.len() as i64);
+        let race =
+            Module::declare_func_in_func(self.module, self.foreign.task_race, self.builder.func);
+        let race_call = self.builder.ins().call(race, &[buffer, length]);
+        let winner = self.builder.inst_results(race_call)[0];
+        let require = Module::declare_func_in_func(
+            self.module,
+            self.foreign.task_require_race_winner,
+            self.builder.func,
+        );
+        let require_call = self.builder.ins().call(require, &[winner]);
+        let winner = self.builder.inst_results(require_call)[0];
+        let offset = self.builder.ins().imul_imm_u(winner, 8);
+        let address = self.builder.ins().iadd(buffer, offset);
+        let handle = self
+            .builder
+            .ins()
+            .load(types::I64, MachMemFlags::new(), address, 0);
+        let result =
+            Module::declare_func_in_func(self.module, self.foreign.task_result, self.builder.func);
+        let result_call = self.builder.ins().call(result, &[handle]);
+        let value = self.task_slot_to_value(self.builder.inst_results(result_call)[0], result_type);
+        if result_type.is_managed() {
+            self.retain_managed(value, result_type);
+        }
+        let cancel =
+            Module::declare_func_in_func(self.module, self.foreign.task_cancel, self.builder.func);
+        for task in tasks {
+            self.builder
+                .ins()
+                .call(cancel, &[task.expect_value(call.span)?]);
+            self.release_owned_temporary(task, call.span)?;
+        }
+        Ok(TypedValue::some(value, result_type))
+    }
+
+    fn evaluate_timeout(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
+        if call.args.len() != 2 {
+            return Err(CodegenError::at(
+                "`timeout` expects a Task and a millisecond duration",
+                call.span,
+            ));
+        }
+        let task_expression = match &call.args[0] {
+            CallArg::Positional(value) => value,
+            CallArg::Named { span, .. } => {
+                return Err(CodegenError::at("named arguments are not supported", *span));
+            }
+        };
+        let duration_expression = match &call.args[1] {
+            CallArg::Positional(value) => value,
+            CallArg::Named { span, .. } => {
+                return Err(CodegenError::at("named arguments are not supported", *span));
+            }
+        };
+        let task = self.evaluate(task_expression)?;
+        let KomeType::Task(id) = task.kome_type else {
+            return Err(CodegenError::at(
+                "`timeout` expects Task<T>",
+                task_expression.span(),
+            ));
+        };
+        let Expression::Literal(LiteralExpression {
+            kind: LiteralKind::Number(duration),
+            ..
+        }) = duration_expression
+        else {
+            return Err(CodegenError::at(
+                "timeout duration must be a non-negative integer literal in milliseconds",
+                duration_expression.span(),
+            ));
+        };
+        let milliseconds = duration.0.parse::<i64>().map_err(|_| {
+            CodegenError::at(
+                "timeout duration must be a non-negative integer literal in milliseconds",
+                duration_expression.span(),
+            )
+        })?;
+        let handle = task.expect_value(task_expression.span())?;
+        let duration = self.builder.ins().iconst(types::I64, milliseconds);
+        let wait = Module::declare_func_in_func(
+            self.module,
+            self.foreign.task_wait_timeout,
+            self.builder.func,
+        );
+        let wait_call = self.builder.ins().call(wait, &[handle, duration]);
+        let state = self.builder.inst_results(wait_call)[0];
+        self.require_task_completed(state, 3);
+        let result_type = self.info.task_result(id);
+        let result =
+            Module::declare_func_in_func(self.module, self.foreign.task_result, self.builder.func);
+        let result_call = self.builder.ins().call(result, &[handle]);
+        let value = self.task_slot_to_value(self.builder.inst_results(result_call)[0], result_type);
+        if result_type.is_managed() {
+            self.retain_managed(value, result_type);
+        }
+        self.release_owned_temporary(task, task_expression.span())?;
+        Ok(TypedValue::some(value, result_type))
+    }
+
     fn evaluate_call(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
+        if let Expression::Ident(identifier) = call.callee.as_ref() {
+            match identifier.name.as_str() {
+                "all" => return self.evaluate_all(call),
+                "race" => return self.evaluate_race(call),
+                "timeout" => return self.evaluate_timeout(call),
+                _ => {}
+            }
+        }
         if let Expression::Member(member) = call.callee.as_ref() {
             return self.evaluate_method_call(member, call);
         }
@@ -2564,7 +2946,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     return Err(CodegenError::new("parameters cannot have type Void", None));
                 }
 
-                KomeType::Struct(_) | KomeType::Task(_) => {
+                KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) => {
                     return Err(CodegenError::new(
                         "managed aggregate values cannot cross the native ABI",
                         None,
@@ -2607,7 +2989,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
 
-            KomeType::Struct(_) | KomeType::Task(_) => {
+            KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) => {
                 return Err(CodegenError::new(
                     "managed aggregate values cannot cross the native ABI",
                     None,
@@ -2665,6 +3047,10 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             )),
             KomeType::Task(_) => Err(CodegenError::new(
                 "Task cannot be used without an initializer",
+                None,
+            )),
+            KomeType::List(_) => Err(CodegenError::new(
+                "List cannot be used without an initializer",
                 None,
             )),
         }
@@ -2733,6 +3119,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             KomeType::String => self.foreign.string_retain,
             KomeType::Struct(_) => self.foreign.struct_retain,
             KomeType::Task(_) => self.foreign.task_retain,
+            KomeType::List(_) => self.foreign.list_retain,
             _ => return,
         };
 
@@ -2750,6 +3137,10 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
             KomeType::Task(id) => {
                 self.release_task(value, id);
+                return;
+            }
+            KomeType::List(id) => {
+                self.release_list(value, id);
                 return;
             }
             _ => return,
@@ -2843,6 +3234,65 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         self.builder.seal_block(deallocate);
         let dealloc =
             Module::declare_func_in_func(self.module, self.foreign.task_dealloc, self.builder.func);
+        self.builder.ins().call(dealloc, &[value]);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+    }
+
+    fn release_list(&mut self, value: ir::Value, id: usize) {
+        let release =
+            Module::declare_func_in_func(self.module, self.foreign.list_release, self.builder.func);
+        let call = self.builder.ins().call(release, &[value]);
+        let is_last = self.builder.inst_results(call)[0];
+        let destroy = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.ins().brif(is_last, destroy, &[], done, &[]);
+        self.builder.switch_to_block(destroy);
+        self.builder.seal_block(destroy);
+        let element_type = self.info.list_element(id);
+        if element_type.is_managed() {
+            let len_fn =
+                Module::declare_func_in_func(self.module, self.foreign.list_len, self.builder.func);
+            let len_call = self.builder.ins().call(len_fn, &[value]);
+            let length = self.builder.inst_results(len_call)[0];
+            let loop_block = self.builder.create_block();
+            let release_element = self.builder.create_block();
+            let deallocate = self.builder.create_block();
+            self.builder.append_block_param(loop_block, types::I64);
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.builder
+                .ins()
+                .jump(loop_block, &[ir::BlockArg::Value(zero)]);
+            self.builder.switch_to_block(loop_block);
+            let index = self.builder.block_params(loop_block)[0];
+            let more = self
+                .builder
+                .ins()
+                .icmp(IntCC::UnsignedLessThan, index, length);
+            self.builder
+                .ins()
+                .brif(more, release_element, &[], deallocate, &[]);
+            self.builder.switch_to_block(release_element);
+            self.builder.seal_block(release_element);
+            let offset = self.builder.ins().imul_imm_u(index, 8);
+            let address = self.builder.ins().iadd(value, offset);
+            let slot = self
+                .builder
+                .ins()
+                .load(types::I64, MachMemFlags::new(), address, 0);
+            let element = self.task_slot_to_value(slot, element_type);
+            self.release_managed(element, element_type);
+            let next = self.builder.ins().iadd_imm_u(index, 1);
+            self.builder
+                .ins()
+                .jump(loop_block, &[ir::BlockArg::Value(next)]);
+            self.builder.seal_block(loop_block);
+            self.builder.switch_to_block(deallocate);
+            self.builder.seal_block(deallocate);
+        }
+        let dealloc =
+            Module::declare_func_in_func(self.module, self.foreign.list_dealloc, self.builder.func);
         self.builder.ins().call(dealloc, &[value]);
         self.builder.ins().jump(done, &[]);
         self.builder.switch_to_block(done);
