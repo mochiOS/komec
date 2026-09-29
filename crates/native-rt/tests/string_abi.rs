@@ -1,6 +1,6 @@
 use kome_native_rt::string::{
-    __kome_string_compare, __kome_string_concat, __kome_string_create,
-    __kome_string_release, KomeString,
+    __kome_string_compare, __kome_string_concat, __kome_string_create, __kome_string_release,
+    KomeString,
 };
 
 fn create_raw(value: &str) -> u64 {

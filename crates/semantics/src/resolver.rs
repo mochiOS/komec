@@ -296,7 +296,6 @@ impl ScopeBuilder {
                 self.visit_type(&field.type_);
             }
         }
-
     }
 
     fn visit_for_declaration(&mut self, declaration: &ForDeclaration) {
