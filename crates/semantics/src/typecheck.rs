@@ -133,6 +133,7 @@ pub struct StructTypeInfo {
 #[derive(Debug, Clone)]
 pub struct TraitTypeInfo {
     pub functions: Vec<String>,
+    signatures: HashMap<String, FunctionSignature>,
 }
 
 /// Semantic target information for an inherent or trait implementation.
@@ -140,6 +141,8 @@ pub struct TraitTypeInfo {
 pub struct TypeImplementationInfo {
     pub target: SemanticType,
     pub trait_: Option<SemanticType>,
+    methods: HashMap<String, FunctionSignature>,
+    constants: HashMap<String, SemanticType>,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +203,7 @@ impl TypeChecker {
         };
 
         checker.collect_declarations(module);
+        checker.validate_implementations(module);
         checker.visit_module(module);
 
         TypeCheckResult {
@@ -241,9 +245,36 @@ impl TypeChecker {
     }
 
     fn collect_implementation(&mut self, declaration: &ForDeclaration) {
+        let target = Self::type_from_annotation(&declaration.target);
+        let mut methods = HashMap::new();
+        let mut constants = HashMap::new();
+        for member in &declaration.members {
+            match member {
+                TypeMember::Function(function) => {
+                    methods.insert(
+                        function.name.clone(),
+                        Self::signature(function, Some(&target)),
+                    );
+                }
+                TypeMember::Constant(binding) => {
+                    if let Pattern::Ident(identifier) = &binding.pattern {
+                        constants.insert(
+                            identifier.name.clone(),
+                            binding
+                                .type_annotation
+                                .as_ref()
+                                .map(Self::type_from_annotation)
+                                .unwrap_or(SemanticType::Unknown),
+                        );
+                    }
+                }
+            }
+        }
         self.implementations.push(TypeImplementationInfo {
-            target: Self::type_from_annotation(&declaration.target),
+            target,
             trait_: declaration.trait_.as_ref().map(Self::type_from_annotation),
+            methods,
+            constants,
         });
     }
 
@@ -253,10 +284,21 @@ impl TypeChecker {
             .iter()
             .map(|function| function.name.clone())
             .collect();
+        let signatures = declaration
+            .functions
+            .iter()
+            .map(|function| (function.name.clone(), Self::signature(function, None)))
+            .collect();
 
         if self
             .traits
-            .insert(declaration.name.clone(), TraitTypeInfo { functions })
+            .insert(
+                declaration.name.clone(),
+                TraitTypeInfo {
+                    functions,
+                    signatures,
+                },
+            )
             .is_some()
         {
             self.errors.push(TypeCheckError {
@@ -300,6 +342,14 @@ impl TypeChecker {
     }
 
     fn collect_function(&mut self, function: &FunctionDeclaration) {
+        self.functions
+            .insert(function.name.clone(), Self::signature(function, None));
+    }
+
+    fn signature(
+        function: &FunctionDeclaration,
+        self_type: Option<&SemanticType>,
+    ) -> FunctionSignature {
         let mut params = Vec::new();
 
         for pattern in &function.params {
@@ -307,11 +357,15 @@ impl TypeChecker {
                 continue;
             };
 
-            let type_ = identifier
-                .type_annotation
-                .as_ref()
-                .map(Self::type_from_annotation)
-                .unwrap_or(SemanticType::Unknown);
+            let type_ = if identifier.name == "self" && identifier.type_annotation.is_none() {
+                self_type.cloned().unwrap_or(SemanticType::Unknown)
+            } else {
+                identifier
+                    .type_annotation
+                    .as_ref()
+                    .map(Self::type_from_annotation)
+                    .unwrap_or(SemanticType::Unknown)
+            };
 
             params.push(ParameterType {
                 name: identifier.name.clone(),
@@ -325,13 +379,68 @@ impl TypeChecker {
             .map(Self::type_from_annotation)
             .unwrap_or(SemanticType::Void);
 
-        self.functions.insert(
-            function.name.clone(),
-            FunctionSignature {
-                params,
-                return_type,
-            },
-        );
+        FunctionSignature {
+            params,
+            return_type,
+        }
+    }
+
+    fn validate_implementations(&mut self, module: &Module) {
+        for (index, declaration) in module
+            .declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                Declaration::For(value) => Some(value),
+                _ => None,
+            })
+            .enumerate()
+        {
+            let Some(SemanticType::Named(trait_name)) = self.implementations[index].trait_.as_ref()
+            else {
+                continue;
+            };
+            let Some(trait_info) = self.traits.get(trait_name).cloned() else {
+                self.errors.push(TypeCheckError {
+                    message: format!("trait `{trait_name}` was not found"),
+                    span: declaration.span,
+                });
+                continue;
+            };
+            let target = self.implementations[index].target.clone();
+            for name in &trait_info.functions {
+                let Some(actual) = self.implementations[index].methods.get(name) else {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "implementation of `{trait_name}` is missing required method `{name}`"
+                        ),
+                        span: declaration.span,
+                    });
+                    continue;
+                };
+                let mut expected = trait_info.signatures[name].clone();
+                for parameter in &mut expected.params {
+                    if parameter.name == "self" && matches!(parameter.type_, SemanticType::Unknown)
+                    {
+                        parameter.type_ = target.clone();
+                    }
+                }
+                if actual.params.len() != expected.params.len()
+                    || actual
+                        .params
+                        .iter()
+                        .zip(&expected.params)
+                        .any(|(a, e)| a.type_ != e.type_)
+                    || actual.return_type != expected.return_type
+                {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "method `{name}` has an incompatible signature for trait `{trait_name}`"
+                        ),
+                        span: declaration.span,
+                    });
+                }
+            }
+        }
     }
 
     fn collect_component(&mut self, component: &ComponentDeclaration) {
@@ -366,7 +475,7 @@ impl TypeChecker {
                 }
 
                 Declaration::For(declaration) => {
-                    self.visit_type_members(&declaration.members);
+                    self.visit_implementation(declaration);
                 }
 
                 Declaration::Trait(declaration) => {
@@ -419,6 +528,14 @@ impl TypeChecker {
     }
 
     fn visit_function(&mut self, function: &FunctionDeclaration) {
+        self.visit_function_with_self(function, None);
+    }
+
+    fn visit_function_with_self(
+        &mut self,
+        function: &FunctionDeclaration,
+        self_type: Option<&SemanticType>,
+    ) {
         self.enter_scope();
 
         for pattern in &function.params {
@@ -426,11 +543,15 @@ impl TypeChecker {
                 continue;
             };
 
-            let type_ = identifier
-                .type_annotation
-                .as_ref()
-                .map(Self::type_from_annotation)
-                .unwrap_or(SemanticType::Unknown);
+            let type_ = if identifier.name == "self" && identifier.type_annotation.is_none() {
+                self_type.cloned().unwrap_or(SemanticType::Unknown)
+            } else {
+                identifier
+                    .type_annotation
+                    .as_ref()
+                    .map(Self::type_from_annotation)
+                    .unwrap_or(SemanticType::Unknown)
+            };
 
             self.declare(&identifier.name, type_);
         }
@@ -452,21 +573,19 @@ impl TypeChecker {
         self.exit_scope();
     }
 
-    fn visit_type_members(&mut self, members: &[TypeMember]) {
+    fn visit_implementation(&mut self, declaration: &ForDeclaration) {
+        let target = Self::type_from_annotation(&declaration.target);
         self.enter_scope();
-
-        for member in members {
+        for member in &declaration.members {
             if let TypeMember::Constant(binding) = member {
                 self.register_binding(binding);
             }
         }
-
-        for member in members {
+        for member in &declaration.members {
             if let TypeMember::Function(function) = member {
-                self.visit_function(function);
+                self.visit_function_with_self(function, Some(&target));
             }
         }
-
         self.exit_scope();
     }
 
@@ -706,6 +825,19 @@ impl TypeChecker {
              * collection, object, closure, and member-resolution work.
              */
             Expression::Member(member) => {
+                if let Expression::Ident(identifier) = member.object.as_ref()
+                    && self.resolve(&identifier.name).is_none()
+                    && self.structs.contains_key(&identifier.name)
+                {
+                    let target = SemanticType::Named(identifier.name.clone());
+                    return self
+                        .implementations
+                        .iter()
+                        .find(|implementation| implementation.target == target)
+                        .and_then(|implementation| implementation.constants.get(&member.property))
+                        .cloned()
+                        .unwrap_or(SemanticType::Unknown);
+                }
                 let object = self.infer_expression(&member.object, None);
 
                 match object {
@@ -944,6 +1076,77 @@ impl TypeChecker {
     }
 
     fn infer_call_expression(&mut self, call: &CallExpression) -> SemanticType {
+        if let Expression::Member(member) = call.callee.as_ref() {
+            let static_target = if let Expression::Ident(identifier) = member.object.as_ref()
+                && self.resolve(&identifier.name).is_none()
+                && self.structs.contains_key(&identifier.name)
+            {
+                Some(SemanticType::Named(identifier.name.clone()))
+            } else {
+                None
+            };
+            let target = match &static_target {
+                Some(target) => target.clone(),
+                None => self.infer_expression(&member.object, None),
+            };
+            let signature = self
+                .implementations
+                .iter()
+                .filter(|implementation| implementation.target == target)
+                .find_map(|implementation| implementation.methods.get(&member.property))
+                .cloned();
+            let Some(signature) = signature else {
+                for argument in &call.args {
+                    self.infer_expression(
+                        match argument {
+                            CallArg::Positional(value) => value,
+                            CallArg::Named { value, .. } => value,
+                        },
+                        None,
+                    );
+                }
+                return SemanticType::Unknown;
+            };
+            let has_self = signature
+                .params
+                .first()
+                .is_some_and(|parameter| parameter.name == "self");
+            if has_self == static_target.is_some() {
+                self.errors.push(TypeCheckError {
+                    message: format!(
+                        "method `{}` is {}",
+                        member.property,
+                        if has_self {
+                            "an instance method"
+                        } else {
+                            "a static method"
+                        }
+                    ),
+                    span: member.span,
+                });
+            }
+            let parameters = signature.params.iter().skip(usize::from(has_self));
+            if call.args.len() != signature.params.len() - usize::from(has_self) {
+                self.errors.push(TypeCheckError {
+                    message: format!(
+                        "method `{}` expects {} argument(s), but received {}",
+                        member.property,
+                        signature.params.len() - usize::from(has_self),
+                        call.args.len()
+                    ),
+                    span: call.span,
+                });
+            }
+            for (argument, parameter) in call.args.iter().zip(parameters) {
+                let expression = match argument {
+                    CallArg::Positional(value) => value,
+                    CallArg::Named { value, .. } => value,
+                };
+                let actual = self.infer_expression(expression, Some(&parameter.type_));
+                self.check_compatible(&parameter.type_, &actual, expression.span());
+            }
+            return signature.return_type;
+        }
         let Expression::Ident(identifier) = call.callee.as_ref() else {
             self.infer_expression(&call.callee, None);
 
