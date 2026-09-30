@@ -258,6 +258,23 @@ fn main() { println(add(40)) }
 }
 
 #[test]
+fn builds_and_runs_top_level_constants() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+
+const BASE: Number = 40
+const AMOUNT: Number = 2
+
+fn main() { println(BASE + AMOUNT) }
+"#,
+    );
+
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

@@ -354,6 +354,28 @@ fn main() {
 }
 
 #[test]
+fn evaluates_top_level_and_nested_bindings() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+const BASE: Number = 40
+let AMOUNT: Number = 2
+
+fn main() {
+    const LOCAL: Number = BASE + AMOUNT
+    report(LOCAL)
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

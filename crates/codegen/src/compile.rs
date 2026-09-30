@@ -78,6 +78,7 @@ pub struct ModuleInfo {
     task_types: RefCell<Vec<KomeType>>,
     list_types: RefCell<Vec<KomeType>>,
     enums: Vec<EnumInfo>,
+    globals: HashMap<String, Binding>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +252,29 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
     let task_types = RefCell::new(Vec::new());
     let list_types = RefCell::new(Vec::new());
     let mut enums = Vec::new();
+    let mut globals = HashMap::new();
+
+    for declaration in &module.declarations {
+        let binding = match declaration {
+            Declaration::Let(binding) | Declaration::Constant(binding) => binding,
+            _ => continue,
+        };
+        let kome_ast::patterns::Pattern::Ident(identifier) = &binding.pattern else {
+            return Err(CodegenError::at(
+                "top-level bindings require an identifier pattern",
+                binding.pattern.span(),
+            ));
+        };
+        if globals
+            .insert(identifier.name.clone(), binding.clone())
+            .is_some()
+        {
+            return Err(CodegenError::at(
+                format!("duplicate global binding `{}`", identifier.name),
+                identifier.span,
+            ));
+        }
+    }
 
     for declaration in &module.declarations {
         let Declaration::Struct(struct_decl) = declaration else {
@@ -527,6 +551,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         task_types,
         list_types,
         enums,
+        globals,
     })
 }
 
@@ -743,6 +768,7 @@ pub fn compile_module<M: Module>(
                 terminated: false,
                 loops: Vec::new(),
                 allow_managed_moves: true,
+                evaluating_globals: Vec::new(),
             };
 
             translator.translate_function(declaration, signature)?;
@@ -799,6 +825,7 @@ pub fn compile_module<M: Module>(
                 terminated: false,
                 loops: Vec::new(),
                 allow_managed_moves: true,
+                evaluating_globals: Vec::new(),
             };
             translator.translate_task_entry(name, signature)?;
         }
@@ -1393,6 +1420,7 @@ struct FunctionTranslator<'b, 'c, M: Module> {
     terminated: bool,
     loops: Vec<LoopContext>,
     allow_managed_moves: bool,
+    evaluating_globals: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1546,6 +1574,16 @@ impl ReadCounter {
                     self.scopes.pop();
                 } else {
                     self.visit_statement(&statement.body);
+                }
+            }
+
+            Statement::Declaration(Declaration::Let(binding))
+            | Statement::Declaration(Declaration::Constant(binding)) => {
+                if let Some(init) = &binding.init {
+                    self.visit_expression(init);
+                }
+                if let kome_ast::patterns::Pattern::Ident(identifier) = &binding.pattern {
+                    self.declare(&identifier.name);
                 }
             }
 
@@ -1973,6 +2011,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             Statement::Continue(statement) => self.translate_continue(statement.span)?,
 
             Statement::Is(statement) => self.translate_is(statement)?,
+
+            Statement::Declaration(Declaration::Let(binding))
+            | Statement::Declaration(Declaration::Constant(binding)) => {
+                self.translate_statement(&Statement::Let(binding.clone()))?;
+            }
 
             Statement::Declaration(_) => {
                 return Err(unsupported_statement("nested declaration", statement));
@@ -2628,13 +2671,10 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let scope = self
             .scopes
             .iter()
-            .rposition(|scope| scope.contains_key(&identifier.name))
-            .ok_or_else(|| {
-                CodegenError::at(
-                    format!("variable `{}` is not defined", identifier.name),
-                    identifier.span,
-                )
-            })?;
+            .rposition(|scope| scope.contains_key(&identifier.name));
+        let Some(scope) = scope else {
+            return self.evaluate_global(identifier);
+        };
 
         let scoped = self.scopes[scope][&identifier.name];
 
@@ -2671,6 +2711,71 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             kome_type: scoped.kome_type,
             ownership,
         })
+    }
+
+    fn evaluate_global(&mut self, identifier: &IdentifierExpression) -> CodegenResult<TypedValue> {
+        let binding = self
+            .info
+            .globals
+            .get(&identifier.name)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!("variable `{}` is not defined", identifier.name),
+                    identifier.span,
+                )
+            })?;
+        if self.evaluating_globals.contains(&identifier.name) {
+            return Err(CodegenError::at(
+                format!("cyclic global initializer for `{}`", identifier.name),
+                identifier.span,
+            ));
+        }
+        let expected = binding
+            .type_annotation
+            .as_ref()
+            .map(|annotation| {
+                type_from_annotation(
+                    annotation,
+                    &self.info.runtime_types,
+                    &self.info.struct_ids,
+                    &self.info.task_types,
+                    &self.info.list_types,
+                )
+            })
+            .transpose()?;
+        self.evaluating_globals.push(identifier.name.clone());
+        let result = match &binding.init {
+            Some(initializer) => self.evaluate_with_expected(initializer, expected),
+            None => {
+                let type_ = expected.ok_or_else(|| {
+                    CodegenError::at(
+                        format!(
+                            "global `{}` requires an initializer or type annotation",
+                            identifier.name
+                        ),
+                        binding.span,
+                    )
+                })?;
+                Ok(TypedValue::some(self.zero_value(type_)?, type_))
+            }
+        };
+        self.evaluating_globals.pop();
+        let result = result?;
+        if let Some(expected) = expected
+            && result.kome_type != expected
+        {
+            return Err(CodegenError::at(
+                format!(
+                    "global `{}` expects {}, but found {}",
+                    identifier.name,
+                    self.info.type_name(expected),
+                    self.info.type_name(result.kome_type)
+                ),
+                identifier.span,
+            ));
+        }
+        Ok(result)
     }
 
     fn evaluate_group(&mut self, group: &GroupExpression) -> CodegenResult<TypedValue> {
