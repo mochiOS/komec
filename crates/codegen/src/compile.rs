@@ -3315,6 +3315,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
     }
 
     fn evaluate_binary(&mut self, binary: &BinaryExpression) -> CodegenResult<TypedValue> {
+        if matches!(binary.op, BinaryOp::And | BinaryOp::Or) {
+            return self.evaluate_logical(binary);
+        }
         let left = self.evaluate(&binary.left)?;
         let right = self.evaluate_with_expected(&binary.right, Some(left.kome_type))?;
 
@@ -3567,23 +3570,69 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 }
             }
 
-            BinaryOp::And | BinaryOp::Or => {
-                if left.kome_type != KomeType::Boolean || right.kome_type != KomeType::Boolean {
-                    return Err(invalid_operands(left, right));
-                }
-
-                let left_value = left.expect_value(span)?;
-                let right_value = right.expect_value(span)?;
-
-                let flag = if binary.op == BinaryOp::And {
-                    self.builder.ins().band(left_value, right_value)
-                } else {
-                    self.builder.ins().bor(left_value, right_value)
-                };
-
-                Ok(TypedValue::some(flag, KomeType::Boolean))
-            }
+            BinaryOp::And | BinaryOp::Or => unreachable!(),
         }
+    }
+
+    fn evaluate_logical(&mut self, binary: &BinaryExpression) -> CodegenResult<TypedValue> {
+        let left = self.evaluate_with_expected(&binary.left, Some(KomeType::Boolean))?;
+        if left.kome_type != KomeType::Boolean {
+            return Err(CodegenError::at(
+                format!(
+                    "logical operator expects bool, but found {}",
+                    self.info.type_name(left.kome_type)
+                ),
+                binary.left.span(),
+            ));
+        }
+        let left = left.expect_value(binary.left.span())?;
+        let evaluate_right = self.builder.create_block();
+        let short_circuit = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I8);
+        if binary.op == BinaryOp::And {
+            self.builder
+                .ins()
+                .brif(left, evaluate_right, &[], short_circuit, &[]);
+        } else {
+            self.builder
+                .ins()
+                .brif(left, short_circuit, &[], evaluate_right, &[]);
+        }
+        self.builder.switch_to_block(short_circuit);
+        self.builder.seal_block(short_circuit);
+        let result = self
+            .builder
+            .ins()
+            .iconst(types::I8, if binary.op == BinaryOp::And { 0 } else { 1 });
+        self.builder
+            .ins()
+            .jump(done, &[ir::BlockArg::Value(result)]);
+
+        self.builder.switch_to_block(evaluate_right);
+        self.builder.seal_block(evaluate_right);
+        let right = self.evaluate_with_expected(&binary.right, Some(KomeType::Boolean))?;
+        if right.kome_type != KomeType::Boolean {
+            return Err(CodegenError::at(
+                format!(
+                    "logical operator expects bool, but found {}",
+                    self.info.type_name(right.kome_type)
+                ),
+                binary.right.span(),
+            ));
+        }
+        self.builder.ins().jump(
+            done,
+            &[ir::BlockArg::Value(
+                right.expect_value(binary.right.span())?,
+            )],
+        );
+        self.builder.seal_block(done);
+        self.builder.switch_to_block(done);
+        Ok(TypedValue::some(
+            self.builder.block_params(done)[0],
+            KomeType::Boolean,
+        ))
     }
 
     fn evaluate_task_arguments(

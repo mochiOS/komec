@@ -299,6 +299,30 @@ fn main() {
 }
 
 #[test]
+fn short_circuits_logical_operators() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn touched() -> bool {
+    report(99)
+    return true
+}
+
+fn main() {
+    if false && touched() { report(1) }
+    if true || touched() { report(2) }
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("2").unwrap())]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"
