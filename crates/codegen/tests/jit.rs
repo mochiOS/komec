@@ -114,6 +114,50 @@ fn main() {
 }
 
 #[test]
+fn executes_all_scalar_operators_and_percent_literals() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    var value = 20
+    value += 1
+    if !(value / 2 == 10.5) { report(0) }
+    if "ko" + "me" == "kome" { report(50%) }
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("50").unwrap())]
+    );
+    clear_thread_registry();
+}
+
+#[test]
+fn executes_fixed_width_numeric_operators() {
+    run(r#"
+fn integer_math(value: i32) -> i32 {
+    var result: i32 = value * 3
+    result += 4
+    if result >= 10 { return result / 2 }
+    return result - 1
+}
+
+fn float_math(value: f64) -> f64 {
+    return (value + 1.0) / 2.0
+}
+
+fn main() {
+    integer_math(2)
+    float_math(3.0)
+}
+"#);
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

@@ -1,6 +1,6 @@
 use kome_native_rt::number::{
-    __kome_number_add, __kome_number_compare, __kome_number_mul, __kome_number_parse,
-    __kome_number_release, __kome_number_sub, Number,
+    __kome_number_add, __kome_number_compare, __kome_number_div, __kome_number_mul,
+    __kome_number_parse, __kome_number_release, __kome_number_sub, Number,
 };
 
 fn parse_raw(value: &str) -> u64 {
@@ -68,6 +68,22 @@ fn multiplies_numbers_through_abi() {
     let number = unsafe { Number::from_raw_retain(result) };
 
     assert_eq!(number.to_string(), "50");
+
+    unsafe {
+        __kome_number_release(left);
+        __kome_number_release(right);
+        __kome_number_release(result);
+    }
+}
+
+#[test]
+fn divides_numbers_through_abi() {
+    let left = parse_raw("21");
+    let right = parse_raw("2");
+    let result = unsafe { __kome_number_div(left, right) };
+    let number = unsafe { Number::from_raw_retain(result) };
+
+    assert_eq!(number.to_string(), "10.5");
 
     unsafe {
         __kome_number_release(left);

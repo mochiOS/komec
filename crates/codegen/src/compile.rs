@@ -20,7 +20,7 @@ use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
     CancelExpression, Expression, GroupExpression, IdentifierExpression, LiteralExpression,
     LiteralKind, MemberExpression, NumberLiteral, PropertyKey, StructExpression, TaskExpression,
-    WaitExpression,
+    UnaryExpression, UnaryOp, WaitExpression,
 };
 use kome_ast::statements::{BlockStatement, Statement};
 use std::cell::RefCell;
@@ -780,10 +780,13 @@ struct ForeignFunctions {
     number_add: FuncId,
     number_sub: FuncId,
     number_mul: FuncId,
+    number_div: FuncId,
     number_compare: FuncId,
     string_create: FuncId,
     string_retain: FuncId,
     string_release: FuncId,
+    string_concat: FuncId,
+    string_compare: FuncId,
     socket_retain: FuncId,
     socket_release: FuncId,
     struct_alloc: FuncId,
@@ -850,6 +853,13 @@ impl ForeignFunctions {
             Some(types::I64),
         )?;
 
+        let number_div = declare_foreign(
+            module,
+            "__kome_number_div",
+            &[types::I64, types::I64],
+            Some(types::I64),
+        )?;
+
         let number_compare = declare_foreign(
             module,
             "__kome_number_compare",
@@ -866,6 +876,18 @@ impl ForeignFunctions {
 
         let string_retain = declare_foreign(module, "__kome_string_retain", &[types::I64], None)?;
         let string_release = declare_foreign(module, "__kome_string_release", &[types::I64], None)?;
+        let string_concat = declare_foreign(
+            module,
+            "__kome_string_concat",
+            &[types::I64, types::I64],
+            Some(types::I64),
+        )?;
+        let string_compare = declare_foreign(
+            module,
+            "__kome_string_compare",
+            &[types::I64, types::I64],
+            Some(types::I32),
+        )?;
         let socket_retain = declare_foreign(module, "__kome_socket_retain", &[types::I64], None)?;
         let socket_release = declare_foreign(module, "__kome_socket_release", &[types::I64], None)?;
         let struct_alloc = declare_foreign(
@@ -970,10 +992,13 @@ impl ForeignFunctions {
             number_add,
             number_sub,
             number_mul,
+            number_div,
             number_compare,
             string_create,
             string_retain,
             string_release,
+            string_concat,
+            string_compare,
             socket_retain,
             socket_release,
             struct_alloc,
@@ -1420,7 +1445,27 @@ impl ReadCounter {
                 self.visit_statement(&statement.body);
             }
 
-            _ => {}
+            Statement::ForIn(statement) => {
+                self.visit_expression(&statement.right);
+                self.scopes.push(HashMap::new());
+                if let kome_ast::patterns::Pattern::Ident(identifier) = &statement.pattern {
+                    self.declare(&identifier.name);
+                }
+                self.visit_statement(&statement.body);
+                self.scopes.pop();
+            }
+
+            Statement::Is(statement) => {
+                if let Some(value) = &statement.value {
+                    self.visit_expression(value);
+                }
+                self.visit_statement(&statement.body);
+            }
+
+            Statement::Declaration(_)
+            | Statement::Break(_)
+            | Statement::Continue(_)
+            | Statement::Empty(_) => {}
         }
     }
 
@@ -1433,6 +1478,8 @@ impl ReadCounter {
             Expression::Group(group) => {
                 self.visit_expression(&group.expression);
             }
+
+            Expression::Unary(unary) => self.visit_expression(&unary.argument),
 
             Expression::Task(task) => self.visit_expression(&task.argument),
 
@@ -1477,7 +1524,62 @@ impl ReadCounter {
                 }
             }
 
-            _ => {}
+            Expression::Block(block) => {
+                self.scopes.push(HashMap::new());
+                for statement in &block.statements {
+                    self.visit_statement(statement);
+                }
+                if let Some(tail) = &block.tail {
+                    self.visit_expression(tail);
+                }
+                self.scopes.pop();
+            }
+
+            Expression::List(list) => {
+                for element in list.elems.iter().flatten() {
+                    self.visit_expression(element);
+                }
+            }
+
+            Expression::Object(object) => {
+                for property in &object.props {
+                    let kome_ast::expressions::ObjectProperty::KeyValue(property) = property;
+                    if let PropertyKey::Computed { expression, .. } = &property.key {
+                        self.visit_expression(expression);
+                    }
+                    self.visit_expression(&property.value);
+                }
+            }
+
+            Expression::Template(template) => {
+                for part in &template.parts {
+                    if let kome_ast::expressions::TemplatePart::Expression { expression, .. } = part
+                    {
+                        self.visit_expression(expression);
+                    }
+                }
+            }
+
+            Expression::Closure(closure) => self.visit_expression(&closure.body),
+
+            Expression::Is(is_expression) => {
+                self.visit_expression(&is_expression.value);
+                self.visit_expression(&is_expression.body);
+            }
+
+            Expression::Component(component) => {
+                for argument in &component.args {
+                    match argument {
+                        CallArg::Positional(value) => self.visit_expression(value),
+                        CallArg::Named { value, .. } => self.visit_expression(value),
+                    }
+                }
+                for child in &component.children {
+                    self.visit_expression(child);
+                }
+            }
+
+            Expression::Literal(_) | Expression::DotIdent(_) => {}
         }
     }
 }
@@ -1978,6 +2080,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::Ident(identifier) => self.evaluate_identifier(identifier),
 
+            Expression::Unary(unary) => self.evaluate_unary(unary),
+
             Expression::Group(group) => self.evaluate_group(group),
 
             Expression::Task(task) => self.evaluate_task(task, None),
@@ -2237,9 +2341,29 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 KomeType::Null,
             )),
 
-            LiteralKind::Percent(_) => Err(CodegenError::at(
-                "percent literals are not supported yet",
-                literal.span,
+            LiteralKind::Percent(number) => self.evaluate_literal(&LiteralExpression {
+                span: literal.span,
+                kind: LiteralKind::Number(number.clone()),
+            }),
+        }
+    }
+
+    fn evaluate_unary(&mut self, unary: &UnaryExpression) -> CodegenResult<TypedValue> {
+        let argument = self.evaluate(&unary.argument)?;
+        match unary.op {
+            UnaryOp::Not if argument.kome_type == KomeType::Boolean => {
+                let value = argument.expect_value(unary.argument.span())?;
+                Ok(TypedValue::some(
+                    self.builder.ins().icmp_imm_u(IntCC::Equal, value, 0),
+                    KomeType::Boolean,
+                ))
+            }
+            UnaryOp::Not => Err(CodegenError::at(
+                format!(
+                    "operator `!` expects bool, but found {}",
+                    self.info.type_name(argument.kome_type)
+                ),
+                unary.span,
             )),
         }
     }
@@ -2668,7 +2792,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
     fn evaluate_binary(&mut self, binary: &BinaryExpression) -> CodegenResult<TypedValue> {
         let left = self.evaluate(&binary.left)?;
-        let right = self.evaluate(&binary.right)?;
+        let right = self.evaluate_with_expected(&binary.right, Some(left.kome_type))?;
 
         let span = binary.span;
 
@@ -2684,33 +2808,63 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         };
 
         match binary.op {
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
-                if left.kome_type != KomeType::Number || right.kome_type != KomeType::Number {
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+                if left.kome_type != right.kome_type {
                     return Err(invalid_operands(left, right));
                 }
-
+                let result_type = left.kome_type;
                 let left_value = left.expect_value(span)?;
                 let right_value = right.expect_value(span)?;
-
-                let function = match binary.op {
-                    BinaryOp::Add => self.foreign.number_add,
-                    BinaryOp::Sub => self.foreign.number_sub,
-                    BinaryOp::Mul => self.foreign.number_mul,
-                    _ => unreachable!("only Number arithmetic operations are handled here"),
+                let value = match result_type {
+                    KomeType::Number => {
+                        let function = match binary.op {
+                            BinaryOp::Add => self.foreign.number_add,
+                            BinaryOp::Sub => self.foreign.number_sub,
+                            BinaryOp::Mul => self.foreign.number_mul,
+                            BinaryOp::Div => self.foreign.number_div,
+                            _ => unreachable!(),
+                        };
+                        self.emit_number_binary(function, left_value, right_value)
+                    }
+                    KomeType::String if binary.op == BinaryOp::Add => {
+                        self.emit_number_binary(self.foreign.string_concat, left_value, right_value)
+                    }
+                    KomeType::I8
+                    | KomeType::I16
+                    | KomeType::I32
+                    | KomeType::I64
+                    | KomeType::U8
+                    | KomeType::U16
+                    | KomeType::U32
+                    | KomeType::U64 => match binary.op {
+                        BinaryOp::Add => self.builder.ins().iadd(left_value, right_value),
+                        BinaryOp::Sub => self.builder.ins().isub(left_value, right_value),
+                        BinaryOp::Mul => self.builder.ins().imul(left_value, right_value),
+                        BinaryOp::Div
+                            if matches!(
+                                result_type,
+                                KomeType::U8 | KomeType::U16 | KomeType::U32 | KomeType::U64
+                            ) =>
+                        {
+                            self.builder.ins().udiv(left_value, right_value)
+                        }
+                        BinaryOp::Div => self.builder.ins().sdiv(left_value, right_value),
+                        _ => unreachable!(),
+                    },
+                    KomeType::F32 | KomeType::F64 => match binary.op {
+                        BinaryOp::Add => self.builder.ins().fadd(left_value, right_value),
+                        BinaryOp::Sub => self.builder.ins().fsub(left_value, right_value),
+                        BinaryOp::Mul => self.builder.ins().fmul(left_value, right_value),
+                        BinaryOp::Div => self.builder.ins().fdiv(left_value, right_value),
+                        _ => unreachable!(),
+                    },
+                    _ => return Err(invalid_operands(left, right)),
                 };
-
-                let value = self.emit_number_binary(function, left_value, right_value);
 
                 self.release_owned_temporary(left, span)?;
                 self.release_owned_temporary(right, span)?;
-
-                Ok(TypedValue::some(value, KomeType::Number))
+                Ok(TypedValue::some(value, result_type))
             }
-
-            BinaryOp::Div => Err(CodegenError::at(
-                "Number division semantics are not defined yet",
-                binary.span,
-            )),
 
             BinaryOp::Eq
             | BinaryOp::NotEq
@@ -2752,6 +2906,97 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
                     return Ok(TypedValue::some(
                         self.builder.ins().icmp(condition, comparison, zero),
+                        KomeType::Boolean,
+                    ));
+                }
+
+                if left.kome_type == KomeType::String && right.kome_type == KomeType::String {
+                    let function = Module::declare_func_in_func(
+                        self.module,
+                        self.foreign.string_compare,
+                        self.builder.func,
+                    );
+                    let call = self.builder.ins().call(
+                        function,
+                        &[left.expect_value(span)?, right.expect_value(span)?],
+                    );
+                    let comparison = self.builder.inst_results(call)[0];
+                    self.release_owned_temporary(left, span)?;
+                    self.release_owned_temporary(right, span)?;
+                    let condition = match binary.op {
+                        BinaryOp::Eq => IntCC::Equal,
+                        BinaryOp::NotEq => IntCC::NotEqual,
+                        BinaryOp::Lt => IntCC::SignedLessThan,
+                        BinaryOp::Lte => IntCC::SignedLessThanOrEqual,
+                        BinaryOp::Gt => IntCC::SignedGreaterThan,
+                        BinaryOp::Gte => IntCC::SignedGreaterThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    let zero = self.builder.ins().iconst(types::I32, 0);
+                    return Ok(TypedValue::some(
+                        self.builder.ins().icmp(condition, comparison, zero),
+                        KomeType::Boolean,
+                    ));
+                }
+
+                if left.kome_type == right.kome_type
+                    && matches!(
+                        left.kome_type,
+                        KomeType::I8
+                            | KomeType::I16
+                            | KomeType::I32
+                            | KomeType::I64
+                            | KomeType::U8
+                            | KomeType::U16
+                            | KomeType::U32
+                            | KomeType::U64
+                    )
+                {
+                    let unsigned = matches!(
+                        left.kome_type,
+                        KomeType::U8 | KomeType::U16 | KomeType::U32 | KomeType::U64
+                    );
+                    let condition = match (binary.op.clone(), unsigned) {
+                        (BinaryOp::Eq, _) => IntCC::Equal,
+                        (BinaryOp::NotEq, _) => IntCC::NotEqual,
+                        (BinaryOp::Lt, false) => IntCC::SignedLessThan,
+                        (BinaryOp::Lte, false) => IntCC::SignedLessThanOrEqual,
+                        (BinaryOp::Gt, false) => IntCC::SignedGreaterThan,
+                        (BinaryOp::Gte, false) => IntCC::SignedGreaterThanOrEqual,
+                        (BinaryOp::Lt, true) => IntCC::UnsignedLessThan,
+                        (BinaryOp::Lte, true) => IntCC::UnsignedLessThanOrEqual,
+                        (BinaryOp::Gt, true) => IntCC::UnsignedGreaterThan,
+                        (BinaryOp::Gte, true) => IntCC::UnsignedGreaterThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    return Ok(TypedValue::some(
+                        self.builder.ins().icmp(
+                            condition,
+                            left.expect_value(span)?,
+                            right.expect_value(span)?,
+                        ),
+                        KomeType::Boolean,
+                    ));
+                }
+
+                if left.kome_type == right.kome_type
+                    && matches!(left.kome_type, KomeType::F32 | KomeType::F64)
+                {
+                    let condition = match binary.op {
+                        BinaryOp::Eq => FloatCC::Equal,
+                        BinaryOp::NotEq => FloatCC::NotEqual,
+                        BinaryOp::Lt => FloatCC::LessThan,
+                        BinaryOp::Lte => FloatCC::LessThanOrEqual,
+                        BinaryOp::Gt => FloatCC::GreaterThan,
+                        BinaryOp::Gte => FloatCC::GreaterThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    return Ok(TypedValue::some(
+                        self.builder.ins().fcmp(
+                            condition,
+                            left.expect_value(span)?,
+                            right.expect_value(span)?,
+                        ),
                         KomeType::Boolean,
                     ));
                 }
@@ -3111,7 +3356,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 }
             };
 
-            let typed = self.evaluate(expression)?;
+            let typed = self.evaluate_with_expected(expression, Some(*param_type))?;
 
             if typed.kome_type != *param_type {
                 return Err(CodegenError::at(
@@ -3279,7 +3524,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             })?;
 
         let scoped = self.scopes[scope][&identifier.name];
-        let typed = self.evaluate(&assignment.value)?;
+        let typed = self.evaluate_with_expected(&assignment.value, Some(scoped.kome_type))?;
 
         if typed.kome_type != scoped.kome_type {
             return Err(CodegenError::at(
@@ -3314,10 +3559,39 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
                 Ok(TypedValue::borrowed(value, scoped.kome_type))
             }
-            _ => Err(CodegenError::at(
-                "compound assignment is not supported yet",
-                assignment.span,
-            )),
+            AssignOp::AddAssign => {
+                let old = self.builder.use_var(scoped.variable);
+                let right = typed.expect_value(assignment.value.span())?;
+                let value = match scoped.kome_type {
+                    KomeType::Number => {
+                        self.emit_number_binary(self.foreign.number_add, old, right)
+                    }
+                    KomeType::I8
+                    | KomeType::I16
+                    | KomeType::I32
+                    | KomeType::I64
+                    | KomeType::U8
+                    | KomeType::U16
+                    | KomeType::U32
+                    | KomeType::U64 => self.builder.ins().iadd(old, right),
+                    KomeType::F32 | KomeType::F64 => self.builder.ins().fadd(old, right),
+                    _ => {
+                        return Err(CodegenError::at(
+                            format!(
+                                "compound assignment requires a numeric variable, but found {}",
+                                self.info.type_name(scoped.kome_type)
+                            ),
+                            assignment.span,
+                        ));
+                    }
+                };
+                if scoped.kome_type.is_managed() && scoped.owns_value {
+                    self.release_managed(old, scoped.kome_type);
+                }
+                self.release_owned_temporary(typed, assignment.value.span())?;
+                self.builder.def_var(scoped.variable, value);
+                Ok(TypedValue::borrowed(value, scoped.kome_type))
+            }
         }
     }
 

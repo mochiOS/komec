@@ -1325,6 +1325,12 @@ impl TypeChecker {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
                 let left = self.infer_expression(&binary.left, None);
 
+                if binary.op == BinaryOp::Add && left == SemanticType::String {
+                    let right = self.infer_expression(&binary.right, Some(&SemanticType::String));
+                    self.check_compatible(&SemanticType::String, &right, binary.right.span());
+                    return SemanticType::String;
+                }
+
                 if !left.is_numeric() && !matches!(left, SemanticType::Unknown) {
                     self.errors.push(TypeCheckError {
                         message: format!(

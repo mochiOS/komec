@@ -178,6 +178,26 @@ impl Number {
         Self::from_parts(left * right, left_scale + right_scale)
     }
 
+    /// Divides this number by `other` with up to 18 decimal places.
+    ///
+    /// Returns `None` when `other` is zero. Repeating decimal expansions are
+    /// truncated after 18 places so that every division has a finite runtime
+    /// representation.
+    pub fn div(&self, other: &Self) -> Option<Self> {
+        const DIVISION_SCALE: u32 = 18;
+
+        let (left, left_scale) = self.parts();
+        let (right, right_scale) = other.parts();
+        if right.is_zero() {
+            return None;
+        }
+
+        let numerator = scale_coefficient(left, right_scale + DIVISION_SCALE);
+        let denominator = scale_coefficient(right, left_scale);
+
+        Some(Self::from_parts(numerator / denominator, DIVISION_SCALE))
+    }
+
     /// Compares two numbers numerically.
     pub fn compare(&self, other: &Self) -> Ordering {
         if let (Some(left), Some(right)) = (
@@ -451,6 +471,24 @@ pub unsafe extern "C" fn __kome_number_mul(left: u64, right: u64) -> u64 {
     let right = unsafe { Number::from_raw_retain(right) };
 
     left.mul(&right).into_raw()
+}
+
+/// Divides two runtime `Number` values.
+///
+/// Repeating decimal expansions are truncated after 18 decimal places. A
+/// division by zero terminates with a clear runtime diagnostic.
+///
+/// # Safety
+///
+/// `left` and `right` must be valid Kome `Number` representations.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_div(left: u64, right: u64) -> u64 {
+    let left = unsafe { Number::from_raw_retain(left) };
+    let right = unsafe { Number::from_raw_retain(right) };
+
+    left.div(&right)
+        .unwrap_or_else(|| panic!("Kome runtime error: division by zero"))
+        .into_raw()
 }
 
 /// Compares two runtime `Number` values.

@@ -142,6 +142,27 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_division_string_addition_and_compound_assignment() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn print_number(value: Number)
+@native("core.write_line")
+fn print_string(value: String)
+
+fn main() {
+    var value = 20
+    value += 1
+    print_number(value / 2)
+    print_string("ko" + "me")
+}
+"#,
+    );
+
+    assert_eq!(stdout, "10.5\nkome\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"
