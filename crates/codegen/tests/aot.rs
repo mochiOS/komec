@@ -240,6 +240,24 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_default_arguments() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+
+fn add(value: Number, amount: Number = 2) -> Number {
+    return value + amount
+}
+
+fn main() { println(add(40)) }
+"#,
+    );
+
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

@@ -323,6 +323,37 @@ fn main() {
 }
 
 #[test]
+fn supplies_default_function_and_method_arguments() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+struct Counter { base: Number }
+
+fn add(value: Number, amount: Number = 2) -> Number {
+    return value + amount
+}
+
+for Counter {
+    fn add(self, amount: Number = 3) -> Number { return self.base + amount }
+}
+
+fn main() {
+    let counter = Counter { base: 10 }
+    report(add(40))
+    report(add(amount: 4, value: 20))
+    report(counter.add())
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        ["42", "24", "13"].map(|value| Value::Number(Number::parse(value).unwrap()))
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

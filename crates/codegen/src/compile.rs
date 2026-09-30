@@ -35,6 +35,8 @@ pub struct FunctionSignature {
     pub param_names: Vec<String>,
     /// Parameter types in ABI order.
     pub params: Vec<KomeType>,
+    /// Default expressions aligned with parameters.
+    pub defaults: Vec<Option<Expression>>,
     /// Function return type.
     pub ret: KomeType,
 }
@@ -1181,6 +1183,7 @@ fn analyze_signature(
 ) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
     let mut param_names = Vec::with_capacity(function.params.len());
+    let mut defaults = Vec::with_capacity(function.params.len());
 
     for pattern in &function.params {
         let kome_ast::patterns::Pattern::Ident(identifier) = pattern else {
@@ -1228,6 +1231,7 @@ fn analyze_signature(
 
         params.push(param_type);
         param_names.push(identifier.name.clone());
+        defaults.push(identifier.default.as_deref().cloned());
     }
 
     let ret = match &function.return_type {
@@ -1244,6 +1248,7 @@ fn analyze_signature(
     Ok(FunctionSignature {
         param_names,
         params,
+        defaults,
         ret,
     })
 }
@@ -3889,39 +3894,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 ));
             }
 
-            Some(FunctionKind::User { signature, .. }) => {
-                if call.args.len() != signature.params.len() {
-                    return Err(CodegenError::at(
-                        format!(
-                            "function `{}` expects {} argument(s), but received {}",
-                            callee.name,
-                            signature.params.len(),
-                            call.args.len()
-                        ),
-                        call.span,
-                    ));
-                }
+            Some(FunctionKind::User { .. }) => CalleePlan::User,
 
-                CalleePlan::User
-            }
-
-            Some(FunctionKind::Native { signature, symbol }) => {
-                if call.args.len() != signature.params.len() {
-                    return Err(CodegenError::at(
-                        format!(
-                            "function `{}` expects {} argument(s), but received {}",
-                            callee.name,
-                            signature.params.len(),
-                            call.args.len()
-                        ),
-                        call.span,
-                    ));
-                }
-
-                CalleePlan::Native {
-                    symbol: (*symbol).to_owned(),
-                }
-            }
+            Some(FunctionKind::Native { symbol, .. }) => CalleePlan::Native {
+                symbol: (*symbol).to_owned(),
+            },
         };
 
         // Fetch the signature again through a cloned snapshot so that no
@@ -3932,14 +3909,19 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             .expect("callee existence was checked above")
             .signature()
             .clone();
-        let ordered =
-            self.order_call_arguments(&call.args, &signature.param_names, 0, call.span)?;
+        let ordered = self.order_call_arguments(
+            &call.args,
+            &signature.param_names,
+            &signature.defaults,
+            0,
+            call.span,
+        )?;
 
         let mut arguments = Vec::with_capacity(call.args.len());
         let mut argument_values = Vec::with_capacity(call.args.len());
 
         for (expression, param_type) in ordered.into_iter().zip(&signature.params) {
-            let typed = self.evaluate_with_expected(expression, Some(*param_type))?;
+            let typed = self.evaluate_with_expected(&expression, Some(*param_type))?;
 
             if typed.kome_type != *param_type {
                 return Err(CodegenError::at(
@@ -4034,30 +4016,23 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 member.span,
             ));
         }
-        let supplied = call.args.len() + usize::from(method.has_self);
-        if supplied != method.signature.params.len() {
-            return Err(CodegenError::at(
-                format!(
-                    "method `{}` expects {} argument(s), but received {}",
-                    member.property,
-                    method.signature.params.len() - usize::from(method.has_self),
-                    call.args.len()
-                ),
-                call.span,
-            ));
-        }
-        let mut arguments = Vec::with_capacity(supplied);
+        let mut arguments = Vec::with_capacity(method.signature.params.len());
         if let Some(receiver) = evaluated.first() {
             arguments.push(receiver.expect_value(member.object.span())?);
         }
         let skip = usize::from(method.has_self);
-        let ordered =
-            self.order_call_arguments(&call.args, &method.signature.param_names, skip, call.span)?;
+        let ordered = self.order_call_arguments(
+            &call.args,
+            &method.signature.param_names,
+            &method.signature.defaults,
+            skip,
+            call.span,
+        )?;
         for (expression, expected) in ordered
             .into_iter()
             .zip(method.signature.params.iter().skip(skip))
         {
-            let typed = self.evaluate_with_expected(expression, Some(*expected))?;
+            let typed = self.evaluate_with_expected(&expression, Some(*expected))?;
             if typed.kome_type != *expected {
                 return Err(CodegenError::at(
                     format!(
@@ -4079,14 +4054,16 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         Ok(result)
     }
 
-    fn order_call_arguments<'d>(
+    fn order_call_arguments(
         &self,
-        arguments: &'d [CallArg],
+        arguments: &[CallArg],
         parameter_names: &[String],
+        defaults: &[Option<Expression>],
         skip: usize,
         span: Span,
-    ) -> CodegenResult<Vec<&'d Expression>> {
+    ) -> CodegenResult<Vec<Expression>> {
         let parameter_names = &parameter_names[skip..];
+        let defaults = &defaults[skip..];
         let mut ordered = vec![None; parameter_names.len()];
         let mut next_positional = 0;
         for argument in arguments {
@@ -4095,7 +4072,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     while ordered.get(next_positional).is_some_and(Option::is_some) {
                         next_positional += 1;
                     }
-                    (next_positional, expression, expression.span())
+                    (next_positional, expression.clone(), expression.span())
                 }
                 CallArg::Named { name, value, span } => {
                     let index = parameter_names
@@ -4104,7 +4081,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                         .ok_or_else(|| {
                             CodegenError::at(format!("unknown named argument `{name}`"), *span)
                         })?;
-                    (index, value.as_ref(), *span)
+                    (index, value.as_ref().clone(), *span)
                 }
             };
             let Some(slot) = ordered.get_mut(index) else {
@@ -4124,15 +4101,16 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 next_positional += 1;
             }
         }
-        if let Some((index, _)) = ordered
-            .iter()
-            .enumerate()
-            .find(|(_, expression)| expression.is_none())
-        {
-            return Err(CodegenError::at(
-                format!("missing argument `{}`", parameter_names[index]),
-                span,
-            ));
+        for (index, slot) in ordered.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = defaults[index].clone();
+            }
+            if slot.is_none() {
+                return Err(CodegenError::at(
+                    format!("missing argument `{}`", parameter_names[index]),
+                    span,
+                ));
+            }
         }
         Ok(ordered.into_iter().map(Option::unwrap).collect())
     }
