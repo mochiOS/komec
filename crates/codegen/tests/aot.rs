@@ -294,6 +294,23 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_immediate_closures() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+
+fn main() {
+    let base = 40
+    println((|value: Number| base + value)(2))
+}
+"#,
+    );
+
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

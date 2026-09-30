@@ -419,6 +419,29 @@ fn main() {
 }
 
 #[test]
+fn executes_immediately_invoked_capturing_closures() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    let base = 40
+    let result = (|value: Number| {
+        let amount = value
+        base + amount
+    })(2)
+    report(result)
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

@@ -1692,7 +1692,16 @@ impl ReadCounter {
                 }
             }
 
-            Expression::Closure(closure) => self.visit_expression(&closure.body),
+            Expression::Closure(closure) => {
+                self.scopes.push(HashMap::new());
+                for parameter in &closure.params {
+                    if let kome_ast::patterns::Pattern::Ident(identifier) = parameter {
+                        self.declare(&identifier.name);
+                    }
+                }
+                self.visit_expression(&closure.body);
+                self.scopes.pop();
+            }
 
             Expression::Is(is_expression) => {
                 self.visit_expression(&is_expression.value);
@@ -3976,6 +3985,14 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
     }
 
     fn evaluate_call(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
+        if let Expression::Closure(closure) = call.callee.as_ref() {
+            return self.evaluate_closure_call(closure, call);
+        }
+        if let Expression::Group(group) = call.callee.as_ref()
+            && let Expression::Closure(closure) = group.expression.as_ref()
+        {
+            return self.evaluate_closure_call(closure, call);
+        }
         if let Expression::Ident(identifier) = call.callee.as_ref() {
             match identifier.name.as_str() {
                 "all" => return self.evaluate_all(call),
@@ -4059,6 +4076,86 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             self.release_owned_temporary(argument, call.span)?;
         }
 
+        Ok(result)
+    }
+
+    fn evaluate_closure_call(
+        &mut self,
+        closure: &kome_ast::expressions::ClosureExpression,
+        call: &CallExpression,
+    ) -> CodegenResult<TypedValue> {
+        let mut names = Vec::with_capacity(closure.params.len());
+        let mut defaults = Vec::with_capacity(closure.params.len());
+        for parameter in &closure.params {
+            let kome_ast::patterns::Pattern::Ident(identifier) = parameter else {
+                return Err(CodegenError::at(
+                    "closure parameters require identifier patterns",
+                    parameter.span(),
+                ));
+            };
+            names.push(identifier.name.clone());
+            defaults.push(identifier.default.as_deref().cloned());
+        }
+        let ordered = self.order_call_arguments(&call.args, &names, &defaults, 0, call.span)?;
+        let mut evaluated = Vec::with_capacity(ordered.len());
+        for (expression, parameter) in ordered.iter().zip(&closure.params) {
+            let kome_ast::patterns::Pattern::Ident(identifier) = parameter else {
+                unreachable!();
+            };
+            let expected = identifier
+                .type_annotation
+                .as_ref()
+                .map(|annotation| {
+                    type_from_annotation(
+                        annotation,
+                        &self.info.runtime_types,
+                        &self.info.struct_ids,
+                        &self.info.task_types,
+                        &self.info.list_types,
+                    )
+                })
+                .transpose()?;
+            let value = self.evaluate_with_expected(expression, expected)?;
+            if let Some(expected) = expected
+                && value.kome_type != expected
+            {
+                return Err(CodegenError::at(
+                    format!(
+                        "closure parameter `{}` expects {}, but found {}",
+                        identifier.name,
+                        self.info.type_name(expected),
+                        self.info.type_name(value.kome_type)
+                    ),
+                    expression.span(),
+                ));
+            }
+            evaluated.push(value);
+        }
+        self.scopes.push(HashMap::new());
+        for (parameter, value) in closure.params.iter().zip(evaluated) {
+            let kome_ast::patterns::Pattern::Ident(identifier) = parameter else {
+                unreachable!();
+            };
+            let raw = self.own_value(value, identifier.span)?;
+            self.declare_variable(
+                &identifier.name,
+                raw,
+                value.kome_type,
+                ValueOwnership::Owned,
+            )?;
+        }
+        let mut result = self.evaluate(&closure.body)?;
+        if result.kome_type.is_managed() {
+            let raw = self.own_value(result, closure.body.span())?;
+            result = TypedValue::some(raw, result.kome_type);
+        }
+        let scope = self.scopes.pop().expect("closure call scope exists");
+        for scoped in scope.values() {
+            if scoped.kome_type.is_managed() && scoped.owns_value {
+                let value = self.builder.use_var(scoped.variable);
+                self.release_managed(value, scoped.kome_type);
+            }
+        }
         Ok(result)
     }
 
