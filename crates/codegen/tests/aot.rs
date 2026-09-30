@@ -122,6 +122,26 @@ fn main() {
 }
 
 #[test]
+fn links_and_calls_a_shared_c_library() {
+    let stdout = build_and_run(
+        r#"
+extern "C" from "libc.so.6" {
+    fn abs(value: i32) -> i32
+}
+
+@native("core.write_line")
+fn println(value: i32)
+
+fn main() {
+    println(abs(42))
+}
+"#,
+    );
+
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
 fn builds_and_runs_number_arithmetic() {
     let stdout = build_and_run(
         r#"

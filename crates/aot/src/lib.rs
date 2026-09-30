@@ -19,6 +19,11 @@ static TEMPORARY_COUNTER: AtomicU32 = AtomicU32::new(0);
 pub fn build_executable(module_ast: &KomeModule, output: &Path) -> CodegenResult<()> {
     let info = analyze_module(module_ast)?;
     info.entry_signature("main")?;
+    let external_libraries = info
+        .external_libraries()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
 
     let mut module = ObjectModule::new(
         ObjectBuilder::new(
@@ -44,7 +49,12 @@ pub fn build_executable(module_ast: &KomeModule, output: &Path) -> CodegenResult
     ));
 
     write_file(&temporary_object, &object_bytes)?;
-    let result = link(&temporary_object, &runtime_library, output);
+    let result = link(
+        &temporary_object,
+        &runtime_library,
+        &external_libraries,
+        output,
+    );
     let _ = std::fs::remove_file(&temporary_object);
     result?;
     make_executable(output)?;
@@ -139,12 +149,20 @@ fn locate_runtime_library() -> CodegenResult<PathBuf> {
     ))
 }
 
-fn link(object: &Path, runtime_library: &Path, output: &Path) -> CodegenResult<()> {
-    let invocation = Command::new("cc")
+fn link(
+    object: &Path,
+    runtime_library: &Path,
+    external_libraries: &[String],
+    output: &Path,
+) -> CodegenResult<()> {
+    let mut command = Command::new("cc");
+    command
         .arg(object)
         .arg("-o")
         .arg(output)
-        .arg(runtime_library)
+        .arg(runtime_library);
+    add_external_libraries(&mut command, external_libraries);
+    let invocation = command
         .args(["-lpthread", "-ldl", "-lm"])
         .output()
         .map_err(|error| CodegenError::new(format!("failed to run `cc`: {error}"), None))?;
@@ -160,6 +178,31 @@ fn link(object: &Path, runtime_library: &Path, output: &Path) -> CodegenResult<(
         ));
     }
     Ok(())
+}
+
+fn add_external_libraries(command: &mut Command, libraries: &[String]) {
+    if let Some(search_path) = std::env::var_os("KOME_LIBRARY_PATH") {
+        for directory in std::env::split_paths(&search_path) {
+            command.arg(format!("-L{}", directory.display()));
+            command.arg(format!("-Wl,-rpath,{}", directory.display()));
+        }
+    }
+
+    for library in libraries {
+        let path = Path::new(library);
+        if path.components().count() > 1 {
+            command.arg(path);
+            if let Some(directory) = path.parent()
+                && !directory.as_os_str().is_empty()
+            {
+                command.arg(format!("-Wl,-rpath,{}", directory.display()));
+            }
+        } else if path.extension().is_some() {
+            command.arg(format!("-l:{library}"));
+        } else {
+            command.arg(format!("-l{library}"));
+        }
+    }
 }
 
 fn make_executable(path: &Path) -> CodegenResult<()> {
