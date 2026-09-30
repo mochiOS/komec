@@ -52,6 +52,13 @@ pub enum FunctionKind {
         symbol: String,
     },
 
+    /// A function imported directly through the platform C ABI.
+    External {
+        signature: FunctionSignature,
+        symbol: String,
+        library: Option<String>,
+    },
+
     User {
         declaration: FunctionDeclaration,
         signature: FunctionSignature,
@@ -62,7 +69,7 @@ impl FunctionKind {
     /// Returns the native signature shared by this function kind.
     pub fn signature(&self) -> &FunctionSignature {
         match self {
-            Self::Native { signature, .. } => signature,
+            Self::Native { signature, .. } | Self::External { signature, .. } => signature,
             Self::User { signature, .. } => signature,
         }
     }
@@ -243,10 +250,12 @@ impl ModuleInfo {
                 None,
             )),
 
-            Some(FunctionKind::Native { .. }) => Err(CodegenError::new(
-                format!("entry function `{entry}` must not be a @native declaration"),
-                None,
-            )),
+            Some(FunctionKind::Native { .. } | FunctionKind::External { .. }) => {
+                Err(CodegenError::new(
+                    format!("entry function `{entry}` must be defined in Kome"),
+                    None,
+                ))
+            }
 
             Some(FunctionKind::User { signature, .. }) => {
                 if !signature.params.is_empty() {
@@ -270,8 +279,40 @@ impl ModuleInfo {
                 declaration,
                 signature,
             } => Some((name.as_str(), declaration, signature)),
-            FunctionKind::Native { .. } => None,
+            FunctionKind::Native { .. } | FunctionKind::External { .. } => None,
         })
+    }
+
+    /// Iterates over functions imported directly from C libraries.
+    pub fn external_functions(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, Option<&str>, &FunctionSignature)> {
+        self.functions.iter().filter_map(|(name, kind)| match kind {
+            FunctionKind::External {
+                signature,
+                symbol,
+                library,
+            } => Some((
+                name.as_str(),
+                symbol.as_str(),
+                library.as_deref(),
+                signature,
+            )),
+            _ => None,
+        })
+    }
+
+    /// Returns each explicitly requested C library once.
+    pub fn external_libraries(&self) -> Vec<&str> {
+        let mut libraries = Vec::new();
+        for (_, _, library, _) in self.external_functions() {
+            if let Some(library) = library
+                && !libraries.contains(&library)
+            {
+                libraries.push(library);
+            }
+        }
+        libraries
     }
 }
 
@@ -483,6 +524,57 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 format!("duplicate function `{}`", function.name),
                 function.span,
             ));
+        }
+    }
+
+    for declaration in &module.declarations {
+        let Declaration::Extern(external) = declaration else {
+            continue;
+        };
+        if external.abi != "C" {
+            return Err(CodegenError::at(
+                format!("unsupported external ABI `{}`; expected `C`", external.abi),
+                external.span,
+            ));
+        }
+        for item in &external.items {
+            let kome_ast::declarations::ExternItem::Function(function) = item else {
+                continue;
+            };
+            if !function.type_parameters.is_empty() {
+                return Err(CodegenError::at(
+                    "external C functions cannot be generic",
+                    function.span,
+                ));
+            }
+            if function.params.iter().any(|parameter| {
+                matches!(parameter, kome_ast::patterns::Pattern::Ident(identifier) if identifier.default.is_some())
+            }) {
+                return Err(CodegenError::at(
+                    "external C functions cannot have default arguments",
+                    function.span,
+                ));
+            }
+            let signature = analyze_signature(
+                function,
+                &runtime_types,
+                &struct_ids,
+                &task_types,
+                &list_types,
+                &optional_types,
+                None,
+            )?;
+            let kind = FunctionKind::External {
+                signature,
+                symbol: function.name.clone(),
+                library: external.library.clone(),
+            };
+            if functions.insert(function.name.clone(), kind).is_some() {
+                return Err(CodegenError::at(
+                    format!("duplicate function `{}`", function.name),
+                    function.span,
+                ));
+            }
         }
     }
 
@@ -941,16 +1033,23 @@ pub fn compile_module<M: Module>(
         global_storage.insert(name.clone(), GlobalStorage { value, initialized });
     }
 
-    for (name, _, signature) in info.user_functions() {
+    for (name, kind) in &info.functions {
+        let (link_name, linkage, signature) = match kind {
+            FunctionKind::User { signature, .. } => {
+                (mangled_name(name), Linkage::Export, signature)
+            }
+            FunctionKind::External {
+                signature, symbol, ..
+            } => (symbol.clone(), Linkage::Import, signature),
+            FunctionKind::Native { .. } => continue,
+        };
         let cranelift_signature = build_signature(module, signature)?;
-
         let func_id = module
-            .declare_function(&mangled_name(name), Linkage::Export, &cranelift_signature)
+            .declare_function(&link_name, linkage, &cranelift_signature)
             .map_err(|error| CodegenError::new(error.to_string(), None))?;
-
         func_ids.insert(name.to_owned(), func_id);
 
-        if name.starts_with("__kome_task_body_") {
+        if matches!(kind, FunctionKind::User { .. }) && name.starts_with("__kome_task_body_") {
             let mut entry_signature = module.make_signature();
             entry_signature.params.push(AbiParam::new(types::I64));
             entry_signature
@@ -1564,6 +1663,9 @@ fn type_from_annotation(
     list_types: &RefCell<Vec<KomeType>>,
     optional_types: &RefCell<Vec<KomeType>>,
 ) -> CodegenResult<KomeType> {
+    if let kome_ast::types::Type::Pointer(_) = annotation {
+        return Ok(KomeType::Pointer);
+    }
     if let kome_ast::types::Type::Optional(optional) = annotation {
         let inner = type_from_annotation(
             &optional.inner,
@@ -2049,6 +2151,8 @@ impl TypedValue {
 /// that mutable translation can proceed without outstanding borrows.
 enum CalleePlan {
     User,
+
+    External,
 
     Native { symbol: String },
 }
@@ -5269,6 +5373,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Some(FunctionKind::User { .. }) => CalleePlan::User,
 
+            Some(FunctionKind::External { .. }) => CalleePlan::External,
+
             Some(FunctionKind::Native { symbol, .. }) => CalleePlan::Native {
                 symbol: (*symbol).to_owned(),
             },
@@ -5313,7 +5419,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         }
 
         let result = match plan {
-            CalleePlan::User => self.emit_user_call(&callee.name, &arguments, &signature)?,
+            CalleePlan::User | CalleePlan::External => {
+                self.emit_user_call(&callee.name, &arguments, &signature)?
+            }
             CalleePlan::Native { symbol } => {
                 self.emit_native_call(&symbol, &arguments, &signature)?
             }
@@ -6243,7 +6351,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     return Err(CodegenError::new("parameters cannot have type Void", None));
                 }
 
-                KomeType::Struct(_)
+                KomeType::Pointer
+                | KomeType::Struct(_)
                 | KomeType::Task(_)
                 | KomeType::List(_)
                 | KomeType::Enum(_)
@@ -6305,7 +6414,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .ins()
                 .bitcast(types::F64, MachMemFlags::new(), payload),
 
-            KomeType::Struct(_)
+            KomeType::Pointer
+            | KomeType::Struct(_)
             | KomeType::Task(_)
             | KomeType::List(_)
             | KomeType::Enum(_)
@@ -6345,9 +6455,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
             KomeType::I16 | KomeType::U16 => Ok(self.builder.ins().iconst(types::I16, 0)),
             KomeType::I32 | KomeType::U32 => Ok(self.builder.ins().iconst(types::I32, 0)),
-            KomeType::I64 | KomeType::U64 | KomeType::Isize | KomeType::Usize => {
-                Ok(self.builder.ins().iconst(types::I64, 0))
-            }
+            KomeType::I64
+            | KomeType::U64
+            | KomeType::Isize
+            | KomeType::Usize
+            | KomeType::Pointer => Ok(self.builder.ins().iconst(types::I64, 0)),
             KomeType::Void => Err(CodegenError::new(
                 "internal error: Void has no zero value",
                 None,
