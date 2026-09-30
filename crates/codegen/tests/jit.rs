@@ -376,6 +376,28 @@ fn main() {
 }
 
 #[test]
+fn executes_tasks_returning_void() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn work() { report(1) }
+
+fn main() {
+    let pending = task work()
+    wait pending
+    report(2)
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        ["1", "2"].map(|value| Value::Number(Number::parse(value).unwrap()))
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

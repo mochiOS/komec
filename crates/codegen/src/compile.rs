@@ -59,6 +59,7 @@ pub enum FunctionKind {
 }
 
 impl FunctionKind {
+    /// Returns the native signature shared by this function kind.
     pub fn signature(&self) -> &FunctionSignature {
         match self {
             Self::Native { signature, .. } => signature,
@@ -123,10 +124,12 @@ struct TypeImplementation {
 }
 
 impl ModuleInfo {
+    /// Looks up an analyzed function by its deterministic codegen key.
     pub fn get(&self, name: &str) -> Option<&FunctionKind> {
         self.functions.get(name)
     }
 
+    /// Looks up the concrete representation of a runtime-backed named type.
     pub fn runtime_type(&self, name: &str) -> Option<KomeType> {
         self.runtime_types.get(name).copied()
     }
@@ -229,6 +232,7 @@ impl ModuleInfo {
         }
     }
 
+    /// Iterates over Kome-defined functions and their analyzed signatures.
     pub fn user_functions(
         &self,
     ) -> impl Iterator<Item = (&str, &FunctionDeclaration, &FunctionSignature)> {
@@ -1306,6 +1310,9 @@ fn type_from_annotation(
         return Ok(KomeType::List(id));
     }
     if let kome_ast::types::Type::Named(named) = annotation {
+        if named.name == "Void" && named.type_arguments.is_empty() {
+            return Ok(KomeType::Void);
+        }
         if named.name == "Task" {
             if named.type_arguments.len() != 1 {
                 return Err(CodegenError::at(
@@ -1749,7 +1756,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 self.release_managed(*argument, *kome_type);
             }
         }
-        let result = result.expect_value(kome_ast::Span::new(0, 0))?;
+        let result = if signature.ret == KomeType::Void {
+            self.builder.ins().iconst(types::I64, 0)
+        } else {
+            result.expect_value(kome_ast::Span::new(0, 0))?
+        };
         let is_cancelled = Module::declare_func_in_func(
             self.module,
             self.foreign.task_is_cancelled,
@@ -1771,7 +1782,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         self.builder.ins().return_(&[zero]);
         self.builder.switch_to_block(finish);
         self.builder.seal_block(finish);
-        let result = self.value_to_task_slot(result, signature.ret);
+        let result = if signature.ret == KomeType::Void {
+            result
+        } else {
+            self.value_to_task_slot(result, signature.ret)
+        };
         self.builder.ins().return_(&[result]);
 
         self.builder.switch_to_block(cleanup);
@@ -2437,12 +2452,6 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             .expect("lowered task body must be analyzed")
             .signature()
             .clone();
-        if signature.ret == KomeType::Void {
-            return Err(CodegenError::at(
-                "task expressions returning Void are not supported yet",
-                task.span,
-            ));
-        }
         if expected_result.is_some_and(|expected| expected != signature.ret) {
             return Err(CodegenError::at(
                 "task result has the wrong type",
@@ -2515,10 +2524,14 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let wait_call = self.builder.ins().call(wait_fn, &[handle]);
         let state = self.builder.inst_results(wait_call)[0];
         self.require_task_completed(state, 0);
+        let result_type = self.info.task_result(id);
+        if result_type == KomeType::Void {
+            self.release_owned_temporary(task, wait.argument.span())?;
+            return Ok(TypedValue::void());
+        }
         let result_fn =
             Module::declare_func_in_func(self.module, self.foreign.task_result, self.builder.func);
         let call = self.builder.ins().call(result_fn, &[handle]);
-        let result_type = self.info.task_result(id);
         let value = self.task_slot_to_value(self.builder.inst_results(call)[0], result_type);
         if result_type.is_managed() {
             self.retain_managed(value, result_type);
@@ -3761,9 +3774,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         for argument in &call.args {
             let expression = match argument {
                 CallArg::Positional(value) => value,
-                CallArg::Named { span, .. } => {
-                    return Err(CodegenError::at("named arguments are not supported", *span));
-                }
+                CallArg::Named { value, .. } => value,
             };
             let task = self.evaluate(expression)?;
             let KomeType::Task(id) = task.kome_type else {
@@ -3914,18 +3925,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 call.span,
             ));
         }
-        let task_expression = match &call.args[0] {
-            CallArg::Positional(value) => value,
-            CallArg::Named { span, .. } => {
-                return Err(CodegenError::at("named arguments are not supported", *span));
-            }
-        };
-        let duration_expression = match &call.args[1] {
-            CallArg::Positional(value) => value,
-            CallArg::Named { span, .. } => {
-                return Err(CodegenError::at("named arguments are not supported", *span));
-            }
-        };
+        let names = ["task".to_owned(), "milliseconds".to_owned()];
+        let defaults = [None, None];
+        let ordered = self.order_call_arguments(&call.args, &names, &defaults, 0, call.span)?;
+        let task_expression = &ordered[0];
+        let duration_expression = &ordered[1];
         let task = self.evaluate(task_expression)?;
         let KomeType::Task(id) = task.kome_type else {
             return Err(CodegenError::at(

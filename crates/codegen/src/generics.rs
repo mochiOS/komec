@@ -11,7 +11,7 @@ use kome_ast::expressions::{
 };
 use kome_ast::generics::TypeSubstitution;
 use kome_ast::patterns::{IdentifierPattern, Pattern};
-use kome_ast::statements::{BlockStatement, ReturnStatement, Statement};
+use kome_ast::statements::{BlockStatement, ExpressionStatement, ReturnStatement, Statement};
 use kome_ast::types::{NamedType, Type};
 use std::collections::{HashMap, HashSet};
 
@@ -279,6 +279,9 @@ impl<'a> Expander<'a> {
                 Ok(Type::Named(named))
             }
             Type::Named(named) if self.emitted_structs.contains_key(&named.name) => {
+                Ok(Type::Named(named))
+            }
+            Type::Named(named) if named.name == "Void" && named.type_arguments.is_empty() => {
                 Ok(Type::Named(named))
             }
             Type::Named(named)
@@ -644,6 +647,20 @@ impl<'a> Expander<'a> {
                         })
                     })
                     .collect();
+                let statement = if matches!(
+                    &inner,
+                    Type::Named(named) if named.name == "Void" && named.type_arguments.is_empty()
+                ) {
+                    Statement::Expression(ExpressionStatement {
+                        span: value.span,
+                        expression: body_expression,
+                    })
+                } else {
+                    Statement::Return(ReturnStatement {
+                        span: value.span,
+                        argument: Some(body_expression),
+                    })
+                };
                 self.output.push(Declaration::Function(FunctionDeclaration {
                     span: value.span,
                     attributes: Vec::new(),
@@ -652,10 +669,7 @@ impl<'a> Expander<'a> {
                     params,
                     body: Some(BlockStatement {
                         span: value.span,
-                        statements: vec![Statement::Return(ReturnStatement {
-                            span: value.span,
-                            argument: Some(body_expression),
-                        })],
+                        statements: vec![statement],
                     }),
                     return_type: Some(inner.clone()),
                 }));
@@ -851,7 +865,7 @@ impl<'a> Expander<'a> {
                         .return_type
                         .as_ref()
                         .map(|value| map.apply(value))
-                        .unwrap_or_else(|| unknown_type(call.span)));
+                        .unwrap_or_else(|| void_type(call.span)));
                 }
                 let member_result = if let Expression::Member(member) = call.callee.as_mut() {
                     let target = if let Expression::Ident(identifier) = member.object.as_ref()
@@ -1128,6 +1142,14 @@ fn unknown_type(span: kome_ast::Span) -> Type {
     Type::Named(NamedType {
         span,
         name: "<unknown>".into(),
+        type_arguments: Vec::new(),
+    })
+}
+
+fn void_type(span: kome_ast::Span) -> Type {
+    Type::Named(NamedType {
+        span,
+        name: "Void".into(),
         type_arguments: Vec::new(),
     })
 }
