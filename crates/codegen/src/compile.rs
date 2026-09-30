@@ -773,6 +773,7 @@ pub fn compile_module<M: Module>(
                 loops: Vec::new(),
                 allow_managed_moves: true,
                 evaluating_globals: Vec::new(),
+                closures: Vec::new(),
             };
 
             translator.translate_function(declaration, signature)?;
@@ -830,6 +831,7 @@ pub fn compile_module<M: Module>(
                 loops: Vec::new(),
                 allow_managed_moves: true,
                 evaluating_globals: Vec::new(),
+                closures: Vec::new(),
             };
             translator.translate_task_entry(name, signature)?;
         }
@@ -1428,6 +1430,7 @@ struct FunctionTranslator<'b, 'c, M: Module> {
     loops: Vec<LoopContext>,
     allow_managed_moves: bool,
     evaluating_globals: Vec<String>,
+    closures: Vec<(String, usize, kome_ast::expressions::ClosureExpression)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1476,6 +1479,109 @@ fn count_variable_reads(
 
 fn contains_control_flow(block: &BlockStatement) -> bool {
     block.statements.iter().any(statement_contains_control_flow)
+}
+
+fn contains_closure(block: &BlockStatement) -> bool {
+    block.statements.iter().any(statement_contains_closure)
+}
+
+fn statement_contains_closure(statement: &Statement) -> bool {
+    match statement {
+        Statement::Expression(value) => expression_contains_closure(&value.expression),
+        Statement::Let(value) => value.init.as_ref().is_some_and(expression_contains_closure),
+        Statement::Return(value) => value
+            .argument
+            .as_ref()
+            .is_some_and(expression_contains_closure),
+        Statement::Block(value) => contains_closure(value),
+        Statement::If(value) => {
+            expression_contains_closure(&value.test)
+                || statement_contains_closure(&value.consequent)
+                || value
+                    .alternative
+                    .as_deref()
+                    .is_some_and(statement_contains_closure)
+        }
+        Statement::While(value) => {
+            expression_contains_closure(&value.test) || statement_contains_closure(&value.body)
+        }
+        Statement::ForIn(value) => {
+            expression_contains_closure(&value.right) || statement_contains_closure(&value.body)
+        }
+        Statement::Is(value) => {
+            value
+                .value
+                .as_ref()
+                .is_some_and(expression_contains_closure)
+                || statement_contains_closure(&value.body)
+        }
+        Statement::Declaration(Declaration::Let(value))
+        | Statement::Declaration(Declaration::Constant(value)) => {
+            value.init.as_ref().is_some_and(expression_contains_closure)
+        }
+        _ => false,
+    }
+}
+
+fn expression_contains_closure(expression: &Expression) -> bool {
+    match expression {
+        Expression::Closure(_) => true,
+        Expression::Unary(value) => expression_contains_closure(&value.argument),
+        Expression::Task(value) => expression_contains_closure(&value.argument),
+        Expression::Wait(value) => expression_contains_closure(&value.argument),
+        Expression::Cancel(value) => expression_contains_closure(&value.argument),
+        Expression::Binary(value) => {
+            expression_contains_closure(&value.left) || expression_contains_closure(&value.right)
+        }
+        Expression::Call(value) => {
+            expression_contains_closure(&value.callee)
+                || value.args.iter().any(|argument| match argument {
+                    CallArg::Positional(value) => expression_contains_closure(value),
+                    CallArg::Named { value, .. } => expression_contains_closure(value),
+                })
+        }
+        Expression::Member(value) => expression_contains_closure(&value.object),
+        Expression::Index(value) => {
+            expression_contains_closure(&value.object) || expression_contains_closure(&value.index)
+        }
+        Expression::Assign(value) => {
+            expression_contains_closure(&value.target) || expression_contains_closure(&value.value)
+        }
+        Expression::Group(value) => expression_contains_closure(&value.expression),
+        Expression::Block(value) => {
+            value.statements.iter().any(statement_contains_closure)
+                || value
+                    .tail
+                    .as_deref()
+                    .is_some_and(expression_contains_closure)
+        }
+        Expression::List(value) => value
+            .elems
+            .iter()
+            .flatten()
+            .any(expression_contains_closure),
+        Expression::Object(value) => value.props.iter().any(|property| match property {
+            ObjectProperty::KeyValue(value) => expression_contains_closure(&value.value),
+        }),
+        Expression::Struct(value) => value
+            .fields
+            .iter()
+            .any(|field| expression_contains_closure(&field.value)),
+        Expression::Template(value) => value.parts.iter().any(|part| match part {
+            TemplatePart::String { .. } => false,
+            TemplatePart::Expression { expression, .. } => expression_contains_closure(expression),
+        }),
+        Expression::Is(value) => {
+            expression_contains_closure(&value.value) || expression_contains_closure(&value.body)
+        }
+        Expression::Component(value) => {
+            value.args.iter().any(|argument| match argument {
+                CallArg::Positional(value) => expression_contains_closure(value),
+                CallArg::Named { value, .. } => expression_contains_closure(value),
+            }) || value.children.iter().any(expression_contains_closure)
+        }
+        Expression::Literal(_) | Expression::Ident(_) | Expression::DotIdent(_) => false,
+    }
 }
 
 fn statement_contains_control_flow(statement: &Statement) -> bool {
@@ -1839,7 +1945,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         })?;
 
         self.remaining_reads = count_variable_reads(declaration, body);
-        self.allow_managed_moves = !contains_control_flow(body);
+        self.allow_managed_moves = !contains_control_flow(body) && !contains_closure(body);
 
         let parameters = self.builder.block_params(entry_block).to_vec();
 
@@ -1887,6 +1993,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
     fn translate_block(&mut self, block: &BlockStatement) -> CodegenResult<()> {
         self.scopes.push(HashMap::new());
+        let closure_depth = self.scopes.len();
 
         for statement in &block.statements {
             if self.terminated {
@@ -1908,6 +2015,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         } else {
             self.scopes.pop();
         }
+        self.closures.retain(|(_, depth, _)| *depth < closure_depth);
 
         Ok(())
     }
@@ -1965,6 +2073,20 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                         binding.pattern.span(),
                     ));
                 };
+                let closure = match binding.init.as_ref() {
+                    Some(Expression::Closure(closure)) => Some(closure.clone()),
+                    Some(Expression::Group(group)) => match group.expression.as_ref() {
+                        Expression::Closure(closure) => Some(closure.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(closure) = closure {
+                    self.next_binding_id += 1;
+                    self.closures
+                        .push((pattern.name.clone(), self.scopes.len(), closure));
+                    return Ok(());
+                }
 
                 let annotated_type = binding
                     .type_annotation
@@ -2700,29 +2822,27 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
         let scoped = self.scopes[scope][&identifier.name];
 
-        let remaining = self
-            .remaining_reads
-            .get_mut(&scoped.binding_id)
-            .ok_or_else(|| {
-                CodegenError::at(
-                    format!(
-                        "internal error: missing read count for `{}`",
-                        identifier.name
-                    ),
-                    identifier.span,
-                )
-            })?;
-
-        *remaining -= 1;
-
-        let ownership = if self.allow_managed_moves
-            && scoped.kome_type.is_managed()
-            && scoped.owns_value
-            && *remaining == 0
-        {
-            ValueOwnership::BorrowedMovable {
-                scope,
-                variable: scoped.variable,
+        let ownership = if self.allow_managed_moves {
+            let remaining = self
+                .remaining_reads
+                .get_mut(&scoped.binding_id)
+                .ok_or_else(|| {
+                    CodegenError::at(
+                        format!(
+                            "internal error: missing read count for `{}`",
+                            identifier.name
+                        ),
+                        identifier.span,
+                    )
+                })?;
+            *remaining -= 1;
+            if scoped.kome_type.is_managed() && scoped.owns_value && *remaining == 0 {
+                ValueOwnership::BorrowedMovable {
+                    scope,
+                    variable: scoped.variable,
+                }
+            } else {
+                ValueOwnership::Borrowed
             }
         } else {
             ValueOwnership::Borrowed
@@ -3992,6 +4112,33 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             && let Expression::Closure(closure) = group.expression.as_ref()
         {
             return self.evaluate_closure_call(closure, call);
+        }
+        if let Expression::Ident(identifier) = call.callee.as_ref() {
+            let local = self
+                .closures
+                .iter()
+                .rev()
+                .find(|(name, _, _)| name == &identifier.name)
+                .map(|(_, _, closure)| closure.clone());
+            if let Some(closure) = local {
+                return self.evaluate_closure_call(&closure, call);
+            }
+            let global = self
+                .info
+                .globals
+                .get(&identifier.name)
+                .and_then(|binding| binding.init.as_ref())
+                .and_then(|initializer| match initializer {
+                    Expression::Closure(closure) => Some(closure.clone()),
+                    Expression::Group(group) => match group.expression.as_ref() {
+                        Expression::Closure(closure) => Some(closure.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+            if let Some(closure) = global {
+                return self.evaluate_closure_call(&closure, call);
+            }
         }
         if let Expression::Ident(identifier) = call.callee.as_ref() {
             match identifier.name.as_str() {

@@ -442,6 +442,29 @@ fn main() {
 }
 
 #[test]
+fn stores_and_calls_local_and_global_closures() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+const NEXT = |value: Number| value + 1
+
+fn main() {
+    let base = 40
+    let add = |value: Number| base + value
+    report(add(2))
+    report(NEXT(41))
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        ["42", "42"].map(|value| Value::Number(Number::parse(value).unwrap()))
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"
