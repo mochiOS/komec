@@ -221,6 +221,25 @@ fn main() { println(combine(second: 2, first: 4)) }
 }
 
 #[test]
+fn builds_and_runs_enum_cases_and_is_patterns() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+
+enum Status { idle, ready, done }
+
+fn main() {
+    let status: Status = .ready
+    is status .ready => println(42)
+}
+"#,
+    );
+
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

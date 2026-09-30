@@ -24,6 +24,7 @@ struct Expander<'a> {
     structs: HashMap<String, &'a StructDeclaration>,
     functions: HashMap<String, &'a FunctionDeclaration>,
     traits: HashMap<String, &'a TraitDeclaration>,
+    enums: HashSet<String>,
     implementations: Vec<&'a ForDeclaration>,
     output: Vec<Declaration>,
     emitted_structs: HashMap<String, String>,
@@ -41,6 +42,7 @@ impl<'a> Expander<'a> {
         let mut functions = HashMap::new();
         let mut traits = HashMap::new();
         let mut implementations = Vec::new();
+        let mut enums = HashSet::new();
         for declaration in &module.declarations {
             match declaration {
                 Declaration::Struct(value) => {
@@ -53,6 +55,9 @@ impl<'a> Expander<'a> {
                     traits.insert(value.name.clone(), value);
                 }
                 Declaration::For(value) => implementations.push(value),
+                Declaration::Enum(value) => {
+                    enums.insert(value.name.clone());
+                }
                 _ => {}
             }
         }
@@ -61,6 +66,7 @@ impl<'a> Expander<'a> {
             structs,
             functions,
             traits,
+            enums,
             implementations,
             output: Vec::new(),
             emitted_structs: HashMap::new(),
@@ -279,7 +285,8 @@ impl<'a> Expander<'a> {
                 if substitution.get(&named.name).is_none()
                     && named.type_arguments.is_empty()
                     && !self.structs.contains_key(&named.name)
-                    && !self.traits.contains_key(&named.name) =>
+                    && !self.traits.contains_key(&named.name)
+                    && !self.enums.contains(&named.name) =>
             {
                 Err(CodegenError::at(
                     format!(

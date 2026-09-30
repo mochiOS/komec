@@ -275,6 +275,30 @@ fn main() {
 }
 
 #[test]
+fn executes_enum_cases_and_is_patterns() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+enum Color { red, green, blue }
+
+fn main() {
+    let color: Color = .green
+    if color == Color.green { report(1) }
+    is color .green => report(2)
+    is "ready" "ready" => report(3)
+    is 4 value => report(value)
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        ["1", "2", "3", "4"].map(|value| Value::Number(Number::parse(value).unwrap()))
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

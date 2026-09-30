@@ -23,6 +23,7 @@ use kome_ast::expressions::{
     ObjectExpression, ObjectProperty, PropertyKey, StructExpression, TaskExpression,
     TemplateExpression, TemplatePart, UnaryExpression, UnaryOp, WaitExpression,
 };
+use kome_ast::patterns::IsPattern;
 use kome_ast::statements::{BlockStatement, Statement};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -74,6 +75,13 @@ pub struct ModuleInfo {
     implementations: Vec<TypeImplementation>,
     task_types: RefCell<Vec<KomeType>>,
     list_types: RefCell<Vec<KomeType>>,
+    enums: Vec<EnumInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct EnumInfo {
+    name: String,
+    cases: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +137,7 @@ impl ModuleInfo {
             KomeType::Struct(id) => self.structs[id].name.clone(),
             KomeType::Task(id) => format!("Task<{}>", self.type_name(self.task_result(id))),
             KomeType::List(id) => format!("{}[]", self.type_name(self.list_element(id))),
+            KomeType::Enum(id) => self.enums[id].name.clone(),
             _ => ty.name(),
         }
     }
@@ -239,6 +248,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
     let mut struct_ids = HashMap::new();
     let task_types = RefCell::new(Vec::new());
     let list_types = RefCell::new(Vec::new());
+    let mut enums = Vec::new();
 
     for declaration in &module.declarations {
         let Declaration::Struct(struct_decl) = declaration else {
@@ -256,6 +266,27 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 ));
             }
         }
+    }
+
+    for declaration in &module.declarations {
+        let Declaration::Enum(enum_) = declaration else {
+            continue;
+        };
+        let id = enums.len();
+        if runtime_types
+            .insert(enum_.name.clone(), KomeType::Enum(id))
+            .is_some()
+            || struct_ids.contains_key(&enum_.name)
+        {
+            return Err(CodegenError::at(
+                format!("duplicate type `{}`", enum_.name),
+                enum_.span,
+            ));
+        }
+        enums.push(EnumInfo {
+            name: enum_.name.clone(),
+            cases: enum_.cases.iter().map(|case| case.name.clone()).collect(),
+        });
     }
 
     let mut structs = vec![None; struct_ids.len()];
@@ -493,6 +524,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         implementations,
         task_types,
         list_types,
+        enums,
     })
 }
 
@@ -1502,7 +1534,14 @@ impl ReadCounter {
                 if let Some(value) = &statement.value {
                     self.visit_expression(value);
                 }
-                self.visit_statement(&statement.body);
+                if let IsPattern::Ident(pattern) = &statement.pattern {
+                    self.scopes.push(HashMap::new());
+                    self.declare(&pattern.name);
+                    self.visit_statement(&statement.body);
+                    self.scopes.pop();
+                } else {
+                    self.visit_statement(&statement.body);
+                }
             }
 
             Statement::Declaration(_)
@@ -1928,7 +1967,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Statement::Continue(statement) => self.translate_continue(statement.span)?,
 
-            Statement::Is(_) => return Err(unsupported_statement("is", statement)),
+            Statement::Is(statement) => self.translate_is(statement)?,
 
             Statement::Declaration(_) => {
                 return Err(unsupported_statement("nested declaration", statement));
@@ -2146,6 +2185,68 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         self.builder.switch_to_block(exit);
         self.terminated = false;
         self.release_owned_temporary(iterable, statement.right.span())?;
+        Ok(())
+    }
+
+    fn translate_is(&mut self, statement: &kome_ast::statements::IsStatement) -> CodegenResult<()> {
+        let Some(value_expression) = &statement.value else {
+            return Err(CodegenError::at(
+                "implicit `is` values are only available inside component event recipes",
+                statement.span,
+            ));
+        };
+        if let IsPattern::Ident(pattern) = &statement.pattern {
+            let value = self.evaluate(value_expression)?;
+            let raw = self.own_value(value, value_expression.span())?;
+            self.scopes.push(HashMap::new());
+            self.declare_variable(&pattern.name, raw, value.kome_type, ValueOwnership::Owned)?;
+            self.translate_statement(&statement.body)?;
+            if !self.terminated {
+                let scope = self.scopes.pop().expect("is binding scope exists");
+                for scoped in scope.values() {
+                    if scoped.kome_type.is_managed() && scoped.owns_value {
+                        let value = self.builder.use_var(scoped.variable);
+                        self.release_managed(value, scoped.kome_type);
+                    }
+                }
+            } else {
+                self.scopes.pop();
+            }
+            return Ok(());
+        }
+        let pattern = match &statement.pattern {
+            IsPattern::Literal(pattern) => Expression::literal(pattern.value.clone(), pattern.span),
+            IsPattern::DotIdent(pattern) => {
+                Expression::DotIdent(kome_ast::expressions::DotIdentifierExpression {
+                    span: pattern.span,
+                    name: pattern.name.clone(),
+                })
+            }
+            IsPattern::Ident(_) => unreachable!(),
+        };
+        let comparison = BinaryExpression {
+            span: statement.span,
+            op: BinaryOp::Eq,
+            left: Box::new(value_expression.clone()),
+            right: Box::new(pattern),
+        };
+        let condition = self.evaluate_binary(&comparison)?;
+        let condition = condition.expect_value(statement.span)?;
+        let body = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.ins().brif(condition, body, &[], done, &[]);
+        let base_scopes = self.scopes.clone();
+        self.builder.switch_to_block(body);
+        self.builder.seal_block(body);
+        self.terminated = false;
+        self.translate_statement(&statement.body)?;
+        if !self.terminated {
+            self.builder.ins().jump(done, &[]);
+        }
+        self.scopes = base_scopes;
+        self.builder.seal_block(done);
+        self.builder.switch_to_block(done);
+        self.terminated = false;
         Ok(())
     }
 
@@ -2601,8 +2702,40 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         if let Expression::Object(object) = expression {
             return self.evaluate_object(object, expected);
         }
+        if let Expression::DotIdent(dot) = expression {
+            let Some(KomeType::Enum(id)) = expected else {
+                return Err(CodegenError::at(
+                    "a dot-prefixed case requires an enum context",
+                    dot.span,
+                ));
+            };
+            return self.evaluate_enum_case(id, &dot.name, dot.span);
+        }
 
         self.evaluate(expression)
+    }
+
+    fn evaluate_enum_case(
+        &mut self,
+        id: usize,
+        case_name: &str,
+        span: Span,
+    ) -> CodegenResult<TypedValue> {
+        let enum_ = &self.info.enums[id];
+        let tag = enum_
+            .cases
+            .iter()
+            .position(|case| case == case_name)
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!("enum `{}` has no case `{case_name}`", enum_.name),
+                    span,
+                )
+            })?;
+        Ok(TypedValue::some(
+            self.builder.ins().iconst(types::I64, tag as i64),
+            KomeType::Enum(id),
+        ))
     }
 
     fn evaluate_block_expression(
@@ -2997,6 +3130,15 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
     }
 
     fn evaluate_member(&mut self, member: &MemberExpression) -> CodegenResult<TypedValue> {
+        if let Expression::Ident(identifier) = member.object.as_ref()
+            && !self
+                .scopes
+                .iter()
+                .any(|scope| scope.contains_key(&identifier.name))
+            && let Some(KomeType::Enum(id)) = self.info.runtime_types.get(&identifier.name).copied()
+        {
+            return self.evaluate_enum_case(id, &member.property, member.span);
+        }
         if let Expression::Ident(identifier) = member.object.as_ref()
             && !self
                 .scopes
@@ -3398,6 +3540,25 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
                         Ok(TypedValue::some(
                             self.builder.ins().icmp(condition, left_value, right_value),
+                            KomeType::Boolean,
+                        ))
+                    }
+
+                    (KomeType::Enum(left_id), KomeType::Enum(right_id))
+                        if left_id == right_id
+                            && matches!(binary.op, BinaryOp::Eq | BinaryOp::NotEq) =>
+                    {
+                        let condition = if binary.op == BinaryOp::Eq {
+                            IntCC::Equal
+                        } else {
+                            IntCC::NotEqual
+                        };
+                        Ok(TypedValue::some(
+                            self.builder.ins().icmp(
+                                condition,
+                                left.expect_value(span)?,
+                                right.expect_value(span)?,
+                            ),
                             KomeType::Boolean,
                         ))
                     }
@@ -4099,7 +4260,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     return Err(CodegenError::new("parameters cannot have type Void", None));
                 }
 
-                KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) => {
+                KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) | KomeType::Enum(_) => {
                     return Err(CodegenError::new(
                         "managed aggregate values cannot cross the native ABI",
                         None,
@@ -4142,7 +4303,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
 
-            KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) => {
+            KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) | KomeType::Enum(_) => {
                 return Err(CodegenError::new(
                     "managed aggregate values cannot cross the native ABI",
                     None,
@@ -4210,6 +4371,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 "List cannot be used without an initializer",
                 None,
             )),
+            KomeType::Enum(_) => Ok(self.builder.ins().iconst(types::I64, 0)),
         }
     }
 
