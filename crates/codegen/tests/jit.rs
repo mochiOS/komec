@@ -519,6 +519,34 @@ component Counter(start: Number = 40) {
 }
 
 #[test]
+fn checks_and_executes_application_body_view_binding() {
+    let module = kome_parser::parse(
+        r#"
+@runtime("view")
+struct View
+component VStack()
+@application
+component App() {
+    @body
+    let body: View = { VStack().padding(24) }
+}
+"#,
+    )
+    .unwrap();
+    let resolution = kome_semantics::resolver::ScopeBuilder::resolve(&module);
+    assert!(resolution.errors.is_empty(), "{:?}", resolution.errors);
+    let initialization = kome_semantics::initialization::InitializationChecker::check(&module);
+    assert!(
+        initialization.errors.is_empty(),
+        "{:?}",
+        initialization.errors
+    );
+    let type_check = kome_semantics::typecheck::TypeChecker::check(&module);
+    assert!(type_check.errors.is_empty(), "{:?}", type_check.errors);
+    kome_jit::execute(&module, "main").unwrap();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

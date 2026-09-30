@@ -16,3 +16,4 @@ kome_aot.workspace = true
 kome_jit.workspace = true
 kome_native_rt.workspace = true
 kome_parser.workspace = true
+kome_semantics.workspace = true

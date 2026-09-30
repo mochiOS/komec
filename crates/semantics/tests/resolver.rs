@@ -365,6 +365,15 @@ fn rejects_component_level_let() {
 }
 
 #[test]
+fn allows_component_body_binding() {
+    let source = "component App() { @body let body = 1 }";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+}
+
+#[test]
 fn rejects_assignment_to_immutable_variable() {
     let source = "fn foo() { let x = 1 x = 2 }";
     let module = parse(source).unwrap();

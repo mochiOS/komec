@@ -215,7 +215,11 @@ impl ScopeBuilder {
                 match member {
                     ComponentMember::State(binding) => self.register_binding(binding),
                     ComponentMember::Let(binding) => {
-                        if !binding.mutable {
+                        let is_body = binding
+                            .attributes
+                            .iter()
+                            .any(|attribute| attribute.name == "body");
+                        if !binding.mutable && !is_body {
                             self.errors
                                 .push(ResolutionError::InvalidLetLocation { span: binding.span });
                         }

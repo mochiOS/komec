@@ -613,6 +613,7 @@ dependencies = [
  "kome_jit",
  "kome_native_rt",
  "kome_parser",
+ "kome_semantics",
 ]
 
 [[package]]
