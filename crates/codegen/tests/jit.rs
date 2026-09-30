@@ -436,23 +436,94 @@ fn other() {
 }
 
 #[test]
-fn rejects_unsupported_statements_at_compile_time() {
-    let module = kome_parser::parse(
-        r#"
-fn main() {
-    while true {
+fn executes_if_else_and_early_returns() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+fn classify(value: Number) -> Number {
+    if value < 10 {
+        return 1
+    } else if value == 10 {
+        return 2
+    } else {
+        return 3
     }
 }
-"#,
-    )
-    .unwrap();
-
-    let error = kome_jit::execute(&module, "main").unwrap_err();
-
-    assert!(
-        error.message().contains("`while` is not supported"),
-        "unexpected error: {error}"
+fn main() {
+    report(classify(5))
+    report(classify(10))
+    report(classify(20))
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::Number(Number::from_i64(1)),
+            Value::Number(Number::from_i64(2)),
+            Value::Number(Number::from_i64(3)),
+        ]
     );
+    clear_thread_registry();
+}
+
+#[test]
+fn executes_while_break_continue_and_nested_loops() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+fn main() {
+    var outer = 0
+    var hits = 0
+    while outer < 3 {
+        outer = outer + 1
+        var inner = 0
+        while inner < 4 {
+            inner = inner + 1
+            if inner == 2 {
+                continue
+            }
+            if inner == 4 {
+                break
+            }
+            hits = hits + 1
+        }
+    }
+    report(hits)
+}
+"#);
+    assert_eq!(capture.recorded(), vec![Value::Number(Number::from_i64(6))]);
+    clear_thread_registry();
+}
+
+#[test]
+fn keeps_managed_values_owned_across_control_flow() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+fn choose(flag: bool) {
+    let value = 999999999999999999999999999999
+    if flag {
+        report(value)
+    } else {
+        report(value)
+    }
+    while true {
+        let temporary = 888888888888888888888888888888
+        break
+    }
+}
+fn main() {
+    choose(true)
+    choose(false)
+}
+"#);
+    assert_eq!(capture.recorded().len(), 2);
+    assert!(capture.number_is_unique(0));
+    assert!(capture.number_is_unique(1));
+    clear_thread_registry();
 }
 
 #[test]

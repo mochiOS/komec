@@ -10,6 +10,7 @@ fn main() {
     let string = "Kome"
     let boolean = true
 }
+
 "#,
     )
     .unwrap();
@@ -17,6 +18,29 @@ fn main() {
     let result = TypeChecker::check(&module);
 
     assert!(result.errors.is_empty());
+}
+
+#[test]
+fn validates_break_and_continue_loop_context() {
+    let valid = parse(
+        r#"
+fn main() {
+    while true {
+        if true { continue }
+        break
+    }
+}
+"#,
+    )
+    .unwrap();
+    assert!(TypeChecker::check(&valid).errors.is_empty());
+
+    for source in ["fn main() { break }", "fn main() { continue }"] {
+        let module = parse(source).unwrap();
+        let result = TypeChecker::check(&module);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("inside a loop"));
+    }
 }
 
 #[test]

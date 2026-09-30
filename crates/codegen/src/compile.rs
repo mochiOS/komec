@@ -702,6 +702,8 @@ pub fn compile_module<M: Module>(
                 next_binding_id: 0,
                 return_type: signature.ret,
                 terminated: false,
+                loops: Vec::new(),
+                allow_managed_moves: true,
             };
 
             translator.translate_function(declaration, signature)?;
@@ -756,6 +758,8 @@ pub fn compile_module<M: Module>(
                 next_binding_id: 0,
                 return_type: signature.ret,
                 terminated: false,
+                loops: Vec::new(),
+                allow_managed_moves: true,
             };
             translator.translate_task_entry(name, signature)?;
         }
@@ -1282,6 +1286,15 @@ struct FunctionTranslator<'b, 'c, M: Module> {
     next_binding_id: usize,
     return_type: KomeType,
     terminated: bool,
+    loops: Vec<LoopContext>,
+    allow_managed_moves: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoopContext {
+    header: ir::Block,
+    exit: ir::Block,
+    scope_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1319,6 +1332,18 @@ fn count_variable_reads(
     counter.visit_block(block);
 
     counter.reads
+}
+
+fn contains_control_flow(block: &BlockStatement) -> bool {
+    block.statements.iter().any(statement_contains_control_flow)
+}
+
+fn statement_contains_control_flow(statement: &Statement) -> bool {
+    match statement {
+        Statement::If(_) | Statement::While(_) | Statement::ForIn(_) => true,
+        Statement::Block(block) => contains_control_flow(block),
+        _ => false,
+    }
 }
 
 impl ReadCounter {
@@ -1380,6 +1405,19 @@ impl ReadCounter {
 
             Statement::Block(block) => {
                 self.visit_block(block);
+            }
+
+            Statement::If(statement) => {
+                self.visit_expression(&statement.test);
+                self.visit_statement(&statement.consequent);
+                if let Some(alternative) = &statement.alternative {
+                    self.visit_statement(alternative);
+                }
+            }
+
+            Statement::While(statement) => {
+                self.visit_expression(&statement.test);
+                self.visit_statement(&statement.body);
             }
 
             _ => {}
@@ -1550,6 +1588,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         })?;
 
         self.remaining_reads = count_variable_reads(declaration, body);
+        self.allow_managed_moves = !contains_control_flow(body);
 
         let parameters = self.builder.block_params(entry_block).to_vec();
 
@@ -1627,7 +1666,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             Statement::Empty(_) => {}
 
             Statement::Expression(statement) => {
-                self.evaluate(&statement.expression)?;
+                let value = self.evaluate(&statement.expression)?;
+                self.release_owned_temporary(value, statement.expression.span())?;
             }
 
             Statement::Return(statement) => {
@@ -1733,15 +1773,15 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Statement::Block(block) => self.translate_block(block)?,
 
-            Statement::If(_) => return Err(unsupported_statement("if", statement)),
+            Statement::If(statement) => self.translate_if(statement)?,
 
-            Statement::While(_) => return Err(unsupported_statement("while", statement)),
+            Statement::While(statement) => self.translate_while(statement)?,
 
             Statement::ForIn(_) => return Err(unsupported_statement("for", statement)),
 
-            Statement::Break(_) => return Err(unsupported_statement("break", statement)),
+            Statement::Break(statement) => self.translate_break(statement.span)?,
 
-            Statement::Continue(_) => return Err(unsupported_statement("continue", statement)),
+            Statement::Continue(statement) => self.translate_continue(statement.span)?,
 
             Statement::Is(_) => return Err(unsupported_statement("is", statement)),
 
@@ -1751,6 +1791,146 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         }
 
         Ok(())
+    }
+
+    fn translate_if(&mut self, statement: &kome_ast::statements::IfStatement) -> CodegenResult<()> {
+        let condition = self.evaluate(&statement.test)?;
+        if condition.kome_type != KomeType::Boolean {
+            return Err(CodegenError::at(
+                format!(
+                    "`if` condition expects bool, but found {}",
+                    self.info.type_name(condition.kome_type)
+                ),
+                statement.test.span(),
+            ));
+        }
+        let condition_value = condition.expect_value(statement.test.span())?;
+        let consequent = self.builder.create_block();
+        let alternative = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(condition_value, consequent, &[], alternative, &[]);
+
+        let base_scopes = self.scopes.clone();
+
+        self.builder.switch_to_block(consequent);
+        self.builder.seal_block(consequent);
+        self.scopes = base_scopes.clone();
+        self.terminated = false;
+        self.translate_statement(&statement.consequent)?;
+        let consequent_reaches_done = !self.terminated;
+        if consequent_reaches_done {
+            self.builder.ins().jump(done, &[]);
+        }
+
+        self.builder.switch_to_block(alternative);
+        self.builder.seal_block(alternative);
+        self.scopes = base_scopes.clone();
+        self.terminated = false;
+        if let Some(statement) = &statement.alternative {
+            self.translate_statement(statement)?;
+        }
+        let alternative_reaches_done = !self.terminated;
+        if alternative_reaches_done {
+            self.builder.ins().jump(done, &[]);
+        }
+
+        self.scopes = base_scopes;
+        self.builder.seal_block(done);
+        if consequent_reaches_done || alternative_reaches_done {
+            self.builder.switch_to_block(done);
+            self.terminated = false;
+        } else {
+            self.terminated = true;
+        }
+        Ok(())
+    }
+
+    fn translate_while(
+        &mut self,
+        statement: &kome_ast::statements::WhileStatement,
+    ) -> CodegenResult<()> {
+        let header = self.builder.create_block();
+        let body = self.builder.create_block();
+        let exit = self.builder.create_block();
+        self.builder.ins().jump(header, &[]);
+
+        self.builder.switch_to_block(header);
+        let condition = self.evaluate(&statement.test)?;
+        if condition.kome_type != KomeType::Boolean {
+            return Err(CodegenError::at(
+                format!(
+                    "`while` condition expects bool, but found {}",
+                    self.info.type_name(condition.kome_type)
+                ),
+                statement.test.span(),
+            ));
+        }
+        let condition_value = condition.expect_value(statement.test.span())?;
+        self.builder
+            .ins()
+            .brif(condition_value, body, &[], exit, &[]);
+
+        let base_scopes = self.scopes.clone();
+        self.builder.switch_to_block(body);
+        self.builder.seal_block(body);
+        self.loops.push(LoopContext {
+            header,
+            exit,
+            scope_depth: base_scopes.len(),
+        });
+        self.scopes = base_scopes.clone();
+        self.terminated = false;
+        self.translate_statement(&statement.body)?;
+        self.loops.pop();
+        if !self.terminated {
+            self.builder.ins().jump(header, &[]);
+        }
+
+        self.scopes = base_scopes;
+        self.builder.seal_block(header);
+        self.builder.seal_block(exit);
+        self.builder.switch_to_block(exit);
+        self.terminated = false;
+        Ok(())
+    }
+
+    fn translate_break(&mut self, span: Span) -> CodegenResult<()> {
+        let context = self
+            .loops
+            .last()
+            .copied()
+            .ok_or_else(|| CodegenError::at("`break` can only be used inside a loop", span))?;
+        self.release_owned_scopes_from(context.scope_depth);
+        self.builder.ins().jump(context.exit, &[]);
+        self.terminated = true;
+        Ok(())
+    }
+
+    fn translate_continue(&mut self, span: Span) -> CodegenResult<()> {
+        let context =
+            self.loops.last().copied().ok_or_else(|| {
+                CodegenError::at("`continue` can only be used inside a loop", span)
+            })?;
+        self.release_owned_scopes_from(context.scope_depth);
+        self.builder.ins().jump(context.header, &[]);
+        self.terminated = true;
+        Ok(())
+    }
+
+    fn release_owned_scopes_from(&mut self, scope_depth: usize) {
+        let values = self
+            .scopes
+            .iter()
+            .skip(scope_depth)
+            .flat_map(|scope| scope.values())
+            .filter(|value| value.kome_type.is_managed() && value.owns_value)
+            .map(|value| (self.builder.use_var(value.variable), value.kome_type))
+            .collect::<Vec<_>>();
+        for (value, kome_type) in values {
+            self.release_managed(value, kome_type);
+        }
     }
 
     fn declare_variable(
@@ -2096,7 +2276,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
         *remaining -= 1;
 
-        let ownership = if scoped.kome_type.is_managed() && scoped.owns_value && *remaining == 0 {
+        let ownership = if self.allow_managed_moves
+            && scoped.kome_type.is_managed()
+            && scoped.owns_value
+            && *remaining == 0
+        {
             ValueOwnership::BorrowedMovable {
                 scope,
                 variable: scoped.variable,

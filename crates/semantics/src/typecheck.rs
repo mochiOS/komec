@@ -294,6 +294,7 @@ pub struct TypeChecker {
     traits: HashMap<String, TraitTypeInfo>,
     implementations: Vec<TypeImplementationInfo>,
     return_type: SemanticType,
+    loop_depth: usize,
     errors: Vec<TypeCheckError>,
 }
 
@@ -308,6 +309,7 @@ impl TypeChecker {
             traits: HashMap::new(),
             implementations: Vec::new(),
             return_type: SemanticType::Void,
+            loop_depth: 0,
             errors: Vec::new(),
         };
 
@@ -913,10 +915,25 @@ impl TypeChecker {
                 self.visit_statement(&is_statement.body);
             }
 
-            Statement::Break(_)
-            | Statement::Continue(_)
-            | Statement::Empty(_)
-            | Statement::Declaration(_) => {}
+            Statement::Break(statement) => {
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeCheckError {
+                        message: "`break` can only be used inside a loop".into(),
+                        span: statement.span,
+                    });
+                }
+            }
+
+            Statement::Continue(statement) => {
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeCheckError {
+                        message: "`continue` can only be used inside a loop".into(),
+                        span: statement.span,
+                    });
+                }
+            }
+
+            Statement::Empty(_) | Statement::Declaration(_) => {}
         }
     }
 
@@ -937,7 +954,9 @@ impl TypeChecker {
 
         self.check_compatible(&SemanticType::Bool, &condition, while_statement.test.span());
 
+        self.loop_depth += 1;
         self.visit_statement(&while_statement.body);
+        self.loop_depth -= 1;
     }
 
     fn visit_for_in_statement(&mut self, for_in: &ForInStatement) {
@@ -949,7 +968,9 @@ impl TypeChecker {
             self.declare(&identifier.name, SemanticType::Unknown);
         }
 
+        self.loop_depth += 1;
         self.visit_statement(&for_in.body);
+        self.loop_depth -= 1;
 
         self.exit_scope();
     }
