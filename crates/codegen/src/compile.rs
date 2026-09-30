@@ -108,6 +108,7 @@ struct GlobalStorage {
 struct EnumInfo {
     name: String,
     cases: Vec<String>,
+    raw_values: Vec<Option<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +352,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         enums.push(EnumInfo {
             name: enum_.name.clone(),
             cases: enum_.cases.iter().map(|case| case.name.clone()).collect(),
+            raw_values: enum_.cases.iter().map(|case| case.value.clone()).collect(),
         });
     }
 
@@ -4076,6 +4078,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     kind: LiteralKind::String("null".into()),
                 });
             }
+            KomeType::Enum(id) => return self.format_enum_value(id, raw, span),
             other => {
                 return Err(CodegenError::at(
                     format!(
@@ -4088,6 +4091,70 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         };
         self.release_owned_temporary(value, span)?;
         Ok(TypedValue::some(formatted, KomeType::String))
+    }
+
+    fn format_enum_value(
+        &mut self,
+        id: usize,
+        tag: ir::Value,
+        span: Span,
+    ) -> CodegenResult<TypedValue> {
+        let enum_ = self.info.enums[id].clone();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(done, types::I64);
+        let mut next = None;
+        for (index, case_name) in enum_.cases.iter().enumerate() {
+            if let Some(block) = next.take() {
+                self.builder.switch_to_block(block);
+                self.builder.seal_block(block);
+            }
+            let matched = self.builder.create_block();
+            let unmatched = self.builder.create_block();
+            let condition = self
+                .builder
+                .ins()
+                .icmp_imm_u(IntCC::Equal, tag, index as i64);
+            self.builder
+                .ins()
+                .brif(condition, matched, &[], unmatched, &[]);
+            self.builder.switch_to_block(matched);
+            self.builder.seal_block(matched);
+            let formatted = if let Some(raw_value) = &enum_.raw_values[index] {
+                let value = self.evaluate(raw_value)?;
+                self.format_template_value(value, raw_value.span())?
+            } else {
+                self.evaluate_literal(&LiteralExpression {
+                    span,
+                    kind: LiteralKind::String(case_name.clone()),
+                })?
+            };
+            self.builder
+                .ins()
+                .jump(done, &[ir::BlockArg::Value(formatted.expect_value(span)?)]);
+            next = Some(unmatched);
+        }
+        let fallback = if let Some(block) = next {
+            block
+        } else {
+            let block = self.builder.create_block();
+            self.builder.ins().jump(block, &[]);
+            block
+        };
+        self.builder.switch_to_block(fallback);
+        self.builder.seal_block(fallback);
+        let invalid = self.evaluate_literal(&LiteralExpression {
+            span,
+            kind: LiteralKind::String("<invalid enum>".into()),
+        })?;
+        self.builder
+            .ins()
+            .jump(done, &[ir::BlockArg::Value(invalid.expect_value(span)?)]);
+        self.builder.seal_block(done);
+        self.builder.switch_to_block(done);
+        Ok(TypedValue::some(
+            self.builder.block_params(done)[0],
+            KomeType::String,
+        ))
     }
 
     fn evaluate_list(

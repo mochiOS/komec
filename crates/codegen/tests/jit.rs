@@ -313,11 +313,13 @@ fn main() {
 #[test]
 fn executes_enum_cases_and_is_patterns() {
     let capture = Capture::install("test.capture");
-    run(r#"
+    run(r##"
 @native("test.capture")
 fn report(value: Number)
+@native("test.capture")
+fn reportText(value: String)
 
-enum Color { red, green, blue }
+enum Color { red, green = "#00ff00", blue }
 
 fn main() {
     let color: Color = .green
@@ -325,11 +327,18 @@ fn main() {
     is color .green => report(2)
     is "ready" "ready" => report(3)
     is 4 value => report(value)
+    reportText("{color}")
 }
-"#);
+"##);
     assert_eq!(
         capture.recorded(),
-        ["1", "2", "3", "4"].map(|value| Value::Number(Number::parse(value).unwrap()))
+        vec![
+            Value::Number(Number::parse("1").unwrap()),
+            Value::Number(Number::parse("2").unwrap()),
+            Value::Number(Number::parse("3").unwrap()),
+            Value::Number(Number::parse("4").unwrap()),
+            Value::String(KomeString::new("#00ff00")),
+        ]
     );
     clear_thread_registry();
 }

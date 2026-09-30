@@ -229,17 +229,20 @@ fn builds_and_runs_enum_cases_and_is_patterns() {
         r#"
 @native("core.write_line")
 fn println(value: Number)
+@native("core.write_line")
+fn printText(value: String)
 
-enum Status { idle, ready, done }
+enum Status { idle, ready = "ready-value", done }
 
 fn main() {
     let status: Status = .ready
     is status .ready => println(42)
+    printText("{status}")
 }
 "#,
     );
 
-    assert_eq!(stdout, "42\n");
+    assert_eq!(stdout, "42\nready-value\n");
 }
 
 #[test]
