@@ -11,6 +11,7 @@ pub enum Type {
     Object(ObjectType),
     Named(NamedType),
     Optional(OptionalType),
+    Pointer(PointerType),
 }
 
 /// `String`, `Number`, `bool`, fixed-width numbers, etc.
@@ -33,9 +34,26 @@ pub enum PrimitiveTypeKind {
     U16,
     U32,
     U64,
+    Isize,
+    Usize,
     F32,
     F64,
     Null,
+}
+
+/// The access permitted through a C-compatible pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerMutability {
+    Const,
+    Mut,
+}
+
+/// `*const T` or `*mut T`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointerType {
+    pub span: Span,
+    pub mutability: PointerMutability,
+    pub pointee: Box<Type>,
 }
 
 /// `(parameter) => ReturnType`
@@ -101,6 +119,7 @@ impl AstNode for Type {
             Type::Object(type_) => type_.span,
             Type::Named(type_) => type_.span,
             Type::Optional(type_) => type_.span,
+            Type::Pointer(type_) => type_.span,
         }
     }
 }

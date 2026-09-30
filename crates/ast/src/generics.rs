@@ -1,6 +1,8 @@
 //! Reusable generic type substitution over AST type syntax.
 
-use crate::types::{FunctionType, ListType, NamedType, ObjectType, OptionalType, Parameter, Type};
+use crate::types::{
+    FunctionType, ListType, NamedType, ObjectType, OptionalType, Parameter, PointerType, Type,
+};
 use std::collections::HashMap;
 
 /// A mapping from declaration type-parameter names to concrete type arguments.
@@ -76,6 +78,11 @@ impl TypeSubstitution {
                         optional: member.optional,
                     })
                     .collect(),
+            }),
+            Type::Pointer(pointer) => Type::Pointer(PointerType {
+                span: pointer.span,
+                mutability: pointer.mutability,
+                pointee: Box::new(self.apply(&pointer.pointee)),
             }),
             Type::Primitive(_) => type_.clone(),
         }

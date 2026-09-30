@@ -6225,7 +6225,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 KomeType::U8 | KomeType::U16 | KomeType::U32 => {
                     self.builder.ins().uextend(types::I64, *value)
                 }
-                KomeType::I64 | KomeType::U64 => *value,
+                KomeType::I64 | KomeType::U64 | KomeType::Isize | KomeType::Usize => *value,
                 KomeType::F32 => {
                     let bits = self
                         .builder
@@ -6293,7 +6293,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             KomeType::I8 | KomeType::U8 => self.builder.ins().ireduce(types::I8, payload),
             KomeType::I16 | KomeType::U16 => self.builder.ins().ireduce(types::I16, payload),
             KomeType::I32 | KomeType::U32 => self.builder.ins().ireduce(types::I32, payload),
-            KomeType::I64 | KomeType::U64 => payload,
+            KomeType::I64 | KomeType::U64 | KomeType::Isize | KomeType::Usize => payload,
             KomeType::F32 => {
                 let bits = self.builder.ins().ireduce(types::I32, payload);
                 self.builder
@@ -6345,7 +6345,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
             KomeType::I16 | KomeType::U16 => Ok(self.builder.ins().iconst(types::I16, 0)),
             KomeType::I32 | KomeType::U32 => Ok(self.builder.ins().iconst(types::I32, 0)),
-            KomeType::I64 | KomeType::U64 => Ok(self.builder.ins().iconst(types::I64, 0)),
+            KomeType::I64 | KomeType::U64 | KomeType::Isize | KomeType::Usize => {
+                Ok(self.builder.ins().iconst(types::I64, 0))
+            }
             KomeType::Void => Err(CodegenError::new(
                 "internal error: Void has no zero value",
                 None,

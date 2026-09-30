@@ -157,6 +157,14 @@ impl<'a> Expander<'a> {
             }
             Type::Function(_) => "F".into(),
             Type::Object(_) => "R".into(),
+            Type::Pointer(value) => format!(
+                "P{}{}",
+                match value.mutability {
+                    kome_ast::types::PointerMutability::Const => "C",
+                    kome_ast::types::PointerMutability::Mut => "M",
+                },
+                Self::encode_type(&value.pointee)
+            ),
         }
     }
     fn specialized_name(name: &str, arguments: &[Type]) -> String {

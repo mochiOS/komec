@@ -123,6 +123,8 @@ pub enum SemanticType {
     U16,
     U32,
     U64,
+    Isize,
+    Usize,
     F32,
     F64,
     Null,
@@ -131,6 +133,10 @@ pub enum SemanticType {
     TypeParameter(String),
     Optional(Box<SemanticType>),
     List(Box<SemanticType>),
+    Pointer {
+        mutability: kome_ast::types::PointerMutability,
+        pointee: Box<SemanticType>,
+    },
     Void,
 
     /// A type that cannot be determined by the current type-checking pass.
@@ -156,6 +162,8 @@ impl SemanticType {
             Self::U16 => "u16".to_owned(),
             Self::U32 => "u32".to_owned(),
             Self::U64 => "u64".to_owned(),
+            Self::Isize => "isize".to_owned(),
+            Self::Usize => "usize".to_owned(),
             Self::F32 => "f32".to_owned(),
             Self::F64 => "f64".to_owned(),
             Self::Null => "Null".to_owned(),
@@ -172,6 +180,16 @@ impl SemanticType {
             Self::TypeParameter(name) => name.clone(),
             Self::Optional(inner) => format!("{}?", inner.name()),
             Self::List(inner) => format!("{}[]", inner.name()),
+            Self::Pointer {
+                mutability,
+                pointee,
+            } => {
+                let qualifier = match mutability {
+                    kome_ast::types::PointerMutability::Const => "const",
+                    kome_ast::types::PointerMutability::Mut => "mut",
+                };
+                format!("*{qualifier} {}", pointee.name())
+            }
             Self::Void => "Void".to_owned(),
             Self::Unknown => "<unknown>".to_owned(),
         }
@@ -351,6 +369,19 @@ impl TypeChecker {
 
                 Declaration::For(declaration) => {
                     self.collect_implementation(declaration);
+                }
+
+                Declaration::Extern(extern_decl) => {
+                    for item in &extern_decl.items {
+                        match item {
+                            kome_ast::declarations::ExternItem::Struct(declaration) => {
+                                self.collect_struct(declaration);
+                            }
+                            kome_ast::declarations::ExternItem::Function(function) => {
+                                self.collect_function(function);
+                            }
+                        }
+                    }
                 }
 
                 _ => {}
@@ -692,6 +723,23 @@ impl TypeChecker {
                     if let Some(fields) = &declaration.fields {
                         for field in fields {
                             self.validate_type_arity(&field.type_);
+                        }
+                    }
+                }
+
+                Declaration::Extern(extern_decl) => {
+                    for item in &extern_decl.items {
+                        match item {
+                            kome_ast::declarations::ExternItem::Struct(declaration) => {
+                                if let Some(fields) = &declaration.fields {
+                                    for field in fields {
+                                        self.validate_type_arity(&field.type_);
+                                    }
+                                }
+                            }
+                            kome_ast::declarations::ExternItem::Function(function) => {
+                                self.visit_function(function);
+                            }
                         }
                     }
                 }
@@ -1830,6 +1878,7 @@ impl TypeChecker {
             }
             Type::Optional(value) => self.validate_type_arity(&value.inner),
             Type::List(value) => self.validate_type_arity(&value.element),
+            Type::Pointer(value) => self.validate_type_arity(&value.pointee),
             Type::Function(value) => {
                 for parameter in &value.params {
                     self.validate_type_arity(&parameter.type_);
@@ -1863,6 +1912,8 @@ impl TypeChecker {
                 PrimitiveTypeKind::U16 => SemanticType::U16,
                 PrimitiveTypeKind::U32 => SemanticType::U32,
                 PrimitiveTypeKind::U64 => SemanticType::U64,
+                PrimitiveTypeKind::Isize => SemanticType::Isize,
+                PrimitiveTypeKind::Usize => SemanticType::Usize,
                 PrimitiveTypeKind::F32 => SemanticType::F32,
                 PrimitiveTypeKind::F64 => SemanticType::F64,
                 PrimitiveTypeKind::Null => SemanticType::Null,
@@ -1891,6 +1942,13 @@ impl TypeChecker {
                 &list.element,
                 parameters,
             ))),
+            Type::Pointer(pointer) => SemanticType::Pointer {
+                mutability: pointer.mutability,
+                pointee: Box::new(Self::type_from_annotation_with(
+                    &pointer.pointee,
+                    parameters,
+                )),
+            },
 
             _ => SemanticType::Unknown,
         }

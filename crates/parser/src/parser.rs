@@ -8,9 +8,9 @@ use kome_ast::{
     AstNode, Span,
     declarations::{
         Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
-        EnumDeclaration, ForDeclaration, FunctionDeclaration, GenericParameter, Module,
-        RecipeDeclaration, StructDeclaration, StructField, TraitDeclaration, TypeMember,
-        UseDeclaration,
+        EnumDeclaration, ExternDeclaration, ExternItem, ForDeclaration, FunctionDeclaration,
+        GenericParameter, Module, RecipeDeclaration, StructDeclaration, StructField,
+        TraitDeclaration, TypeMember, UseDeclaration,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
@@ -25,7 +25,10 @@ use kome_ast::{
         BlockStatement, BreakStatement, ContinueStatement, ExpressionStatement, ForInStatement,
         IfStatement, IsStatement, ReturnStatement, Statement, WhileStatement,
     },
-    types::{NamedType, OptionalType, Parameter, PrimitiveType, PrimitiveTypeKind, Type},
+    types::{
+        NamedType, OptionalType, Parameter, PointerMutability, PointerType, PrimitiveType,
+        PrimitiveTypeKind, Type,
+    },
 };
 
 fn implementation_type_parameters(target: &Type) -> Vec<GenericParameter> {
@@ -154,11 +157,75 @@ impl Parser {
             ));
         }
 
+        if self.at(|kind| matches!(kind, TokenKind::Extern)) {
+            if attributes.is_empty() {
+                return self.parse_extern_declaration().map(Declaration::Extern);
+            }
+            return Err(self.expected("an external declaration without attributes"));
+        }
+
         if attributes.is_empty() {
             Err(self.expected("a top-level declaration"))
         } else {
             Err(self.expected("a declaration after attributes"))
         }
+    }
+
+    fn parse_extern_declaration(&mut self) -> Result<ExternDeclaration, ParseError> {
+        let keyword = self.expect("`extern`", |kind| matches!(kind, TokenKind::Extern))?;
+        let abi_token =
+            self.expect("an ABI string", |kind| matches!(kind, TokenKind::String(_)))?;
+        let TokenKind::String(abi) = abi_token.kind else {
+            unreachable!("the ABI token kind was checked");
+        };
+        let library = if self.at(|kind| matches!(kind, TokenKind::From)) {
+            self.advance();
+            let token = self.expect("a library string after `from`", |kind| {
+                matches!(kind, TokenKind::String(_))
+            })?;
+            let TokenKind::String(library) = token.kind else {
+                unreachable!("the library token kind was checked");
+            };
+            Some(library)
+        } else {
+            None
+        };
+        self.expect("`{`", |kind| matches!(kind, TokenKind::LBrace))?;
+        let mut items = Vec::new();
+        while !self.at(|kind| matches!(kind, TokenKind::RBrace)) {
+            if self.current().is_eof() {
+                return Err(self.expected("`}`"));
+            }
+            if self.at(|kind| matches!(kind, TokenKind::Struct)) {
+                items.push(ExternItem::Struct(
+                    self.parse_struct_declaration(Vec::new())?,
+                ));
+            } else if self.at(|kind| matches!(kind, TokenKind::Fn)) {
+                let function = self.parse_function_declaration(Vec::new())?;
+                if function.body.is_some() {
+                    return Err(ParseError::new(
+                        ParseErrorKind::Expected {
+                            expected: "an external function declaration without a body",
+                            found: TokenKind::LBrace,
+                        },
+                        function.span,
+                    ));
+                }
+                items.push(ExternItem::Function(function));
+            } else {
+                return Err(self.expected("an external `struct` or `fn` declaration"));
+            }
+            if self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                self.advance();
+            }
+        }
+        let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
+        Ok(ExternDeclaration {
+            span: Span::new(keyword.span.start, closing.span.end),
+            abi,
+            library,
+            items,
+        })
     }
 
     fn parse_struct_declaration(
@@ -826,7 +893,26 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, ParseError> {
-        let mut type_ = self.parse_primary_type()?;
+        let mut type_ = if self.at(|kind| matches!(kind, TokenKind::Star)) {
+            let star = self.advance();
+            let mutability = if self.at(|kind| matches!(kind, TokenKind::Const)) {
+                self.advance();
+                PointerMutability::Const
+            } else if self.at(|kind| matches!(kind, TokenKind::Mut)) {
+                self.advance();
+                PointerMutability::Mut
+            } else {
+                return Err(self.expected("`const` or `mut` after `*`"));
+            };
+            let pointee = self.parse_type()?;
+            Type::Pointer(PointerType {
+                span: Span::new(star.span.start, pointee.span().end),
+                mutability,
+                pointee: Box::new(pointee),
+            })
+        } else {
+            self.parse_primary_type()?
+        };
 
         while self.at(|kind| matches!(kind, TokenKind::LBracket))
             && matches!(self.next().kind, TokenKind::RBracket)
@@ -887,6 +973,10 @@ impl Parser {
             "u32" => Some(PrimitiveTypeKind::U32),
 
             "u64" => Some(PrimitiveTypeKind::U64),
+
+            "isize" => Some(PrimitiveTypeKind::Isize),
+
+            "usize" => Some(PrimitiveTypeKind::Usize),
 
             "f32" => Some(PrimitiveTypeKind::F32),
 

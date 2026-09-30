@@ -15,6 +15,29 @@ pub enum Declaration {
     Constant(Binding),
     Use(UseDeclaration),
     Enum(EnumDeclaration),
+    /// Declarations imported from a C-compatible dynamic or static library.
+    Extern(ExternDeclaration),
+}
+
+// ---- External C declarations ----
+
+/// A group of declarations resolved through an external ABI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternDeclaration {
+    pub span: Span,
+    pub abi: String,
+    /// Library name or path supplied to the JIT loader and AOT linker.
+    pub library: Option<String>,
+    pub items: Vec<ExternItem>,
+}
+
+/// A declaration permitted inside an [`ExternDeclaration`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExternItem {
+    /// An incomplete or C-layout structure declaration.
+    Struct(StructDeclaration),
+    /// A foreign function declaration.
+    Function(FunctionDeclaration),
 }
 
 // ---- Struct ----
@@ -377,6 +400,22 @@ impl AstNode for Declaration {
             Declaration::Let(binding) | Declaration::Constant(binding) => binding.span,
             Declaration::Use(declaration) => declaration.span,
             Declaration::Enum(declaration) => declaration.span,
+            Declaration::Extern(declaration) => declaration.span,
+        }
+    }
+}
+
+impl AstNode for ExternDeclaration {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl AstNode for ExternItem {
+    fn span(&self) -> Span {
+        match self {
+            ExternItem::Struct(declaration) => declaration.span,
+            ExternItem::Function(declaration) => declaration.span,
         }
     }
 }

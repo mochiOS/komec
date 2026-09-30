@@ -21,6 +21,8 @@ pub enum KomeType {
     U16,
     U32,
     U64,
+    Isize,
+    Usize,
     F32,
     F64,
     Null,
@@ -76,6 +78,8 @@ impl KomeType {
             PrimitiveTypeKind::U16 => Ok(Self::U16),
             PrimitiveTypeKind::U32 => Ok(Self::U32),
             PrimitiveTypeKind::U64 => Ok(Self::U64),
+            PrimitiveTypeKind::Isize => Ok(Self::Isize),
+            PrimitiveTypeKind::Usize => Ok(Self::Usize),
             PrimitiveTypeKind::F32 => Ok(Self::F32),
             PrimitiveTypeKind::F64 => Ok(Self::F64),
             PrimitiveTypeKind::Null => Ok(Self::Null),
@@ -98,7 +102,7 @@ impl KomeType {
             Self::Boolean | Self::I8 | Self::U8 | Self::Null => Some(types::I8),
             Self::I16 | Self::U16 => Some(types::I16),
             Self::I32 | Self::U32 => Some(types::I32),
-            Self::I64 | Self::U64 => Some(types::I64),
+            Self::I64 | Self::U64 | Self::Isize | Self::Usize => Some(types::I64),
             Self::Void => None,
         }
     }
@@ -111,8 +115,12 @@ impl KomeType {
             Self::Socket => Ok(abi::TAG_SOCKET),
             Self::Boolean => Ok(abi::TAG_BOOLEAN),
             Self::Null => Ok(abi::TAG_NULL),
-            Self::I8 | Self::I16 | Self::I32 | Self::I64 => Ok(abi::TAG_SIGNED_INTEGER),
-            Self::U8 | Self::U16 | Self::U32 | Self::U64 => Ok(abi::TAG_UNSIGNED_INTEGER),
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Isize => {
+                Ok(abi::TAG_SIGNED_INTEGER)
+            }
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Usize => {
+                Ok(abi::TAG_UNSIGNED_INTEGER)
+            }
             Self::F32 => Ok(abi::TAG_F32),
             Self::F64 => Ok(abi::TAG_F64),
             Self::Void => Ok(abi::TAG_VOID),
@@ -145,6 +153,8 @@ impl KomeType {
             Self::U16 => "u16".into(),
             Self::U32 => "u32".into(),
             Self::U64 => "u64".into(),
+            Self::Isize => "isize".into(),
+            Self::Usize => "usize".into(),
             Self::F32 => "f32".into(),
             Self::F64 => "f64".into(),
             Self::Null => "Null".into(),

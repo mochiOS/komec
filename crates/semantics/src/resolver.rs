@@ -187,6 +187,18 @@ impl ScopeBuilder {
             Declaration::Constant(binding) => self.register_binding(binding),
             Declaration::Use(_) => {}
             Declaration::Enum(enum_decl) => self.visit_enum_declaration(enum_decl),
+            Declaration::Extern(extern_decl) => {
+                for item in &extern_decl.items {
+                    match item {
+                        kome_ast::declarations::ExternItem::Struct(declaration) => {
+                            self.visit_struct_declaration(declaration);
+                        }
+                        kome_ast::declarations::ExternItem::Function(declaration) => {
+                            self.visit_function_declaration(declaration);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -723,6 +735,7 @@ impl ScopeBuilder {
             Type::Optional(opt) => {
                 self.visit_type(&opt.inner);
             }
+            Type::Pointer(pointer) => self.visit_type(&pointer.pointee),
         }
     }
 
