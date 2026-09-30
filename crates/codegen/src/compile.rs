@@ -13,8 +13,8 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use kome_ast::AstNode;
 use kome_ast::Span;
 use kome_ast::declarations::{
-    Binding, Declaration, ForDeclaration, FunctionDeclaration, Module as KomeModule,
-    StructDeclaration, TraitDeclaration, TypeMember,
+    Binding, ComponentMember, Declaration, ForDeclaration, FunctionDeclaration,
+    Module as KomeModule, StructDeclaration, TraitDeclaration, TypeMember,
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, BlockExpression, CallArg,
@@ -89,6 +89,7 @@ struct ComponentInfo {
     param_names: Vec<String>,
     param_types: Vec<KomeType>,
     defaults: Vec<Option<Expression>>,
+    body: Option<Vec<ComponentMember>>,
 }
 
 #[derive(Debug, Clone)]
@@ -434,6 +435,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                     param_names,
                     param_types,
                     defaults,
+                    body: component.body.clone(),
                 },
             )
             .is_some()
@@ -478,6 +480,77 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 function.span,
             ));
         }
+    }
+
+    let applications = module
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Component(component)
+                if component
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.name == "application") =>
+            {
+                Some(component)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if applications.len() > 1 {
+        return Err(CodegenError::at(
+            "only one component may have the @application attribute",
+            applications[1].span,
+        ));
+    }
+    if let Some(application) = applications.first()
+        && !functions.contains_key("main")
+    {
+        if application
+            .params
+            .iter()
+            .any(|parameter| parameter.default.is_none())
+        {
+            return Err(CodegenError::at(
+                "an @application component cannot require arguments",
+                application.span,
+            ));
+        }
+        let expression = Expression::Component(kome_ast::expressions::ComponentExpression {
+            span: application.span,
+            name: application.name.clone(),
+            args: Vec::new(),
+            children: Vec::new(),
+        });
+        let declaration = FunctionDeclaration {
+            span: application.span,
+            attributes: Vec::new(),
+            name: "main".into(),
+            type_parameters: Vec::new(),
+            params: Vec::new(),
+            body: Some(BlockStatement {
+                span: application.span,
+                statements: vec![Statement::Expression(
+                    kome_ast::statements::ExpressionStatement {
+                        span: application.span,
+                        expression,
+                    },
+                )],
+            }),
+            return_type: None,
+        };
+        functions.insert(
+            "main".into(),
+            FunctionKind::User {
+                declaration,
+                signature: FunctionSignature {
+                    param_names: Vec::new(),
+                    params: Vec::new(),
+                    defaults: Vec::new(),
+                    ret: KomeType::Void,
+                },
+            },
+        );
     }
 
     let traits = module
@@ -925,6 +998,9 @@ pub fn compile_module<M: Module>(
                 allow_managed_moves: true,
                 evaluating_globals: Vec::new(),
                 closures: Vec::new(),
+                local_functions: Vec::new(),
+                local_call_stack: Vec::new(),
+                inline_returns: Vec::new(),
             };
 
             translator.translate_function(declaration, signature)?;
@@ -984,6 +1060,9 @@ pub fn compile_module<M: Module>(
                 allow_managed_moves: true,
                 evaluating_globals: Vec::new(),
                 closures: Vec::new(),
+                local_functions: Vec::new(),
+                local_call_stack: Vec::new(),
+                inline_returns: Vec::new(),
             };
             translator.translate_task_entry(name, signature)?;
         }
@@ -1892,12 +1971,22 @@ struct FunctionTranslator<'b, 'c, M: Module> {
     allow_managed_moves: bool,
     evaluating_globals: Vec<String>,
     closures: Vec<(String, usize, kome_ast::expressions::ClosureExpression)>,
+    local_functions: Vec<(String, usize, FunctionDeclaration)>,
+    local_call_stack: Vec<String>,
+    inline_returns: Vec<InlineReturnContext>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct LoopContext {
     header: ir::Block,
     exit: ir::Block,
+    scope_depth: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InlineReturnContext {
+    target: ir::Block,
+    return_type: KomeType,
     scope_depth: usize,
 }
 
@@ -2487,6 +2576,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             self.scopes.pop();
         }
         self.closures.retain(|(_, depth, _)| *depth < closure_depth);
+        self.local_functions
+            .retain(|(_, depth, _)| *depth < closure_depth);
 
         Ok(())
     }
@@ -2501,6 +2592,37 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
 
             Statement::Return(statement) => {
+                if let Some(context) = self.inline_returns.last().copied() {
+                    let value = match &statement.argument {
+                        Some(expression) => {
+                            let typed =
+                                self.evaluate_with_expected(expression, Some(context.return_type))?;
+                            if typed.kome_type != context.return_type {
+                                return Err(CodegenError::at(
+                                    format!(
+                                        "`return` expects {}, but the expression has type {}",
+                                        self.info.type_name(context.return_type),
+                                        self.info.type_name(typed.kome_type)
+                                    ),
+                                    expression.span(),
+                                ));
+                            }
+                            Some(self.own_value(typed, expression.span())?)
+                        }
+                        None if context.return_type == KomeType::Void => None,
+                        None => Some(self.zero_value(context.return_type)?),
+                    };
+                    self.release_owned_scopes_from(context.scope_depth);
+                    if let Some(value) = value {
+                        self.builder
+                            .ins()
+                            .jump(context.target, &[ir::BlockArg::Value(value)]);
+                    } else {
+                        self.builder.ins().jump(context.target, &[]);
+                    }
+                    self.terminated = true;
+                    return Ok(());
+                }
                 let value = match &statement.argument {
                     Some(expression) => {
                         let typed =
@@ -3025,12 +3147,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::Is(is) => self.evaluate_is_expression(is, None),
 
-            other => Err(CodegenError::at(
-                format!(
-                    "expression `{}` is not supported yet",
-                    expression_kind(other)
-                ),
-                other.span(),
+            Expression::Closure(_) => Ok(TypedValue::void()),
+
+            Expression::DotIdent(dot) => Err(CodegenError::at(
+                "a dot-prefixed case requires an enum context",
+                dot.span,
             )),
         }
     }
@@ -4852,6 +4973,15 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             if let Some(closure) = local {
                 return self.evaluate_closure_call(&closure, call);
             }
+            let local_function = self
+                .local_functions
+                .iter()
+                .rev()
+                .find(|(name, _, _)| name == &identifier.name)
+                .map(|(_, _, function)| function.clone());
+            if let Some(function) = local_function {
+                return self.evaluate_local_function_call(&function, call);
+            }
             let global = self
                 .info
                 .globals
@@ -4976,7 +5106,15 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             0,
             span,
         )?;
-        for (expression, expected) in ordered.iter().zip(&component.param_types) {
+        let previous_moves = self.allow_managed_moves;
+        self.allow_managed_moves = false;
+        self.scopes.push(HashMap::new());
+        let component_scope = self.scopes.len();
+        for ((expression, expected), parameter_name) in ordered
+            .iter()
+            .zip(&component.param_types)
+            .zip(&component.param_names)
+        {
             let value = self.evaluate_with_expected(expression, Some(*expected))?;
             if value.kome_type != *expected {
                 return Err(CodegenError::at(
@@ -4988,12 +5126,54 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     expression.span(),
                 ));
             }
-            self.release_owned_temporary(value, expression.span())?;
+            let raw = value.expect_value(expression.span())?;
+            self.declare_variable(parameter_name, raw, *expected, value.ownership)?;
+        }
+        if let Some(body) = &component.body {
+            for member in body {
+                match member {
+                    ComponentMember::State(binding) | ComponentMember::Let(binding) => {
+                        self.translate_statement(&Statement::Let(binding.as_ref().clone()))?;
+                    }
+                    ComponentMember::Function(function) => self.local_functions.push((
+                        function.name.clone(),
+                        component_scope,
+                        function.clone(),
+                    )),
+                    ComponentMember::Recipe(_) => {}
+                }
+            }
         }
         for child in children {
             let value = self.evaluate(child)?;
             self.release_owned_temporary(value, child.span())?;
         }
+        if let Some(body) = &component.body {
+            for member in body {
+                let ComponentMember::Recipe(recipe) = member else {
+                    continue;
+                };
+                let startup = recipe
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.name == "startup");
+                if recipe.name == "view" || startup {
+                    self.translate_block(&recipe.body)?;
+                }
+            }
+        }
+        let scope = self.scopes.pop().expect("component scope exists");
+        for variable in scope.values() {
+            if variable.kome_type.is_managed() && variable.owns_value {
+                let value = self.builder.use_var(variable.variable);
+                self.release_managed(value, variable.kome_type);
+            }
+        }
+        self.closures
+            .retain(|(_, depth, _)| *depth < component_scope);
+        self.local_functions
+            .retain(|(_, depth, _)| *depth < component_scope);
+        self.allow_managed_moves = previous_moves;
         Ok(TypedValue::some(
             self.builder.ins().iconst(types::I8, 0),
             KomeType::Null,
@@ -5079,6 +5259,121 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
         }
         Ok(result)
+    }
+
+    fn evaluate_local_function_call(
+        &mut self,
+        declaration: &FunctionDeclaration,
+        call: &CallExpression,
+    ) -> CodegenResult<TypedValue> {
+        if self
+            .local_call_stack
+            .iter()
+            .any(|name| name == &declaration.name)
+        {
+            return Err(CodegenError::at(
+                format!(
+                    "recursive component function `{}` requires a runtime closure environment",
+                    declaration.name
+                ),
+                call.span,
+            ));
+        }
+        self.local_call_stack.push(declaration.name.clone());
+        let result = (|| {
+            let signature = analyze_signature(
+                declaration,
+                &self.info.runtime_types,
+                &self.info.struct_ids,
+                &self.info.task_types,
+                &self.info.list_types,
+                &self.info.optional_types,
+                None,
+            )?;
+            let body = declaration.body.as_ref().ok_or_else(|| {
+                CodegenError::at(
+                    format!("component function `{}` has no body", declaration.name),
+                    declaration.span,
+                )
+            })?;
+            let ordered = self.order_call_arguments(
+                &call.args,
+                &signature.param_names,
+                &signature.defaults,
+                0,
+                call.span,
+            )?;
+            let mut arguments = Vec::with_capacity(ordered.len());
+            for (expression, expected) in ordered.iter().zip(&signature.params) {
+                let value = self.evaluate_with_expected(expression, Some(*expected))?;
+                if value.kome_type != *expected {
+                    return Err(CodegenError::at(
+                        format!(
+                            "component function `{}` expects {}, but found {}",
+                            declaration.name,
+                            self.info.type_name(*expected),
+                            self.info.type_name(value.kome_type)
+                        ),
+                        expression.span(),
+                    ));
+                }
+                arguments.push(value);
+            }
+
+            let done = self.builder.create_block();
+            if let Some(representation) = signature.ret.cranelift() {
+                self.builder.append_block_param(done, representation);
+            }
+            let scope_depth = self.scopes.len();
+            self.scopes.push(HashMap::new());
+            for ((pattern, value), expected) in declaration
+                .params
+                .iter()
+                .zip(arguments)
+                .zip(&signature.params)
+            {
+                let kome_ast::patterns::Pattern::Ident(identifier) = pattern else {
+                    return Err(CodegenError::at(
+                        "component function parameters require identifier patterns",
+                        pattern.span(),
+                    ));
+                };
+                let raw = value.expect_value(identifier.span)?;
+                self.declare_variable(&identifier.name, raw, *expected, value.ownership)?;
+            }
+            self.inline_returns.push(InlineReturnContext {
+                target: done,
+                return_type: signature.ret,
+                scope_depth,
+            });
+            let outer_terminated = self.terminated;
+            self.terminated = false;
+            self.translate_block(body)?;
+            if !self.terminated {
+                self.release_owned_scopes_from(scope_depth);
+                if signature.ret == KomeType::Void {
+                    self.builder.ins().jump(done, &[]);
+                } else {
+                    let value = self.zero_value(signature.ret)?;
+                    self.builder.ins().jump(done, &[ir::BlockArg::Value(value)]);
+                }
+            }
+            self.inline_returns.pop();
+            self.scopes.pop().expect("component function scope exists");
+            self.builder.seal_block(done);
+            self.builder.switch_to_block(done);
+            self.terminated = outer_terminated;
+            if signature.ret == KomeType::Void {
+                Ok(TypedValue::void())
+            } else {
+                Ok(TypedValue::some(
+                    self.builder.block_params(done)[0],
+                    signature.ret,
+                ))
+            }
+        })();
+        self.local_call_stack.pop();
+        result
     }
 
     fn evaluate_method_call(
@@ -6106,30 +6401,4 @@ fn unsupported_statement(kind: &str, statement: &Statement) -> CodegenError {
         format!("statement `{kind}` is not supported yet"),
         statement.span(),
     )
-}
-
-fn expression_kind(expression: &Expression) -> &'static str {
-    match expression {
-        Expression::Literal(_) => "literal",
-        Expression::Ident(_) => "identifier",
-        Expression::Unary(_) => "unary",
-        Expression::Task(_) => "task",
-        Expression::Wait(_) => "wait",
-        Expression::Cancel(_) => "cancel",
-        Expression::Binary(_) => "binary",
-        Expression::Call(_) => "call",
-        Expression::Member(_) => "member access",
-        Expression::Index(_) => "index",
-        Expression::Assign(_) => "assignment",
-        Expression::Group(_) => "group",
-        Expression::Block(_) => "block",
-        Expression::List(_) => "list",
-        Expression::Object(_) => "object",
-        Expression::Struct(_) => "struct construction",
-        Expression::Template(_) => "template",
-        Expression::Closure(_) => "closure",
-        Expression::DotIdent(_) => "dot identifier",
-        Expression::Is(_) => "is",
-        Expression::Component(_) => "component",
-    }
 }

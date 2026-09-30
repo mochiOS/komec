@@ -599,6 +599,28 @@ fn main() {{
 }
 
 #[test]
+fn builds_and_runs_component_state_recipes_and_functions() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: String)
+@application
+component Counter(start: Number = 40) {
+    state count = start
+    fn increment(amount: Number = 2) -> Number {
+        count += amount
+        return count
+    }
+    @startup
+    recipe initialize { increment() }
+    recipe view { println("count={increment(0)}") }
+}
+"#,
+    );
+    assert_eq!(stdout, "count=42\n");
+}
+
+#[test]
 fn built_binary_has_no_rust_runtime_dependency() {
     // The point of this check is that the binary links only against system
     // libraries; running it in a minimal environment proves the runtime is

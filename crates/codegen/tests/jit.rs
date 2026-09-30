@@ -484,7 +484,36 @@ fn main() {
         Text(color: .secondary, content: "Kome")
     }
 }
+
 "#);
+}
+
+#[test]
+fn executes_component_bindings_startup_and_view_recipes() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+
+@application
+component Counter(start: Number = 40) {
+    state count = start
+    let title = "count"
+    fn increment(amount: Number = 2) -> Number {
+        count += amount
+        return count
+    }
+    @startup
+    recipe initialize { increment() }
+    recipe view { report("{title}={increment(0)}") }
+}
+
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::String(KomeString::new("count=42"))]
+    );
+    clear_thread_registry();
 }
 
 #[test]
