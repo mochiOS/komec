@@ -1218,3 +1218,36 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn assigns_struct_fields_and_list_elements() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+
+struct User { name: String }
+
+fn main() {
+    var user = User { name: "before" }
+    var names = ["first", "second"]
+    user.name = "after"
+    names[0] += " updated"
+    names[1] = user.name
+    report(user.name)
+    report(names[0])
+    report(names[1])
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::String(KomeString::new("after")),
+            Value::String(KomeString::new("first updated")),
+            Value::String(KomeString::new("after")),
+        ]
+    );
+    clear_thread_registry();
+}

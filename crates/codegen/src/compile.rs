@@ -1871,6 +1871,9 @@ impl ReadCounter {
             }
 
             Expression::Assign(assignment) => {
+                if !matches!(assignment.target.as_ref(), Expression::Ident(_)) {
+                    self.visit_expression(&assignment.target);
+                }
                 self.visit_expression(&assignment.value);
             }
 
@@ -4861,6 +4864,12 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
     }
 
     fn evaluate_assign(&mut self, assignment: &AssignmentExpression) -> CodegenResult<TypedValue> {
+        if let Expression::Member(member) = assignment.target.as_ref() {
+            return self.evaluate_member_assign(member, assignment);
+        }
+        if let Expression::Index(index) = assignment.target.as_ref() {
+            return self.evaluate_index_assign(index, assignment);
+        }
         let Expression::Ident(identifier) = assignment.target.as_ref() else {
             return Err(CodegenError::at(
                 "assignment target must be an identifier",
@@ -4917,38 +4926,202 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
             AssignOp::AddAssign => {
                 let old = self.builder.use_var(scoped.variable);
-                let right = typed.expect_value(assignment.value.span())?;
-                let value = match scoped.kome_type {
-                    KomeType::Number => {
-                        self.emit_number_binary(self.foreign.number_add, old, right)
-                    }
-                    KomeType::I8
-                    | KomeType::I16
-                    | KomeType::I32
-                    | KomeType::I64
-                    | KomeType::U8
-                    | KomeType::U16
-                    | KomeType::U32
-                    | KomeType::U64 => self.builder.ins().iadd(old, right),
-                    KomeType::F32 | KomeType::F64 => self.builder.ins().fadd(old, right),
-                    _ => {
-                        return Err(CodegenError::at(
-                            format!(
-                                "compound assignment requires a numeric variable, but found {}",
-                                self.info.type_name(scoped.kome_type)
-                            ),
-                            assignment.span,
-                        ));
-                    }
-                };
+                let value = self.assignment_value(old, typed, assignment)?;
                 if scoped.kome_type.is_managed() && scoped.owns_value {
                     self.release_managed(old, scoped.kome_type);
                 }
-                self.release_owned_temporary(typed, assignment.value.span())?;
                 self.builder.def_var(scoped.variable, value);
+                if scoped.kome_type.is_managed() {
+                    self.scopes[scope]
+                        .get_mut(&identifier.name)
+                        .unwrap()
+                        .owns_value = true;
+                }
                 Ok(TypedValue::borrowed(value, scoped.kome_type))
             }
         }
+    }
+
+    fn evaluate_member_assign(
+        &mut self,
+        member: &MemberExpression,
+        assignment: &AssignmentExpression,
+    ) -> CodegenResult<TypedValue> {
+        let object = self.evaluate(&member.object)?;
+        let KomeType::Struct(id) = object.kome_type else {
+            return Err(CodegenError::at(
+                "field assignment requires a struct value",
+                member.object.span(),
+            ));
+        };
+        let field = self
+            .info
+            .struct_info(id)
+            .fields
+            .iter()
+            .find(|field| field.name == member.property)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!(
+                        "struct `{}` has no field `{}`",
+                        self.info.struct_info(id).name,
+                        member.property
+                    ),
+                    member.span,
+                )
+            })?;
+        let pointer = object.expect_value(member.object.span())?;
+        let old = self.builder.ins().load(
+            field.kome_type.cranelift().expect("field representation"),
+            MachMemFlags::new(),
+            pointer,
+            field.offset,
+        );
+        let right = self.evaluate_with_expected(&assignment.value, Some(field.kome_type))?;
+        if right.kome_type != field.kome_type {
+            return Err(CodegenError::at(
+                format!(
+                    "field `{}` expects {}, but found {}",
+                    field.name,
+                    self.info.type_name(field.kome_type),
+                    self.info.type_name(right.kome_type)
+                ),
+                assignment.value.span(),
+            ));
+        }
+        let value = self.assignment_value(old, right, assignment)?;
+        if field.kome_type.is_managed() {
+            self.release_managed(old, field.kome_type);
+        }
+        self.builder
+            .ins()
+            .store(MachMemFlags::new(), value, pointer, field.offset);
+        if field.kome_type.is_managed() {
+            self.retain_managed(value, field.kome_type);
+        }
+        self.release_owned_temporary(object, member.object.span())?;
+        Ok(TypedValue::some(value, field.kome_type))
+    }
+
+    fn evaluate_index_assign(
+        &mut self,
+        index: &kome_ast::expressions::IndexExpression,
+        assignment: &AssignmentExpression,
+    ) -> CodegenResult<TypedValue> {
+        let object = self.evaluate(&index.object)?;
+        let KomeType::List(id) = object.kome_type else {
+            return Err(CodegenError::at(
+                "index assignment requires a List",
+                index.object.span(),
+            ));
+        };
+        let typed_index = self.evaluate(&index.index)?;
+        let raw_index = typed_index.expect_value(index.index.span())?;
+        let index_value = match typed_index.kome_type {
+            KomeType::Number => {
+                let convert = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.number_to_i64,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(convert, &[raw_index]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::I8 | KomeType::I16 | KomeType::I32 => {
+                self.builder.ins().sextend(types::I64, raw_index)
+            }
+            KomeType::U8 | KomeType::U16 | KomeType::U32 => {
+                self.builder.ins().uextend(types::I64, raw_index)
+            }
+            KomeType::I64 | KomeType::U64 => raw_index,
+            other => {
+                return Err(CodegenError::at(
+                    format!(
+                        "list index must be an integer, but found {}",
+                        self.info.type_name(other)
+                    ),
+                    index.index.span(),
+                ));
+            }
+        };
+        let pointer = object.expect_value(index.object.span())?;
+        let require = Module::declare_func_in_func(
+            self.module,
+            self.foreign.list_require_index,
+            self.builder.func,
+        );
+        let call = self.builder.ins().call(require, &[pointer, index_value]);
+        let checked_index = self.builder.inst_results(call)[0];
+        let offset = self.builder.ins().imul_imm_u(checked_index, 8);
+        let address = self.builder.ins().iadd(pointer, offset);
+        let element_type = self.info.list_element(id);
+        let old_slot = self
+            .builder
+            .ins()
+            .load(types::I64, MachMemFlags::new(), address, 0);
+        let old = self.task_slot_to_value(old_slot, element_type);
+        let right = self.evaluate_with_expected(&assignment.value, Some(element_type))?;
+        if right.kome_type != element_type {
+            return Err(CodegenError::at(
+                format!(
+                    "list element expects {}, but found {}",
+                    self.info.type_name(element_type),
+                    self.info.type_name(right.kome_type)
+                ),
+                assignment.value.span(),
+            ));
+        }
+        let value = self.assignment_value(old, right, assignment)?;
+        if element_type.is_managed() {
+            self.release_managed(old, element_type);
+        }
+        let slot = self.value_to_task_slot(value, element_type);
+        self.builder
+            .ins()
+            .store(MachMemFlags::new(), slot, address, 0);
+        if element_type.is_managed() {
+            self.retain_managed(value, element_type);
+        }
+        self.release_owned_temporary(typed_index, index.index.span())?;
+        self.release_owned_temporary(object, index.object.span())?;
+        Ok(TypedValue::some(value, element_type))
+    }
+
+    fn assignment_value(
+        &mut self,
+        old: ir::Value,
+        right: TypedValue,
+        assignment: &AssignmentExpression,
+    ) -> CodegenResult<ir::Value> {
+        if assignment.op == AssignOp::Assign {
+            return self.own_value(right, assignment.value.span());
+        }
+        let raw = right.expect_value(assignment.value.span())?;
+        let value = match right.kome_type {
+            KomeType::Number => self.emit_number_binary(self.foreign.number_add, old, raw),
+            KomeType::String => self.emit_number_binary(self.foreign.string_concat, old, raw),
+            KomeType::I8
+            | KomeType::I16
+            | KomeType::I32
+            | KomeType::I64
+            | KomeType::U8
+            | KomeType::U16
+            | KomeType::U32
+            | KomeType::U64 => self.builder.ins().iadd(old, raw),
+            KomeType::F32 | KomeType::F64 => self.builder.ins().fadd(old, raw),
+            other => {
+                return Err(CodegenError::at(
+                    format!(
+                        "compound assignment requires a numeric or String value, but found {}",
+                        self.info.type_name(other)
+                    ),
+                    assignment.span,
+                ));
+            }
+        };
+        self.release_owned_temporary(right, assignment.value.span())?;
+        Ok(value)
     }
 
     fn emit_user_call(

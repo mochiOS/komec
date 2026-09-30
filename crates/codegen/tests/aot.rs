@@ -482,6 +482,28 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_field_and_index_assignments() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: String)
+struct User { name: String }
+fn main() {
+    var user = User { name: "before" }
+    var names = ["first", "second"]
+    user.name = "after"
+    names[0] += " updated"
+    names[1] = user.name
+    println(user.name)
+    println(names[0])
+    println(names[1])
+}
+"#,
+    );
+    assert_eq!(stdout, "after\nfirst updated\nafter\n");
+}
+
+#[test]
 fn builds_and_runs_cooperative_sleep() {
     let stdout = build_and_run(
         r#"
