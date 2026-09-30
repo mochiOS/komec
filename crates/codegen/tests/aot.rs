@@ -142,6 +142,29 @@ fn main() {
 }
 
 #[test]
+fn links_c_functions_using_incomplete_struct_pointers() {
+    let stdout = build_and_run(
+        r#"
+extern "C" from "libc.so.6" {
+    struct FILE
+    fn tmpfile() -> *mut FILE
+    fn fclose(stream: *mut FILE) -> i32
+}
+
+@native("core.write_line")
+fn println(value: i32)
+
+fn main() {
+    let stream = tmpfile()
+    println(fclose(stream))
+}
+"#,
+    );
+
+    assert_eq!(stdout, "0\n");
+}
+
+#[test]
 fn builds_and_runs_number_arithmetic() {
     let stdout = build_and_run(
         r#"

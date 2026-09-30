@@ -86,6 +86,30 @@ fn main() {
 }
 
 #[test]
+fn passes_incomplete_struct_pointers_through_the_c_abi() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+extern "C" from "libc.so.6" {
+    struct FILE
+    fn tmpfile() -> *mut FILE
+    fn fclose(stream: *mut FILE) -> i32
+}
+
+@native("test.capture")
+fn report(value: i32)
+
+fn main() {
+    let stream = tmpfile()
+    report(fclose(stream))
+}
+"#);
+
+    assert_eq!(capture.recorded(), vec![Value::SignedInteger(0)]);
+    clear_thread_registry();
+}
+
+#[test]
 fn executes_kome_wrapper_around_native_function() {
     let capture = Capture::install("core.write_line");
 
