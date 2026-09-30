@@ -246,6 +246,36 @@ fn main() {
 }
 
 #[test]
+fn executes_structural_objects_with_static_property_keys() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+var GLOBAL = { "label": "global", ["computed"]: "yes" }
+fn main() {
+    var value = {
+        name: "Kome",
+        nested: { score: 42 },
+        "status": "ok",
+        1: "first",
+    }
+    value["status"] += "!"
+    report(value.name)
+    report("{value.nested.score}")
+    report(value["status"])
+    report(value[1])
+    report(GLOBAL.label + GLOBAL["computed"])
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        ["Kome", "42", "ok!", "first", "globalyes"]
+            .map(|value| Value::String(KomeString::new(value)))
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn orders_named_function_and_method_arguments() {
     let capture = Capture::install("test.capture");
     run(r#"

@@ -73,7 +73,7 @@ impl FunctionKind {
 pub struct ModuleInfo {
     functions: HashMap<String, FunctionKind>,
     runtime_types: HashMap<String, KomeType>,
-    structs: Vec<StructInfo>,
+    structs: RefCell<Vec<StructInfo>>,
     struct_ids: HashMap<String, usize>,
     implementations: Vec<TypeImplementation>,
     task_types: RefCell<Vec<KomeType>>,
@@ -122,6 +122,7 @@ struct StructInfo {
     name: String,
     fields: Vec<StructFieldInfo>,
     size: u32,
+    anonymous: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -156,13 +157,13 @@ impl ModuleInfo {
         self.runtime_types.get(name).copied()
     }
 
-    fn struct_info(&self, id: usize) -> &StructInfo {
-        &self.structs[id]
+    fn struct_info(&self, id: usize) -> StructInfo {
+        self.structs.borrow()[id].clone()
     }
 
     fn type_name(&self, ty: KomeType) -> String {
         match ty {
-            KomeType::Struct(id) => self.structs[id].name.clone(),
+            KomeType::Struct(id) => self.structs.borrow()[id].name.clone(),
             KomeType::Task(id) => format!("Task<{}>", self.type_name(self.task_result(id))),
             KomeType::List(id) => format!("{}[]", self.type_name(self.list_element(id))),
             KomeType::Optional(id) => format!("{}?", self.type_name(self.optional_inner(id))),
@@ -405,9 +406,10 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             name: struct_decl.name.clone(),
             size: (fields.len() * 8) as u32,
             fields,
+            anonymous: false,
         });
     }
-    let structs = structs.into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    let mut structs = structs.into_iter().map(Option::unwrap).collect::<Vec<_>>();
     let mut components = HashMap::new();
     for declaration in &module.declarations {
         let Declaration::Component(component) = declaration else {
@@ -718,7 +720,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             &functions,
             &runtime_types,
             &struct_ids,
-            &structs,
+            &mut structs,
             &implementations,
             &task_types,
             &list_types,
@@ -732,7 +734,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
     Ok(ModuleInfo {
         functions,
         runtime_types,
-        structs,
+        structs: RefCell::new(structs),
         struct_ids,
         implementations,
         task_types,
@@ -1658,7 +1660,7 @@ fn infer_global_type(
     functions: &HashMap<String, FunctionKind>,
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
-    structs: &[StructInfo],
+    structs: &mut Vec<StructInfo>,
     implementations: &[TypeImplementation],
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
@@ -1731,7 +1733,7 @@ fn infer_codegen_expression_type(
     functions: &HashMap<String, FunctionKind>,
     runtime_types: &HashMap<String, KomeType>,
     struct_ids: &HashMap<String, usize>,
-    structs: &[StructInfo],
+    structs: &mut Vec<StructInfo>,
     implementations: &[TypeImplementation],
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
@@ -1739,9 +1741,9 @@ fn infer_codegen_expression_type(
     cache: &mut HashMap<String, KomeType>,
     visiting: &mut Vec<String>,
 ) -> CodegenResult<KomeType> {
-    let recurse = |expression: &Expression,
-                   cache: &mut HashMap<String, KomeType>,
-                   visiting: &mut Vec<String>| {
+    let mut recurse = |expression: &Expression,
+                       cache: &mut HashMap<String, KomeType>,
+                       visiting: &mut Vec<String>| {
         infer_codegen_expression_type(
             expression,
             globals,
@@ -1887,13 +1889,109 @@ fn infer_codegen_expression_type(
             .copied()
             .map(KomeType::Struct)
             .ok_or_else(|| CodegenError::at("struct type is unknown", struct_.span)),
+        Expression::Object(object) => {
+            let mut fields = Vec::with_capacity(object.props.len());
+            for property in &object.props {
+                let ObjectProperty::KeyValue(property) = property;
+                let name = static_property_name(&property.key).ok_or_else(|| {
+                    CodegenError::at(
+                        "computed object keys must be string or number literals",
+                        property.span,
+                    )
+                })?;
+                let type_ = recurse(&property.value, cache, visiting)?;
+                fields.push((name, type_));
+            }
+            intern_anonymous_struct(structs, fields, object.span)
+        }
         Expression::Template(_) => Ok(KomeType::String),
         Expression::Is(is) => recurse(&is.body, cache, visiting),
         Expression::Component(_) => Ok(KomeType::Null),
-        Expression::Object(_) | Expression::Closure(_) | Expression::DotIdent(_) => Err(
-            CodegenError::at("expression type requires context", expression.span()),
-        ),
+        Expression::Closure(_) | Expression::DotIdent(_) => Err(CodegenError::at(
+            "expression type requires context",
+            expression.span(),
+        )),
     }
+}
+
+fn static_property_name(key: &PropertyKey) -> Option<String> {
+    match key {
+        PropertyKey::Ident { name, .. } => Some(name.clone()),
+        PropertyKey::String { value, .. } => Some(value.clone()),
+        PropertyKey::Number { value, .. } => Some(value.clone()),
+        PropertyKey::Computed { expression, .. } => match expression.as_ref() {
+            Expression::Literal(LiteralExpression {
+                kind: LiteralKind::String(value),
+                ..
+            }) => Some(value.clone()),
+            Expression::Literal(LiteralExpression {
+                kind: LiteralKind::Number(value),
+                ..
+            }) => Some(value.0.clone()),
+            _ => None,
+        },
+    }
+}
+
+fn static_index_name(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::Literal(LiteralExpression {
+            kind: LiteralKind::String(value),
+            ..
+        }) => Some(value.clone()),
+        Expression::Literal(LiteralExpression {
+            kind: LiteralKind::Number(value),
+            ..
+        }) => Some(value.0.clone()),
+        Expression::Group(group) => static_index_name(&group.expression),
+        _ => None,
+    }
+}
+
+fn intern_anonymous_struct(
+    structs: &mut Vec<StructInfo>,
+    fields: Vec<(String, KomeType)>,
+    span: Span,
+) -> CodegenResult<KomeType> {
+    let mut seen = std::collections::HashSet::new();
+    for (name, _) in &fields {
+        if !seen.insert(name.clone()) {
+            return Err(CodegenError::at(
+                format!("duplicate object property `{name}`"),
+                span,
+            ));
+        }
+    }
+    if let Some(id) = structs.iter().position(|layout| {
+        layout.anonymous
+            && layout.fields.len() == fields.len()
+            && layout
+                .fields
+                .iter()
+                .zip(&fields)
+                .all(|(existing, (name, type_))| {
+                    existing.name == *name && existing.kome_type == *type_
+                })
+    }) {
+        return Ok(KomeType::Struct(id));
+    }
+    let id = structs.len();
+    let layout_fields = fields
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, kome_type))| StructFieldInfo {
+            name,
+            kome_type,
+            offset: (index * 8) as i32,
+        })
+        .collect::<Vec<_>>();
+    structs.push(StructInfo {
+        name: format!("<object#{id}>"),
+        size: (layout_fields.len() * 8) as u32,
+        fields: layout_fields,
+        anonymous: true,
+    });
+    Ok(KomeType::Struct(id))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3802,21 +3900,72 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         expression: &ObjectExpression,
         expected: Option<KomeType>,
     ) -> CodegenResult<TypedValue> {
-        let Some(KomeType::Struct(id)) = expected else {
-            return Err(CodegenError::at(
-                "an object literal requires a concrete struct type annotation",
-                expression.span,
-            ));
+        if let Some(KomeType::Struct(id)) = expected {
+            let fields = expression
+                .props
+                .iter()
+                .map(|property| match property {
+                    ObjectProperty::KeyValue(property) => property.clone(),
+                })
+                .collect::<Vec<_>>();
+            let name = self.info.struct_info(id).name.clone();
+            return self.evaluate_struct_fields(id, &name, &fields, expression.span);
+        }
+
+        let mut values = Vec::with_capacity(expression.props.len());
+        let mut field_types = Vec::with_capacity(expression.props.len());
+        let mut seen = std::collections::HashSet::new();
+        for property in &expression.props {
+            let ObjectProperty::KeyValue(property) = property;
+            let name = static_property_name(&property.key).ok_or_else(|| {
+                CodegenError::at(
+                    "computed object keys must be string or number literals",
+                    property.span,
+                )
+            })?;
+            if !seen.insert(name.clone()) {
+                return Err(CodegenError::at(
+                    format!("duplicate object property `{name}`"),
+                    property.span,
+                ));
+            }
+            let value = self.evaluate(&property.value)?;
+            if value.kome_type == KomeType::Void {
+                return Err(CodegenError::at(
+                    "object properties cannot have type Void",
+                    property.value.span(),
+                ));
+            }
+            field_types.push((name.clone(), value.kome_type));
+            values.push((name, value, property.value.span()));
+        }
+        let object_type = {
+            let mut structs = self.info.structs.borrow_mut();
+            intern_anonymous_struct(&mut structs, field_types, expression.span)?
         };
-        let fields = expression
-            .props
-            .iter()
-            .map(|property| match property {
-                ObjectProperty::KeyValue(property) => property.clone(),
-            })
-            .collect::<Vec<_>>();
-        let name = self.info.struct_info(id).name.clone();
-        self.evaluate_struct_fields(id, &name, &fields, expression.span)
+        let KomeType::Struct(id) = object_type else {
+            unreachable!();
+        };
+        let layout = self.info.struct_info(id);
+        let size = self
+            .builder
+            .ins()
+            .iconst(types::I64, i64::from(layout.size));
+        let alloc =
+            Module::declare_func_in_func(self.module, self.foreign.struct_alloc, self.builder.func);
+        let call = self.builder.ins().call(alloc, &[size]);
+        let pointer = self.builder.inst_results(call)[0];
+        for field in &layout.fields {
+            let (_, value, span) = values
+                .iter()
+                .find(|(name, _, _)| name == &field.name)
+                .expect("anonymous object fields match their interned layout");
+            let raw = self.own_value(*value, *span)?;
+            self.builder
+                .ins()
+                .store(MachMemFlags::new(), raw, pointer, field.offset);
+        }
+        Ok(TypedValue::some(pointer, object_type))
     }
 
     fn evaluate_template(&mut self, expression: &TemplateExpression) -> CodegenResult<TypedValue> {
@@ -4139,11 +4288,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         for field in &layout.fields {
             let property = properties
                 .iter()
-                .find(|property| match &property.key {
-                    PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
-                        name == &field.name
-                    }
-                    PropertyKey::Number { .. } | PropertyKey::Computed { .. } => false,
+                .find(|property| {
+                    static_property_name(&property.key).as_deref() == Some(field.name.as_str())
                 })
                 .ok_or_else(|| {
                     CodegenError::at(
@@ -4153,11 +4299,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 })?;
             let duplicates = properties
                 .iter()
-                .filter(|candidate| match &candidate.key {
-                    PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
-                        name == &field.name
-                    }
-                    PropertyKey::Number { .. } | PropertyKey::Computed { .. } => false,
+                .filter(|candidate| {
+                    static_property_name(&candidate.key).as_deref() == Some(field.name.as_str())
                 })
                 .count();
             if duplicates != 1 {
@@ -4184,19 +4327,16 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .store(MachMemFlags::new(), value, pointer, field.offset);
         }
         for property in properties {
-            let property_name = match &property.key {
-                PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => name,
-                PropertyKey::Number { .. } | PropertyKey::Computed { .. } => {
-                    return Err(CodegenError::at(
-                        "struct field names must be identifiers",
-                        property.span,
-                    ));
-                }
-            };
+            let property_name = static_property_name(&property.key).ok_or_else(|| {
+                CodegenError::at(
+                    "computed object keys must be string or number literals",
+                    property.span,
+                )
+            })?;
             if !layout
                 .fields
                 .iter()
-                .any(|field| field.name == *property_name)
+                .any(|field| field.name == property_name)
             {
                 return Err(CodegenError::at(
                     format!("struct `{name}` has no field `{property_name}`"),
@@ -4313,6 +4453,37 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         index: &kome_ast::expressions::IndexExpression,
     ) -> CodegenResult<TypedValue> {
         let object = self.evaluate(&index.object)?;
+        if let KomeType::Struct(id) = object.kome_type
+            && self.info.struct_info(id).anonymous
+        {
+            let key = static_index_name(&index.index).ok_or_else(|| {
+                CodegenError::at(
+                    "structural object indices must be string or number literals",
+                    index.index.span(),
+                )
+            })?;
+            let layout = self.info.struct_info(id);
+            let field = layout
+                .fields
+                .iter()
+                .find(|field| field.name == key)
+                .cloned()
+                .ok_or_else(|| {
+                    CodegenError::at(format!("object has no property `{key}`"), index.span)
+                })?;
+            let pointer = object.expect_value(index.object.span())?;
+            let value = self.builder.ins().load(
+                field.kome_type.cranelift().expect("field representation"),
+                MachMemFlags::new(),
+                pointer,
+                field.offset,
+            );
+            if field.kome_type.is_managed() {
+                self.retain_managed(value, field.kome_type);
+            }
+            self.release_owned_temporary(object, index.object.span())?;
+            return Ok(TypedValue::some(value, field.kome_type));
+        }
         let KomeType::List(id) = object.kome_type else {
             return Err(CodegenError::at(
                 "indexing expects a List",
@@ -5758,6 +5929,55 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         assignment: &AssignmentExpression,
     ) -> CodegenResult<TypedValue> {
         let object = self.evaluate(&index.object)?;
+        if let KomeType::Struct(id) = object.kome_type
+            && self.info.struct_info(id).anonymous
+        {
+            let key = static_index_name(&index.index).ok_or_else(|| {
+                CodegenError::at(
+                    "structural object indices must be string or number literals",
+                    index.index.span(),
+                )
+            })?;
+            let layout = self.info.struct_info(id);
+            let field = layout
+                .fields
+                .iter()
+                .find(|field| field.name == key)
+                .cloned()
+                .ok_or_else(|| {
+                    CodegenError::at(format!("object has no property `{key}`"), index.span)
+                })?;
+            let pointer = object.expect_value(index.object.span())?;
+            let old = self.builder.ins().load(
+                field.kome_type.cranelift().expect("field representation"),
+                MachMemFlags::new(),
+                pointer,
+                field.offset,
+            );
+            let right = self.evaluate_with_expected(&assignment.value, Some(field.kome_type))?;
+            if right.kome_type != field.kome_type {
+                return Err(CodegenError::at(
+                    format!(
+                        "object property `{key}` expects {}, but found {}",
+                        self.info.type_name(field.kome_type),
+                        self.info.type_name(right.kome_type)
+                    ),
+                    assignment.value.span(),
+                ));
+            }
+            let value = self.assignment_value(old, right, assignment)?;
+            if field.kome_type.is_managed() {
+                self.release_managed(old, field.kome_type);
+            }
+            self.builder
+                .ins()
+                .store(MachMemFlags::new(), value, pointer, field.offset);
+            if field.kome_type.is_managed() {
+                self.retain_managed(value, field.kome_type);
+            }
+            self.release_owned_temporary(object, index.object.span())?;
+            return Ok(TypedValue::some(value, field.kome_type));
+        }
         let KomeType::List(id) = object.kome_type else {
             return Err(CodegenError::at(
                 "index assignment requires a List",

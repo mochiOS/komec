@@ -194,12 +194,15 @@ struct User { name: String, score: Number }
 
 fn main() {
     let user: User = { name: "Kome", score: { 20 + 22 } }
+    var object = { name: "AOT", "status": "ok", 1: "one" }
+    object["status"] += "!"
     println("{user.name}={user.score}")
+    println(object.name + object["status"] + object[1])
 }
 "#,
     );
 
-    assert_eq!(stdout, "Kome=42\n");
+    assert_eq!(stdout, "Kome=42\nAOTok!one\n");
 }
 
 #[test]
