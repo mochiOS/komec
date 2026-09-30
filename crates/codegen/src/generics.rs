@@ -486,54 +486,93 @@ impl<'a> Expander<'a> {
         substitution: &TypeSubstitution,
     ) -> CodegenResult<()> {
         for statement in &mut block.statements {
-            match statement {
-                Statement::Let(binding) => {
-                    let expected = binding
-                        .type_annotation
-                        .as_ref()
-                        .map(|type_| substitution.apply(type_));
-                    let inferred = if let Some(init) = &mut binding.init {
-                        Some(self.rewrite_expression(
-                            init,
-                            environment,
-                            substitution,
-                            expected.as_ref(),
-                        )?)
-                    } else {
-                        None
-                    };
-                    if let Pattern::Ident(identifier) = &binding.pattern {
-                        environment.insert(
-                            identifier.name.clone(),
-                            expected
-                                .or(inferred)
-                                .unwrap_or_else(|| unknown_type(binding.span)),
-                        );
-                    }
-                    if let Some(annotation) = &binding.type_annotation {
-                        binding.type_annotation =
-                            Some(self.concrete_type(annotation, substitution, binding.span)?);
-                    }
-                }
-                Statement::Expression(value) => {
-                    self.rewrite_expression(
-                        &mut value.expression,
+            self.rewrite_statement(statement, environment, substitution)?;
+        }
+        Ok(())
+    }
+
+    fn rewrite_statement(
+        &mut self,
+        statement: &mut Statement,
+        environment: &mut HashMap<String, Type>,
+        substitution: &TypeSubstitution,
+    ) -> CodegenResult<()> {
+        match statement {
+            Statement::Let(binding) => {
+                let expected = binding
+                    .type_annotation
+                    .as_ref()
+                    .map(|type_| substitution.apply(type_));
+                let inferred = if let Some(init) = &mut binding.init {
+                    Some(self.rewrite_expression(
+                        init,
                         environment,
                         substitution,
-                        None,
+                        expected.as_ref(),
+                    )?)
+                } else {
+                    None
+                };
+                if let Pattern::Ident(identifier) = &binding.pattern {
+                    environment.insert(
+                        identifier.name.clone(),
+                        expected
+                            .or(inferred)
+                            .unwrap_or_else(|| unknown_type(binding.span)),
+                    );
+                }
+                if let Some(annotation) = &binding.type_annotation {
+                    binding.type_annotation =
+                        Some(self.concrete_type(annotation, substitution, binding.span)?);
+                }
+            }
+            Statement::Expression(value) => {
+                self.rewrite_expression(&mut value.expression, environment, substitution, None)?;
+            }
+            Statement::Return(value) => {
+                if let Some(argument) = &mut value.argument {
+                    self.rewrite_expression(argument, environment, substitution, None)?;
+                }
+            }
+            Statement::Block(value) => {
+                let mut nested = environment.clone();
+                self.rewrite_block(value, &mut nested, substitution)?;
+            }
+            Statement::If(value) => {
+                let boolean = primitive("bool", value.test.span());
+                self.rewrite_expression(
+                    &mut value.test,
+                    environment,
+                    substitution,
+                    Some(&boolean),
+                )?;
+                let mut consequent_environment = environment.clone();
+                self.rewrite_statement(
+                    &mut value.consequent,
+                    &mut consequent_environment,
+                    substitution,
+                )?;
+                if let Some(alternative) = &mut value.alternative {
+                    let mut alternative_environment = environment.clone();
+                    self.rewrite_statement(
+                        alternative,
+                        &mut alternative_environment,
+                        substitution,
                     )?;
                 }
-                Statement::Return(value) => {
-                    if let Some(argument) = &mut value.argument {
-                        self.rewrite_expression(argument, environment, substitution, None)?;
-                    }
-                }
-                Statement::Block(value) => {
-                    let mut nested = environment.clone();
-                    self.rewrite_block(value, &mut nested, substitution)?;
-                }
-                _ => {}
             }
+            Statement::While(value) => {
+                let boolean = primitive("bool", value.test.span());
+                self.rewrite_expression(
+                    &mut value.test,
+                    environment,
+                    substitution,
+                    Some(&boolean),
+                )?;
+                let mut body_environment = environment.clone();
+                self.rewrite_statement(&mut value.body, &mut body_environment, substitution)?;
+            }
+            _ => {}
         }
         Ok(())
     }

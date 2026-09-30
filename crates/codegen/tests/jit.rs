@@ -527,6 +527,36 @@ fn main() {
 }
 
 #[test]
+fn lowers_generic_calls_and_tasks_inside_control_flow() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+fn identity<T>(value: T) -> T { return value }
+fn answer() -> Number { return 42 }
+fn main() {
+    var index = 0
+    while index < 2 {
+        if index == 0 {
+            report(identity(10))
+        } else {
+            report(wait task answer())
+        }
+        index = index + 1
+    }
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::Number(Number::from_i64(10)),
+            Value::Number(Number::from_i64(42)),
+        ]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn compiles_fixed_width_numeric_bindings() {
     run(r#"
 fn main() {

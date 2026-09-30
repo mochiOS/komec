@@ -142,6 +142,41 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_conditionals_and_loops() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+fn classify(value: Number) -> Number {
+    if value < 10 {
+        return 1
+    } else if value == 10 {
+        return 2
+    } else {
+        return 3
+    }
+}
+fn count() -> Number {
+    var value = 0
+    var total = 0
+    while value < 6 {
+        value = value + 1
+        if value == 2 { continue }
+        if value == 5 { break }
+        total = total + value
+    }
+    return total
+}
+fn main() {
+    println(classify(10))
+    println(count())
+}
+"#,
+    );
+    assert_eq!(stdout, "2\n8\n");
+}
+
+#[test]
 fn builds_and_runs_structs_static_members_and_trait_dispatch() {
     let stdout = build_and_run(
         r#"
