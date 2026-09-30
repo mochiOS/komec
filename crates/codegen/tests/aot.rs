@@ -621,6 +621,32 @@ component Counter(start: Number = 40) {
 }
 
 #[test]
+fn builds_and_runs_optional_holes_and_scalar_templates() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn printText(value: String)
+@native("core.write_line")
+fn printBool(value: bool)
+struct Result { value: String? }
+fn missing() -> String? { return null }
+fn main() {
+    let values: String[] = [, "set"]
+    let result = Result { value: missing() }
+    let signed: i16 = 12
+    let unsigned: u32 = 34
+    let single: f32 = 1.5
+    let double: f64 = 2.25
+    printText("{signed} {unsigned} {single} {double}")
+    printText(values[0])
+    printBool(result.value == null)
+}
+"#,
+    );
+    assert_eq!(stdout, "12 34 1.5 2.25\n\ntrue\n");
+}
+
+#[test]
 fn built_binary_has_no_rust_runtime_dependency() {
     // The point of this check is that the binary links only against system
     // libraries; running it in a minimal environment proves the runtime is
