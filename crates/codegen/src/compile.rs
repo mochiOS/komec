@@ -80,6 +80,14 @@ pub struct ModuleInfo {
     list_types: RefCell<Vec<KomeType>>,
     enums: Vec<EnumInfo>,
     globals: HashMap<String, Binding>,
+    components: HashMap<String, ComponentInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct ComponentInfo {
+    param_names: Vec<String>,
+    param_types: Vec<KomeType>,
+    defaults: Vec<Option<Expression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -373,6 +381,42 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         });
     }
     let structs = structs.into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    let mut components = HashMap::new();
+    for declaration in &module.declarations {
+        let Declaration::Component(component) = declaration else {
+            continue;
+        };
+        let mut param_names = Vec::with_capacity(component.params.len());
+        let mut param_types = Vec::with_capacity(component.params.len());
+        let mut defaults = Vec::with_capacity(component.params.len());
+        for parameter in &component.params {
+            param_names.push(parameter.name.clone());
+            param_types.push(type_from_annotation(
+                &parameter.type_,
+                &runtime_types,
+                &struct_ids,
+                &task_types,
+                &list_types,
+            )?);
+            defaults.push(parameter.default.clone());
+        }
+        if components
+            .insert(
+                component.name.clone(),
+                ComponentInfo {
+                    param_names,
+                    param_types,
+                    defaults,
+                },
+            )
+            .is_some()
+        {
+            return Err(CodegenError::at(
+                format!("duplicate component `{}`", component.name),
+                component.span,
+            ));
+        }
+    }
 
     for declaration in &module.declarations {
         let Declaration::Function(function) = declaration else {
@@ -556,6 +600,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         list_types,
         enums,
         globals,
+        components,
     })
 }
 
@@ -2544,6 +2589,13 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::Template(template) => self.evaluate_template(template),
 
+            Expression::Component(component) => self.evaluate_component(
+                &component.name,
+                &component.args,
+                &component.children,
+                component.span,
+            ),
+
             other => Err(CodegenError::at(
                 format!(
                     "expression `{}` is not supported yet",
@@ -4141,6 +4193,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
         }
         if let Expression::Ident(identifier) = call.callee.as_ref() {
+            if self.info.components.contains_key(&identifier.name) {
+                return self.evaluate_component(&identifier.name, &call.args, &[], call.span);
+            }
             match identifier.name.as_str() {
                 "all" => return self.evaluate_all(call),
                 "race" => return self.evaluate_race(call),
@@ -4224,6 +4279,48 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         }
 
         Ok(result)
+    }
+
+    fn evaluate_component(
+        &mut self,
+        name: &str,
+        arguments: &[CallArg],
+        children: &[Expression],
+        span: Span,
+    ) -> CodegenResult<TypedValue> {
+        let component =
+            self.info.components.get(name).cloned().ok_or_else(|| {
+                CodegenError::at(format!("component `{name}` was not found"), span)
+            })?;
+        let ordered = self.order_call_arguments(
+            arguments,
+            &component.param_names,
+            &component.defaults,
+            0,
+            span,
+        )?;
+        for (expression, expected) in ordered.iter().zip(&component.param_types) {
+            let value = self.evaluate_with_expected(expression, Some(*expected))?;
+            if value.kome_type != *expected {
+                return Err(CodegenError::at(
+                    format!(
+                        "component `{name}` parameter expects {}, but found {}",
+                        self.info.type_name(*expected),
+                        self.info.type_name(value.kome_type)
+                    ),
+                    expression.span(),
+                ));
+            }
+            self.release_owned_temporary(value, expression.span())?;
+        }
+        for child in children {
+            let value = self.evaluate(child)?;
+            self.release_owned_temporary(value, child.span())?;
+        }
+        Ok(TypedValue::some(
+            self.builder.ins().iconst(types::I8, 0),
+            KomeType::Null,
+        ))
     }
 
     fn evaluate_closure_call(

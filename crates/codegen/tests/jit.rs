@@ -465,6 +465,23 @@ fn main() {
 }
 
 #[test]
+fn generates_component_calls_arguments_defaults_and_children() {
+    run(r#"
+enum Color { primary, secondary }
+
+component Text(content: String, color: Color = .primary)
+component VStack()
+
+fn main() {
+    VStack {
+        Text("Hello")
+        Text(color: .secondary, content: "Kome")
+    }
+}
+"#);
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

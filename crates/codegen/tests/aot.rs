@@ -329,6 +329,26 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_component_expressions() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: String)
+
+component Text(content: String)
+component VStack()
+
+fn main() {
+    VStack { Text("Hello") }
+    println("built")
+}
+"#,
+    );
+
+    assert_eq!(stdout, "built\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"
