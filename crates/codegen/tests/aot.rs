@@ -165,6 +165,29 @@ fn main() {
 }
 
 #[test]
+fn passes_managed_string_bytes_to_linked_c_functions() {
+    let stdout = build_and_run(
+        r#"
+extern "C" {
+    fn __kome_string_data(value: String) -> *const u8
+    fn __kome_string_len(value: String) -> usize
+}
+
+extern "C" from "libc.so.6" {
+    fn write(file: i32, bytes: *const u8, length: usize) -> isize
+}
+
+fn main() {
+    let text = "ViewKit"
+    write(1, __kome_string_data(text), __kome_string_len(text))
+}
+"#,
+    );
+
+    assert_eq!(stdout, "ViewKit");
+}
+
+#[test]
 fn builds_and_runs_number_arithmetic() {
     let stdout = build_and_run(
         r#"

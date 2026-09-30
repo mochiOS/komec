@@ -21,8 +21,8 @@ use kome_native_rt::socket::{__kome_socket_release, __kome_socket_retain};
 use kome_native_rt::string::{
     __kome_boolean_to_string, __kome_f32_to_string, __kome_f64_to_string,
     __kome_signed_integer_to_string, __kome_string_compare, __kome_string_concat,
-    __kome_string_create, __kome_string_release, __kome_string_retain,
-    __kome_unsigned_integer_to_string,
+    __kome_string_create, __kome_string_data, __kome_string_len, __kome_string_release,
+    __kome_string_retain, __kome_unsigned_integer_to_string,
 };
 use kome_native_rt::struct_value::{
     __kome_struct_alloc, __kome_struct_dealloc, __kome_struct_release, __kome_struct_retain,
@@ -130,15 +130,15 @@ fn register_external_symbols(
     }
 
     for (_, symbol, library, _) in info.external_functions() {
-        let pointer = match library {
-            Some(name) => libraries
-                .iter()
-                .find(|(loaded_name, _)| *loaded_name == name)
-                .expect("each external library was loaded")
-                .1
-                .symbol(symbol)?,
-            None => lookup_symbol(libc::RTLD_DEFAULT, symbol)?,
+        let Some(name) = library else {
+            continue;
         };
+        let pointer = libraries
+            .iter()
+            .find(|(loaded_name, _)| *loaded_name == name)
+            .expect("each external library was loaded")
+            .1
+            .symbol(symbol)?;
         builder.symbol(symbol, pointer);
     }
 
@@ -214,7 +214,7 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    let symbols: [(&str, *const u8); 49] = [
+    let symbols: [(&str, *const u8); 51] = [
         (
             "__kome_native_call",
             __kome_native_call as *const () as *const u8,
@@ -270,6 +270,14 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         (
             "__kome_string_release",
             __kome_string_release as *const () as *const u8,
+        ),
+        (
+            "__kome_string_data",
+            __kome_string_data as *const () as *const u8,
+        ),
+        (
+            "__kome_string_len",
+            __kome_string_len as *const () as *const u8,
         ),
         (
             "__kome_string_concat",

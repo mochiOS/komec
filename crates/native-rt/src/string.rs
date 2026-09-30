@@ -219,6 +219,29 @@ pub unsafe extern "C" fn __kome_string_release(raw: u64) {
     }
 }
 
+/// Returns a borrowed pointer to the UTF-8 bytes of a managed Kome string.
+///
+/// The pointer remains valid while the caller retains `raw`. It is not
+/// NUL-terminated.
+///
+/// # Safety
+///
+/// `raw` must be a valid Kome `String` runtime handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_string_data(raw: u64) -> *const u8 {
+    unsafe { heap_string(raw) }.value.as_ptr()
+}
+
+/// Returns the byte length of a managed Kome string's UTF-8 representation.
+///
+/// # Safety
+///
+/// `raw` must be a valid Kome `String` runtime handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_string_len(raw: u64) -> usize {
+    unsafe { heap_string(raw) }.value.len()
+}
+
 /// Concatenates two Kome `String` values.
 ///
 /// # Safety
