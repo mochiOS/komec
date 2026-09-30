@@ -37,6 +37,7 @@ cranelift-jit = "0.135.0"
 cranelift-module = "0.135.0"
 cranelift-native = "0.135.0"
 cranelift-object = "0.135.0"
+libc = "0.2"
 
 [dependencies]
 kome_ast.workspace = true

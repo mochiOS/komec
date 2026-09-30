@@ -629,6 +629,7 @@ dependencies = [
  "kome_codegen",
  "kome_native_rt",
  "kome_parser",
+ "libc",
 ]
 
 [[package]]

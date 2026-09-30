@@ -34,6 +34,8 @@ use kome_native_rt::task::{
     __kome_task_retain, __kome_task_spawn, __kome_task_start, __kome_task_wait,
     __kome_task_wait_timeout,
 };
+use std::ffi::{CStr, CString, c_void};
+use std::path::{Path, PathBuf};
 
 /// Compiles `module_ast` and runs `entry` in the current process.
 ///
@@ -48,6 +50,7 @@ pub fn execute(module_ast: &KomeModule, entry: &str) -> CodegenResult<()> {
         JITBuilder::with_isa(native_isa()?, cranelift_module::default_libcall_names());
 
     register_runtime_symbols(&mut builder);
+    let _external_libraries = register_external_symbols(&info, &mut builder)?;
 
     let mut module = JITModule::new(builder);
 
@@ -63,6 +66,139 @@ pub fn execute(module_ast: &KomeModule, entry: &str) -> CodegenResult<()> {
     function();
 
     Ok(())
+}
+
+/// A dynamically loaded C library kept alive while generated code can call it.
+struct DynamicLibrary(*mut c_void);
+
+impl DynamicLibrary {
+    fn open(name: &str) -> CodegenResult<Self> {
+        let candidates = library_candidates(name);
+        let mut failures = Vec::new();
+        for candidate in &candidates {
+            let encoded = CString::new(candidate.as_os_str().as_encoded_bytes()).map_err(|_| {
+                CodegenError::new(
+                    format!(
+                        "C library path contains a NUL byte: `{}`",
+                        candidate.display()
+                    ),
+                    None,
+                )
+            })?;
+            unsafe {
+                libc::dlerror();
+                let handle = libc::dlopen(encoded.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                if !handle.is_null() {
+                    return Ok(Self(handle));
+                }
+                failures.push(format!(
+                    "{}: {}",
+                    candidate.display(),
+                    dynamic_loader_error()
+                ));
+            }
+        }
+        Err(CodegenError::new(
+            format!(
+                "failed to load external C library `{name}`:\n{}",
+                failures.join("\n")
+            ),
+            None,
+        ))
+    }
+
+    fn symbol(&self, name: &str) -> CodegenResult<*const u8> {
+        lookup_symbol(self.0, name)
+    }
+}
+
+impl Drop for DynamicLibrary {
+    fn drop(&mut self) {
+        unsafe {
+            libc::dlclose(self.0);
+        }
+    }
+}
+
+fn register_external_symbols(
+    info: &kome_codegen::compile::ModuleInfo,
+    builder: &mut JITBuilder,
+) -> CodegenResult<Vec<DynamicLibrary>> {
+    let mut libraries = Vec::new();
+    for name in info.external_libraries() {
+        libraries.push((name, DynamicLibrary::open(name)?));
+    }
+
+    for (_, symbol, library, _) in info.external_functions() {
+        let pointer = match library {
+            Some(name) => libraries
+                .iter()
+                .find(|(loaded_name, _)| *loaded_name == name)
+                .expect("each external library was loaded")
+                .1
+                .symbol(symbol)?,
+            None => lookup_symbol(libc::RTLD_DEFAULT, symbol)?,
+        };
+        builder.symbol(symbol, pointer);
+    }
+
+    Ok(libraries.into_iter().map(|(_, library)| library).collect())
+}
+
+fn lookup_symbol(handle: *mut c_void, name: &str) -> CodegenResult<*const u8> {
+    let encoded = CString::new(name).map_err(|_| {
+        CodegenError::new(
+            format!("external C symbol contains a NUL byte: `{name}`"),
+            None,
+        )
+    })?;
+    unsafe {
+        libc::dlerror();
+        let pointer = libc::dlsym(handle, encoded.as_ptr());
+        let error = libc::dlerror();
+        if !error.is_null() {
+            return Err(CodegenError::new(
+                format!(
+                    "failed to resolve external C symbol `{name}`: {}",
+                    CStr::from_ptr(error).to_string_lossy()
+                ),
+                None,
+            ));
+        }
+        Ok(pointer.cast())
+    }
+}
+
+fn dynamic_loader_error() -> String {
+    unsafe {
+        let error = libc::dlerror();
+        if error.is_null() {
+            "unknown dynamic loader error".into()
+        } else {
+            CStr::from_ptr(error).to_string_lossy().into_owned()
+        }
+    }
+}
+
+fn library_candidates(name: &str) -> Vec<PathBuf> {
+    let path = Path::new(name);
+    let is_path = path.components().count() > 1 || path.extension().is_some();
+    let filenames = if is_path {
+        vec![path.to_path_buf()]
+    } else {
+        vec![PathBuf::from(name), PathBuf::from(format!("lib{name}.so"))]
+    };
+
+    let mut candidates = Vec::new();
+    if let Some(search_path) = std::env::var_os("KOME_LIBRARY_PATH") {
+        for directory in std::env::split_paths(&search_path) {
+            for filename in &filenames {
+                candidates.push(directory.join(filename));
+            }
+        }
+    }
+    candidates.extend(filenames);
+    candidates
 }
 
 /// Builds the ISA for the host process that owns this JIT instance.

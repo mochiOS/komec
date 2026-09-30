@@ -12,6 +12,7 @@ kome_abi.workspace = true
 kome_ast.workspace = true
 kome_codegen.workspace = true
 kome_native_rt.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 kome_parser.workspace = true

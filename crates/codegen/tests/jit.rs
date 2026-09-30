@@ -65,6 +65,27 @@ fn run(source: &str) {
 }
 
 #[test]
+fn calls_a_function_from_a_shared_c_library() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+extern "C" from "libc.so.6" {
+    fn abs(value: i32) -> i32
+}
+
+@native("test.capture")
+fn report(value: i32)
+
+fn main() {
+    report(abs(42))
+}
+"#);
+
+    assert_eq!(capture.recorded(), vec![Value::SignedInteger(42)]);
+    clear_thread_registry();
+}
+
+#[test]
 fn executes_kome_wrapper_around_native_function() {
     let capture = Capture::install("core.write_line");
 
