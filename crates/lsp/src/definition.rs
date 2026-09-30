@@ -7,6 +7,7 @@ use komec::stdlib::{LoadedModule, StandardLibrary};
 use std::path::Path;
 use tower_lsp::lsp_types::{Location, Position, Url};
 
+/// Resolves the definition location referenced at an LSP document position.
 pub fn definition_at(
     document_uri: &Url,
     document_source: &str,

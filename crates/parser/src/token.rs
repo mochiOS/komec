@@ -117,6 +117,7 @@ pub enum TemplateTokenPart {
 }
 
 impl TokenKind {
+    /// Converts identifier text into a keyword token or a regular identifier.
     pub fn from_identifier(identifier: String) -> Self {
         match identifier.as_str() {
             "fn" => Self::Fn,
@@ -171,6 +172,7 @@ impl Token {
         }
     }
 
+    /// Returns whether this token marks the end of the source.
     pub fn is_eof(&self) -> bool {
         matches!(self.kind, TokenKind::Eof)
     }

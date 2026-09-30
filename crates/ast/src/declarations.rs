@@ -319,6 +319,7 @@ pub struct Module {
 }
 
 impl Module {
+    /// Creates a source module from declarations and its complete source span.
     pub fn new(declarations: Vec<Declaration>, span: Span) -> Self {
         Self { span, declarations }
     }

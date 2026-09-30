@@ -79,6 +79,7 @@ pub enum Symbol {
 }
 
 impl Symbol {
+    /// Returns the source-level name represented by this symbol.
     pub fn name(&self) -> &str {
         match self {
             Symbol::Component { name, .. }
@@ -96,6 +97,7 @@ impl Symbol {
         }
     }
 
+    /// Returns the source span that defines this symbol, when it has one.
     pub fn definition_span(&self) -> Option<Span> {
         match self {
             Self::Component { span, .. }

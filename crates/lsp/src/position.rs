@@ -1,6 +1,7 @@
 use kome_ast::Span;
 use tower_lsp::lsp_types::{Position, Range};
 
+/// Converts a byte-based Kome span into an LSP UTF-16 range.
 pub fn span_to_range(source: &str, span: Span) -> Range {
     let span = normalize_span(source, span);
 
@@ -10,6 +11,7 @@ pub fn span_to_range(source: &str, span: Span) -> Range {
     }
 }
 
+/// Converts a UTF-8 byte offset into an LSP UTF-16 position.
 pub fn byte_offset_to_position(source: &str, byte_offset: usize) -> Position {
     let byte_offset = clamp_to_char_boundary(source, byte_offset);
 
@@ -32,6 +34,7 @@ pub fn byte_offset_to_position(source: &str, byte_offset: usize) -> Position {
     Position { line, character }
 }
 
+/// Converts an LSP UTF-16 position into a UTF-8 byte offset.
 pub fn position_to_byte_offset(source: &str, position: Position) -> Option<usize> {
     let mut line_start = 0usize;
 

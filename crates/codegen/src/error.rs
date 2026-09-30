@@ -11,6 +11,7 @@ pub struct CodegenError {
 }
 
 impl CodegenError {
+    /// Creates a code-generation error with an optional source span.
     pub fn new(message: impl Into<String>, span: Option<Span>) -> Self {
         Self {
             message: message.into(),
@@ -18,14 +19,17 @@ impl CodegenError {
         }
     }
 
+    /// Creates a code-generation error at a required source span.
     pub fn at(message: impl Into<String>, span: Span) -> Self {
         Self::new(message, Some(span))
     }
 
+    /// Returns the human-readable diagnostic message.
     pub fn message(&self) -> &str {
         &self.message
     }
 
+    /// Returns the associated source span, if available.
     pub fn span(&self) -> Option<Span> {
         self.span
     }

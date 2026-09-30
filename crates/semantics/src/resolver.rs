@@ -41,6 +41,7 @@ pub struct ScopeBuilder {
 }
 
 impl ScopeBuilder {
+    /// Creates an empty name-resolution builder.
     pub fn new() -> Self {
         Self {
             scopes: Vec::new(),
@@ -60,14 +61,17 @@ impl ScopeBuilder {
         Self::resolve_sources_with_builtins(&[(0, module)], &[])
     }
 
+    /// Resolves one module with additional predefined value names.
     pub fn resolve_with_builtins(module: &Module, builtins: &[&str]) -> NameResolution {
         Self::resolve_sources_with_builtins(&[(0, module)], builtins)
     }
 
+    /// Resolves multiple source modules in one shared root scope.
     pub fn resolve_sources(sources: &[(SourceId, &Module)]) -> NameResolution {
         Self::resolve_sources_with_builtins(sources, &[])
     }
 
+    /// Resolves multiple source modules with additional predefined value names.
     pub fn resolve_sources_with_builtins(
         sources: &[(SourceId, &Module)],
         builtins: &[&str],

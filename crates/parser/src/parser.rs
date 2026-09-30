@@ -55,6 +55,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    /// Creates a parser and ensures that its token stream ends with EOF.
     pub fn new(mut tokens: Vec<Token>) -> Self {
         if !tokens.last().is_some_and(Token::is_eof) {
             let offset = tokens.last().map_or(0, |token| token.span.end);
@@ -69,6 +70,7 @@ impl Parser {
         }
     }
 
+    /// Parses the complete token stream as a Kome module.
     pub fn parse_module(&mut self) -> Result<Module, ParseError> {
         let mut declarations = Vec::new();
 
@@ -82,6 +84,7 @@ impl Parser {
         ))
     }
 
+    /// Parses exactly one expression followed by EOF.
     pub fn parse_expression(&mut self) -> Result<Expression, ParseError> {
         let expression = self.parse_assignment_expression()?;
 

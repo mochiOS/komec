@@ -10,6 +10,7 @@ pub const STDLIB_PATH_ENV: &str = "KOME_STDLIB_PATH";
 
 pub const KNOWN_PACKAGES: &[&str] = &["std", "viewkit"];
 
+/// Returns whether `name` identifies a bundled standard-library package.
 pub fn is_known_package(name: &str) -> bool {
     KNOWN_PACKAGES.contains(&name)
 }
@@ -38,6 +39,7 @@ pub struct LoadedModule {
 
 #[allow(unused)]
 impl StandardLibrary {
+    /// Discovers the active standard library from the environment or toolchain configuration.
     pub fn discover() -> Result<Self, String> {
         if let Some(raw_path) = env::var_os(STDLIB_PATH_ENV) {
             if raw_path.is_empty() {
@@ -74,6 +76,7 @@ impl StandardLibrary {
         Self::load(root)
     }
 
+    /// Loads the standard library from [`STDLIB_PATH_ENV`].
     pub fn load_from_env() -> Result<Self, String> {
         let raw_path = env::var_os(STDLIB_PATH_ENV).ok_or_else(|| {
             format!(
@@ -92,6 +95,7 @@ impl StandardLibrary {
         Self::load(PathBuf::from(raw_path))
     }
 
+    /// Loads a standard library rooted at `root`.
     pub fn load(root: PathBuf) -> Result<Self, String> {
         let metadata = fs::metadata(&root).map_err(|error| {
             format!(
@@ -124,6 +128,7 @@ impl StandardLibrary {
         })
     }
 
+    /// Resolves and loads the prelude and standard-library modules imported by `application`.
     pub fn modules_for(&self, application: &Module) -> Result<Vec<LoadedModule>, String> {
         let mut modules = vec![LoadedModule {
             path: self.prelude_path.clone(),
@@ -156,14 +161,17 @@ impl StandardLibrary {
         Ok(modules)
     }
 
+    /// Returns the root directory of this standard library.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Returns the source path of the loaded prelude.
     pub fn prelude_path(&self) -> &Path {
         &self.prelude_path
     }
 
+    /// Returns the parsed prelude module.
     pub fn prelude(&self) -> &Module {
         &self.prelude
     }

@@ -35,6 +35,7 @@ impl<'source> Lexer<'source> {
         }
     }
 
+    /// Tokenizes the complete source and appends an EOF token.
     pub fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
         let mut tokens = Vec::new();
 
@@ -50,6 +51,7 @@ impl<'source> Lexer<'source> {
         }
     }
 
+    /// Reads the next token from the source.
     pub fn next_token(&mut self) -> Result<Token, LexError> {
         self.skip_ignored();
 
