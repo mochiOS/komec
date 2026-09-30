@@ -1251,3 +1251,29 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn preserves_context_and_callees_through_groups() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+struct Value { number: Number }
+fn identity(value: Number) -> Number { return value }
+for Value {
+    fn get(self) -> Number { return self.number }
+}
+fn main() {
+    let value: Value = ({ number: 41 })
+    report((identity)(value.number))
+    report((value.get)() + 1)
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        ["41", "42"].map(|value| Value::Number(Number::parse(value).unwrap()))
+    );
+    clear_thread_registry();
+}

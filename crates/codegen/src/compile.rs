@@ -3075,6 +3075,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         expression: &Expression,
         expected: Option<KomeType>,
     ) -> CodegenResult<TypedValue> {
+        if let Expression::Group(group) = expression {
+            return self.evaluate_with_expected(&group.expression, expected);
+        }
         if let Expression::Task(task) = expression
             && let Some(KomeType::Task(id)) = expected
         {
@@ -4461,6 +4464,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             && let Expression::Closure(closure) = group.expression.as_ref()
         {
             return self.evaluate_closure_call(closure, call);
+        }
+        if let Expression::Group(group) = call.callee.as_ref() {
+            let mut ungrouped = call.clone();
+            ungrouped.callee = group.expression.clone();
+            return self.evaluate_call(&ungrouped);
         }
         if let Expression::Ident(identifier) = call.callee.as_ref() {
             let local = self
