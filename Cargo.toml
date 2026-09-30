@@ -16,6 +16,7 @@ members = [
   "crates/parser",
   "crates/semantics",
 ]
+exclude = ["vendor/viewkit"]
 
 [workspace.package]
 edition = "2024"
