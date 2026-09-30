@@ -1147,3 +1147,36 @@ fn main() {
 
     clear_thread_registry();
 }
+
+#[test]
+fn executes_optional_values_across_functions_and_struct_fields() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: bool)
+
+struct Result { value: String? }
+
+fn present() -> String? {
+    return "Kome"
+}
+
+fn missing() -> String? {
+    return null
+}
+
+fn main() {
+    let first = Result { value: present() }
+    let second = Result { value: missing() }
+    report(first.value != null)
+    report(second.value == null)
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Boolean(true), Value::Boolean(true)]
+    );
+    clear_thread_registry();
+}

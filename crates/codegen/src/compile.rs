@@ -78,6 +78,7 @@ pub struct ModuleInfo {
     implementations: Vec<TypeImplementation>,
     task_types: RefCell<Vec<KomeType>>,
     list_types: RefCell<Vec<KomeType>>,
+    optional_types: RefCell<Vec<KomeType>>,
     enums: Vec<EnumInfo>,
     globals: HashMap<String, Binding>,
     components: HashMap<String, ComponentInfo>,
@@ -151,6 +152,7 @@ impl ModuleInfo {
             KomeType::Struct(id) => self.structs[id].name.clone(),
             KomeType::Task(id) => format!("Task<{}>", self.type_name(self.task_result(id))),
             KomeType::List(id) => format!("{}[]", self.type_name(self.list_element(id))),
+            KomeType::Optional(id) => format!("{}?", self.type_name(self.optional_inner(id))),
             KomeType::Enum(id) => self.enums[id].name.clone(),
             _ => ty.name(),
         }
@@ -186,6 +188,10 @@ impl ModuleInfo {
 
     fn list_element(&self, id: usize) -> KomeType {
         self.list_types.borrow()[id]
+    }
+
+    fn optional_inner(&self, id: usize) -> KomeType {
+        self.optional_types.borrow()[id]
     }
 
     fn implementation_member(
@@ -263,6 +269,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
     let mut struct_ids = HashMap::new();
     let task_types = RefCell::new(Vec::new());
     let list_types = RefCell::new(Vec::new());
+    let optional_types = RefCell::new(Vec::new());
     let mut enums = Vec::new();
     let mut globals = HashMap::new();
 
@@ -352,6 +359,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &struct_ids,
                 &task_types,
                 &list_types,
+                &optional_types,
             )?;
             if kome_type == KomeType::Void {
                 return Err(CodegenError::at(
@@ -397,6 +405,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &struct_ids,
                 &task_types,
                 &list_types,
+                &optional_types,
             )?);
             defaults.push(parameter.default.clone());
         }
@@ -429,6 +438,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             &struct_ids,
             &task_types,
             &list_types,
+            &optional_types,
             None,
         )?;
 
@@ -471,6 +481,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             &struct_ids,
             &task_types,
             &list_types,
+            &optional_types,
         )?;
         let trait_name = implementation
             .trait_
@@ -494,6 +505,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                         &struct_ids,
                         &task_types,
                         &list_types,
+                        &optional_types,
                         Some(target),
                     )?;
                     let has_self = matches!(function.params.first(), Some(kome_ast::patterns::Pattern::Ident(parameter)) if parameter.name == "self");
@@ -553,6 +565,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                         &struct_ids,
                         &task_types,
                         &list_types,
+                        &optional_types,
                     )?;
                     constants.insert(
                         identifier.name.clone(),
@@ -580,6 +593,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &struct_ids,
                 &task_types,
                 &list_types,
+                &optional_types,
             )?;
         }
         implementations.push(TypeImplementation {
@@ -598,6 +612,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         implementations,
         task_types,
         list_types,
+        optional_types,
         enums,
         globals,
         components,
@@ -633,6 +648,7 @@ fn validate_trait_implementation(
     struct_ids: &HashMap<String, usize>,
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
+    optional_types: &RefCell<Vec<KomeType>>,
 ) -> CodegenResult<()> {
     for required in &trait_decl.functions {
         let expected = analyze_signature(
@@ -641,6 +657,7 @@ fn validate_trait_implementation(
             struct_ids,
             task_types,
             list_types,
+            optional_types,
             Some(target),
         )?;
         let actual = methods.get(&required.name).ok_or_else(|| {
@@ -1257,6 +1274,7 @@ fn analyze_signature(
     struct_ids: &HashMap<String, usize>,
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
+    optional_types: &RefCell<Vec<KomeType>>,
     self_type: Option<KomeType>,
 ) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
@@ -1297,6 +1315,7 @@ fn analyze_signature(
                 struct_ids,
                 task_types,
                 list_types,
+                optional_types,
             )?
         };
 
@@ -1319,6 +1338,7 @@ fn analyze_signature(
             struct_ids,
             task_types,
             list_types,
+            optional_types,
         )?,
         None => KomeType::Void,
     };
@@ -1337,7 +1357,33 @@ fn type_from_annotation(
     struct_ids: &HashMap<String, usize>,
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
+    optional_types: &RefCell<Vec<KomeType>>,
 ) -> CodegenResult<KomeType> {
+    if let kome_ast::types::Type::Optional(optional) = annotation {
+        let inner = type_from_annotation(
+            &optional.inner,
+            runtime_types,
+            struct_ids,
+            task_types,
+            list_types,
+            optional_types,
+        )?;
+        if matches!(inner, KomeType::Void | KomeType::Null) {
+            return Err(CodegenError::at(
+                "optional values require a non-Void, non-Null inner type",
+                optional.span,
+            ));
+        }
+        let mut optional_types = optional_types.borrow_mut();
+        let id = optional_types
+            .iter()
+            .position(|existing| *existing == inner)
+            .unwrap_or_else(|| {
+                optional_types.push(inner);
+                optional_types.len() - 1
+            });
+        return Ok(KomeType::Optional(id));
+    }
     if let kome_ast::types::Type::List(list) = annotation {
         let element = type_from_annotation(
             &list.element,
@@ -1345,6 +1391,7 @@ fn type_from_annotation(
             struct_ids,
             task_types,
             list_types,
+            optional_types,
         )?;
         let mut list_types = list_types.borrow_mut();
         let id = list_types
@@ -1376,6 +1423,7 @@ fn type_from_annotation(
                 struct_ids,
                 task_types,
                 list_types,
+                optional_types,
             )?;
             let mut task_types = task_types.borrow_mut();
             let id = task_types
@@ -2150,6 +2198,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                             &self.info.struct_ids,
                             &self.info.task_types,
                             &self.info.list_types,
+                            &self.info.optional_types,
                         )
                     })
                     .transpose()?;
@@ -2944,6 +2993,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     &self.info.struct_ids,
                     &self.info.task_types,
                     &self.info.list_types,
+                    &self.info.optional_types,
                 )
             })
             .transpose()?;
@@ -2996,6 +3046,14 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             return self.evaluate_task(task, Some(self.info.task_result(id)));
         }
         if let Expression::Literal(literal) = expression {
+            if matches!(literal.kind, LiteralKind::Null)
+                && let Some(optional @ KomeType::Optional(_)) = expected
+            {
+                return Ok(TypedValue::some(
+                    self.builder.ins().iconst(types::I64, 0),
+                    optional,
+                ));
+            }
             if let LiteralKind::Number(number) = &literal.kind {
                 if let Some(expected) = expected {
                     return self.evaluate_numeric_literal(number, literal.span, expected);
@@ -3026,6 +3084,31 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         }
         if let Expression::Is(is) = expression {
             return self.evaluate_is_expression(is, expected);
+        }
+
+        if let Some(optional @ KomeType::Optional(id)) = expected {
+            let inner = self.info.optional_inner(id);
+            let value = self.evaluate_with_expected(expression, Some(inner))?;
+            if value.kome_type == optional {
+                return Ok(value);
+            }
+            if value.kome_type != inner {
+                return Ok(value);
+            }
+            let payload = self.own_value(value, expression.span())?;
+            let size = self.builder.ins().iconst(types::I64, 8);
+            let alloc = Module::declare_func_in_func(
+                self.module,
+                self.foreign.struct_alloc,
+                self.builder.func,
+            );
+            let call = self.builder.ins().call(alloc, &[size]);
+            let pointer = self.builder.inst_results(call)[0];
+            let slot = self.value_to_task_slot(payload, inner);
+            self.builder
+                .ins()
+                .store(MachMemFlags::new(), slot, pointer, 0);
+            return Ok(TypedValue::some(pointer, optional));
         }
 
         self.evaluate(expression)
@@ -3977,6 +4060,25 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                         ))
                     }
 
+                    (KomeType::Optional(left_id), KomeType::Optional(right_id))
+                        if left_id == right_id
+                            && matches!(binary.op, BinaryOp::Eq | BinaryOp::NotEq) =>
+                    {
+                        let condition = if binary.op == BinaryOp::Eq {
+                            IntCC::Equal
+                        } else {
+                            IntCC::NotEqual
+                        };
+                        let result = self.builder.ins().icmp(
+                            condition,
+                            left.expect_value(span)?,
+                            right.expect_value(span)?,
+                        );
+                        self.release_owned_temporary(left, span)?;
+                        self.release_owned_temporary(right, span)?;
+                        Ok(TypedValue::some(result, KomeType::Boolean))
+                    }
+
                     _ => Err(invalid_operands(left, right)),
                 }
             }
@@ -4463,6 +4565,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                         &self.info.struct_ids,
                         &self.info.task_types,
                         &self.info.list_types,
+                        &self.info.optional_types,
                     )
                 })
                 .transpose()?;
@@ -4847,7 +4950,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     return Err(CodegenError::new("parameters cannot have type Void", None));
                 }
 
-                KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) | KomeType::Enum(_) => {
+                KomeType::Struct(_)
+                | KomeType::Task(_)
+                | KomeType::List(_)
+                | KomeType::Enum(_)
+                | KomeType::Optional(_) => {
                     return Err(CodegenError::new(
                         "managed aggregate values cannot cross the native ABI",
                         None,
@@ -4905,7 +5012,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .ins()
                 .bitcast(types::F64, MachMemFlags::new(), payload),
 
-            KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) | KomeType::Enum(_) => {
+            KomeType::Struct(_)
+            | KomeType::Task(_)
+            | KomeType::List(_)
+            | KomeType::Enum(_)
+            | KomeType::Optional(_) => {
                 return Err(CodegenError::new(
                     "managed aggregate values cannot cross the native ABI",
                     None,
@@ -4958,6 +5069,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 None,
             )),
             KomeType::Enum(_) => Ok(self.builder.ins().iconst(types::I64, 0)),
+            KomeType::Optional(_) => Ok(self.builder.ins().iconst(types::I64, 0)),
         }
     }
 
@@ -5026,6 +5138,10 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             KomeType::Struct(_) => self.foreign.struct_retain,
             KomeType::Task(_) => self.foreign.task_retain,
             KomeType::List(_) => self.foreign.list_retain,
+            KomeType::Optional(_) => {
+                self.retain_optional(value);
+                return;
+            }
             _ => return,
         };
 
@@ -5048,6 +5164,10 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
             KomeType::List(id) => {
                 self.release_list(value, id);
+                return;
+            }
+            KomeType::Optional(id) => {
+                self.release_optional(value, id);
                 return;
             }
             _ => return,
@@ -5090,6 +5210,65 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             .builder
             .ins()
             .iconst(types::I64, i64::from(layout.size));
+        let dealloc = Module::declare_func_in_func(
+            self.module,
+            self.foreign.struct_dealloc,
+            self.builder.func,
+        );
+        self.builder.ins().call(dealloc, &[value, size]);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+    }
+
+    fn retain_optional(&mut self, value: ir::Value) {
+        let retain = self.builder.create_block();
+        let done = self.builder.create_block();
+        let is_present = self.builder.ins().icmp_imm_u(IntCC::NotEqual, value, 0);
+        self.builder.ins().brif(is_present, retain, &[], done, &[]);
+        self.builder.switch_to_block(retain);
+        self.builder.seal_block(retain);
+        let function = Module::declare_func_in_func(
+            self.module,
+            self.foreign.struct_retain,
+            self.builder.func,
+        );
+        self.builder.ins().call(function, &[value]);
+        self.builder.ins().jump(done, &[]);
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+    }
+
+    fn release_optional(&mut self, value: ir::Value, id: usize) {
+        let release = self.builder.create_block();
+        let done = self.builder.create_block();
+        let is_present = self.builder.ins().icmp_imm_u(IntCC::NotEqual, value, 0);
+        self.builder.ins().brif(is_present, release, &[], done, &[]);
+        self.builder.switch_to_block(release);
+        self.builder.seal_block(release);
+
+        let release_function = Module::declare_func_in_func(
+            self.module,
+            self.foreign.struct_release,
+            self.builder.func,
+        );
+        let call = self.builder.ins().call(release_function, &[value]);
+        let is_last = self.builder.inst_results(call)[0];
+        let destroy = self.builder.create_block();
+        self.builder.ins().brif(is_last, destroy, &[], done, &[]);
+        self.builder.switch_to_block(destroy);
+        self.builder.seal_block(destroy);
+
+        let inner = self.info.optional_inner(id);
+        if inner.is_managed() {
+            let slot = self
+                .builder
+                .ins()
+                .load(types::I64, MachMemFlags::new(), value, 0);
+            let payload = self.task_slot_to_value(slot, inner);
+            self.release_managed(payload, inner);
+        }
+        let size = self.builder.ins().iconst(types::I64, 8);
         let dealloc = Module::declare_func_in_func(
             self.module,
             self.foreign.struct_dealloc,

@@ -32,6 +32,8 @@ pub enum KomeType {
     List(usize),
     /// A user-defined enum represented by its declaration-order tag.
     Enum(usize),
+    /// An optional value. The id indexes `ModuleInfo::optional_types`.
+    Optional(usize),
     Void,
 }
 
@@ -88,6 +90,7 @@ impl KomeType {
             | Self::Struct(_)
             | Self::Task(_)
             | Self::List(_)
+            | Self::Optional(_)
             | Self::Enum(_) => Some(types::I64),
             Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
@@ -119,6 +122,10 @@ impl KomeType {
             Self::Task(_) => Err(CodegenError::new("tasks cannot cross the native ABI", None)),
             Self::List(_) => Err(CodegenError::new("lists cannot cross the native ABI", None)),
             Self::Enum(_) => Err(CodegenError::new("enums cannot cross the native ABI", None)),
+            Self::Optional(_) => Err(CodegenError::new(
+                "optional values cannot cross the native ABI",
+                None,
+            )),
         }
     }
 
@@ -144,6 +151,7 @@ impl KomeType {
             Self::Task(id) => format!("Task#{id}"),
             Self::List(id) => format!("List#{id}"),
             Self::Enum(id) => format!("enum#{id}"),
+            Self::Optional(id) => format!("optional#{id}"),
             Self::Void => "Void".into(),
         }
     }
@@ -158,6 +166,7 @@ impl KomeType {
                 | Self::Struct(_)
                 | Self::Task(_)
                 | Self::List(_)
+                | Self::Optional(_)
         )
     }
 }
