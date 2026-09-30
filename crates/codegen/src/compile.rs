@@ -1856,7 +1856,14 @@ impl ReadCounter {
 
             Expression::Is(is_expression) => {
                 self.visit_expression(&is_expression.value);
-                self.visit_expression(&is_expression.body);
+                if let IsPattern::Ident(pattern) = &is_expression.pattern {
+                    self.scopes.push(HashMap::new());
+                    self.declare(&pattern.name);
+                    self.visit_expression(&is_expression.body);
+                    self.scopes.pop();
+                } else {
+                    self.visit_expression(&is_expression.body);
+                }
             }
 
             Expression::Component(component) => {
@@ -2596,6 +2603,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 component.span,
             ),
 
+            Expression::Is(is) => self.evaluate_is_expression(is, None),
+
             other => Err(CodegenError::at(
                 format!(
                     "expression `{}` is not supported yet",
@@ -3015,6 +3024,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             };
             return self.evaluate_enum_case(id, &dot.name, dot.span);
         }
+        if let Expression::Is(is) = expression {
+            return self.evaluate_is_expression(is, expected);
+        }
 
         self.evaluate(expression)
     }
@@ -3039,6 +3051,101 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         Ok(TypedValue::some(
             self.builder.ins().iconst(types::I64, tag as i64),
             KomeType::Enum(id),
+        ))
+    }
+
+    fn evaluate_is_expression(
+        &mut self,
+        expression: &kome_ast::expressions::IsExpression,
+        expected: Option<KomeType>,
+    ) -> CodegenResult<TypedValue> {
+        if let IsPattern::Ident(pattern) = &expression.pattern {
+            let value = self.evaluate(&expression.value)?;
+            let raw = self.own_value(value, expression.value.span())?;
+            self.scopes.push(HashMap::new());
+            self.declare_variable(&pattern.name, raw, value.kome_type, ValueOwnership::Owned)?;
+            let mut result = self.evaluate_with_expected(&expression.body, expected)?;
+            if result.kome_type.is_managed() {
+                let raw = self.own_value(result, expression.body.span())?;
+                result = TypedValue::some(raw, result.kome_type);
+            }
+            let scope = self.scopes.pop().expect("is expression scope exists");
+            for scoped in scope.values() {
+                if scoped.kome_type.is_managed() && scoped.owns_value {
+                    let value = self.builder.use_var(scoped.variable);
+                    self.release_managed(value, scoped.kome_type);
+                }
+            }
+            return Ok(result);
+        }
+        let pattern = match &expression.pattern {
+            IsPattern::Literal(pattern) => Expression::literal(pattern.value.clone(), pattern.span),
+            IsPattern::DotIdent(pattern) => {
+                Expression::DotIdent(kome_ast::expressions::DotIdentifierExpression {
+                    span: pattern.span,
+                    name: pattern.name.clone(),
+                })
+            }
+            IsPattern::Ident(_) => unreachable!(),
+        };
+        let comparison = BinaryExpression {
+            span: expression.span,
+            op: BinaryOp::Eq,
+            left: expression.value.clone(),
+            right: Box::new(pattern),
+        };
+        let condition = self
+            .evaluate_binary(&comparison)?
+            .expect_value(expression.span)?;
+        let matched = self.builder.create_block();
+        let unmatched = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(condition, matched, &[], unmatched, &[]);
+        self.builder.switch_to_block(matched);
+        self.builder.seal_block(matched);
+        let result = self.evaluate_with_expected(&expression.body, expected)?;
+        if result.kome_type == KomeType::Void {
+            return Err(CodegenError::at(
+                "an inline `is` body must produce a value",
+                expression.body.span(),
+            ));
+        }
+        let result_type = result.kome_type;
+        let result_value = self.own_value(result, expression.body.span())?;
+        self.builder.append_block_param(
+            done,
+            result_type.cranelift().expect("is result representation"),
+        );
+        self.builder
+            .ins()
+            .jump(done, &[ir::BlockArg::Value(result_value)]);
+        self.builder.switch_to_block(unmatched);
+        self.builder.seal_block(unmatched);
+        let fallback = match result_type {
+            KomeType::Number => self
+                .evaluate_literal(&LiteralExpression {
+                    span: expression.span,
+                    kind: LiteralKind::Number(NumberLiteral("0".into())),
+                })?
+                .expect_value(expression.span)?,
+            KomeType::String => self
+                .evaluate_literal(&LiteralExpression {
+                    span: expression.span,
+                    kind: LiteralKind::String(String::new()),
+                })?
+                .expect_value(expression.span)?,
+            other => self.zero_value(other)?,
+        };
+        self.builder
+            .ins()
+            .jump(done, &[ir::BlockArg::Value(fallback)]);
+        self.builder.seal_block(done);
+        self.builder.switch_to_block(done);
+        Ok(TypedValue::some(
+            self.builder.block_params(done)[0],
+            result_type,
         ))
     }
 
