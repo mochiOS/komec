@@ -924,6 +924,10 @@ struct ForeignFunctions {
     string_concat: FuncId,
     string_compare: FuncId,
     boolean_to_string: FuncId,
+    signed_integer_to_string: FuncId,
+    unsigned_integer_to_string: FuncId,
+    f32_to_string: FuncId,
+    f64_to_string: FuncId,
     socket_retain: FuncId,
     socket_release: FuncId,
     struct_alloc: FuncId,
@@ -1042,6 +1046,30 @@ impl ForeignFunctions {
             module,
             "__kome_boolean_to_string",
             &[types::I8],
+            Some(types::I64),
+        )?;
+        let signed_integer_to_string = declare_foreign(
+            module,
+            "__kome_signed_integer_to_string",
+            &[types::I64],
+            Some(types::I64),
+        )?;
+        let unsigned_integer_to_string = declare_foreign(
+            module,
+            "__kome_unsigned_integer_to_string",
+            &[types::I64],
+            Some(types::I64),
+        )?;
+        let f32_to_string = declare_foreign(
+            module,
+            "__kome_f32_to_string",
+            &[types::F32],
+            Some(types::I64),
+        )?;
+        let f64_to_string = declare_foreign(
+            module,
+            "__kome_f64_to_string",
+            &[types::F64],
             Some(types::I64),
         )?;
         let socket_retain = declare_foreign(module, "__kome_socket_retain", &[types::I64], None)?;
@@ -1164,6 +1192,10 @@ impl ForeignFunctions {
             string_concat,
             string_compare,
             boolean_to_string,
+            signed_integer_to_string,
+            unsigned_integer_to_string,
+            f32_to_string,
+            f64_to_string,
             socket_retain,
             socket_release,
             struct_alloc,
@@ -3339,6 +3371,52 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 let function = Module::declare_func_in_func(
                     self.module,
                     self.foreign.boolean_to_string,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(function, &[raw]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::I8 | KomeType::I16 | KomeType::I32 | KomeType::I64 => {
+                let widened = if value.kome_type == KomeType::I64 {
+                    raw
+                } else {
+                    self.builder.ins().sextend(types::I64, raw)
+                };
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.signed_integer_to_string,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(function, &[widened]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::U8 | KomeType::U16 | KomeType::U32 | KomeType::U64 => {
+                let widened = if value.kome_type == KomeType::U64 {
+                    raw
+                } else {
+                    self.builder.ins().uextend(types::I64, raw)
+                };
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.unsigned_integer_to_string,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(function, &[widened]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::F32 => {
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.f32_to_string,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(function, &[raw]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::F64 => {
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.f64_to_string,
                     self.builder.func,
                 );
                 let call = self.builder.ins().call(function, &[raw]);

@@ -257,6 +257,30 @@ pub extern "C" fn __kome_boolean_to_string(value: u8) -> u64 {
     KomeString::new(if value == 0 { "false" } else { "true" }).into_raw()
 }
 
+/// Formats a signed fixed-width integer as a managed Kome string.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_signed_integer_to_string(value: i64) -> u64 {
+    KomeString::new(value.to_string()).into_raw()
+}
+
+/// Formats an unsigned fixed-width integer as a managed Kome string.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_unsigned_integer_to_string(value: u64) -> u64 {
+    KomeString::new(value.to_string()).into_raw()
+}
+
+/// Formats a 32-bit floating-point value as a managed Kome string.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_f32_to_string(value: f32) -> u64 {
+    KomeString::new(value.to_string()).into_raw()
+}
+
+/// Formats a 64-bit floating-point value as a managed Kome string.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_f64_to_string(value: f64) -> u64 {
+    KomeString::new(value.to_string()).into_raw()
+}
+
 unsafe fn heap_string(raw: u64) -> &'static HeapString {
     unsafe { &*(raw as *const HeapString) }
 }

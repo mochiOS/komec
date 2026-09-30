@@ -229,12 +229,18 @@ fn main() {
             base + 2
         },
     }
-    report("Hello, {user.name}: {user.score} {true} {null}")
+    let signed: i16 = 12
+    let unsigned: u32 = 34
+    let single: f32 = 1.5
+    let double: f64 = 2.25
+    report("Hello, {user.name}: {user.score} {true} {null} {signed} {unsigned} {single} {double}")
 }
 "#);
     assert_eq!(
         capture.recorded(),
-        vec![Value::String(KomeString::new("Hello, Kome: 42 true null"))]
+        vec![Value::String(KomeString::new(
+            "Hello, Kome: 42 true null 12 34 1.5 2.25"
+        ))]
     );
     clear_thread_registry();
 }
