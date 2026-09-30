@@ -18,9 +18,9 @@ use kome_ast::declarations::{
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
-    CancelExpression, Expression, GroupExpression, IdentifierExpression, LiteralExpression,
-    LiteralKind, MemberExpression, NumberLiteral, PropertyKey, StructExpression, TaskExpression,
-    UnaryExpression, UnaryOp, WaitExpression,
+    CancelExpression, Expression, GroupExpression, IdentifierExpression, ListExpression,
+    LiteralExpression, LiteralKind, MemberExpression, NumberLiteral, PropertyKey, StructExpression,
+    TaskExpression, UnaryExpression, UnaryOp, WaitExpression,
 };
 use kome_ast::statements::{BlockStatement, Statement};
 use std::cell::RefCell;
@@ -782,6 +782,7 @@ struct ForeignFunctions {
     number_mul: FuncId,
     number_div: FuncId,
     number_compare: FuncId,
+    number_to_i64: FuncId,
     string_create: FuncId,
     string_retain: FuncId,
     string_release: FuncId,
@@ -811,6 +812,7 @@ struct ForeignFunctions {
     list_release: FuncId,
     list_dealloc: FuncId,
     list_len: FuncId,
+    list_require_index: FuncId,
 }
 
 impl ForeignFunctions {
@@ -865,6 +867,12 @@ impl ForeignFunctions {
             "__kome_number_compare",
             &[types::I64, types::I64],
             Some(types::I32),
+        )?;
+        let number_to_i64 = declare_foreign(
+            module,
+            "__kome_number_to_i64",
+            &[types::I64],
+            Some(types::I64),
         )?;
 
         let string_create = declare_foreign(
@@ -983,6 +991,12 @@ impl ForeignFunctions {
         )?;
         let list_dealloc = declare_foreign(module, "__kome_list_dealloc", &[types::I64], None)?;
         let list_len = declare_foreign(module, "__kome_list_len", &[types::I64], Some(types::I64))?;
+        let list_require_index = declare_foreign(
+            module,
+            "__kome_list_require_index",
+            &[types::I64, types::I64],
+            Some(types::I64),
+        )?;
 
         Ok(Self {
             native_call,
@@ -994,6 +1008,7 @@ impl ForeignFunctions {
             number_mul,
             number_div,
             number_compare,
+            number_to_i64,
             string_create,
             string_retain,
             string_release,
@@ -1023,6 +1038,7 @@ impl ForeignFunctions {
             list_release,
             list_dealloc,
             list_len,
+            list_require_index,
         })
     }
 }
@@ -1879,7 +1895,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Statement::While(statement) => self.translate_while(statement)?,
 
-            Statement::ForIn(_) => return Err(unsupported_statement("for", statement)),
+            Statement::ForIn(statement) => self.translate_for_in(statement)?,
 
             Statement::Break(statement) => self.translate_break(statement.span)?,
 
@@ -2010,6 +2026,102 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         Ok(())
     }
 
+    fn translate_for_in(
+        &mut self,
+        statement: &kome_ast::statements::ForInStatement,
+    ) -> CodegenResult<()> {
+        let kome_ast::patterns::Pattern::Ident(pattern) = &statement.pattern else {
+            return Err(CodegenError::at(
+                "`for in` requires an identifier binding",
+                statement.pattern.span(),
+            ));
+        };
+        let iterable = self.evaluate(&statement.right)?;
+        let KomeType::List(id) = iterable.kome_type else {
+            return Err(CodegenError::at(
+                format!(
+                    "`for in` expects a List, but found {}",
+                    self.info.type_name(iterable.kome_type)
+                ),
+                statement.right.span(),
+            ));
+        };
+        let list = iterable.expect_value(statement.right.span())?;
+        let len =
+            Module::declare_func_in_func(self.module, self.foreign.list_len, self.builder.func);
+        let len_call = self.builder.ins().call(len, &[list]);
+        let length = self.builder.inst_results(len_call)[0];
+        let index = self.builder.declare_var(types::I64);
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(index, zero);
+
+        let header = self.builder.create_block();
+        let body = self.builder.create_block();
+        let increment = self.builder.create_block();
+        let exit = self.builder.create_block();
+        self.builder.ins().jump(header, &[]);
+
+        self.builder.switch_to_block(header);
+        let current = self.builder.use_var(index);
+        let more = self
+            .builder
+            .ins()
+            .icmp(IntCC::UnsignedLessThan, current, length);
+        self.builder.ins().brif(more, body, &[], exit, &[]);
+
+        let base_scopes = self.scopes.clone();
+        self.builder.switch_to_block(body);
+        self.builder.seal_block(body);
+        let offset = self.builder.ins().imul_imm_u(current, 8);
+        let address = self.builder.ins().iadd(list, offset);
+        let slot = self
+            .builder
+            .ins()
+            .load(types::I64, MachMemFlags::new(), address, 0);
+        let element_type = self.info.list_element(id);
+        let element = self.task_slot_to_value(slot, element_type);
+        if element_type.is_managed() {
+            self.retain_managed(element, element_type);
+        }
+        self.scopes.push(HashMap::new());
+        self.declare_variable(&pattern.name, element, element_type, ValueOwnership::Owned)?;
+        self.loops.push(LoopContext {
+            header: increment,
+            exit,
+            scope_depth: base_scopes.len(),
+        });
+        self.terminated = false;
+        self.translate_statement(&statement.body)?;
+        self.loops.pop();
+        if !self.terminated {
+            let scope = self.scopes.pop().expect("for binding scope exists");
+            for scoped in scope.values() {
+                if scoped.kome_type.is_managed() && scoped.owns_value {
+                    let value = self.builder.use_var(scoped.variable);
+                    self.release_managed(value, scoped.kome_type);
+                }
+            }
+            self.builder.ins().jump(increment, &[]);
+        } else {
+            self.scopes.pop();
+        }
+
+        self.builder.switch_to_block(increment);
+        self.builder.seal_block(increment);
+        let current = self.builder.use_var(index);
+        let next = self.builder.ins().iadd_imm_u(current, 1);
+        self.builder.def_var(index, next);
+        self.builder.ins().jump(header, &[]);
+
+        self.scopes = base_scopes;
+        self.builder.seal_block(header);
+        self.builder.seal_block(exit);
+        self.builder.switch_to_block(exit);
+        self.terminated = false;
+        self.release_owned_temporary(iterable, statement.right.span())?;
+        Ok(())
+    }
+
     fn translate_continue(&mut self, span: Span) -> CodegenResult<()> {
         let context =
             self.loops.last().copied().ok_or_else(|| {
@@ -2101,6 +2213,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             Expression::Member(member) => self.evaluate_member(member),
 
             Expression::Index(index) => self.evaluate_index(index),
+
+            Expression::List(list) => self.evaluate_list(list, None),
 
             other => Err(CodegenError::at(
                 format!(
@@ -2441,8 +2555,77 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 }
             }
         }
+        if let Expression::List(list) = expression {
+            let element = match expected {
+                Some(KomeType::List(id)) => Some(self.info.list_element(id)),
+                _ => None,
+            };
+            return self.evaluate_list(list, element);
+        }
 
         self.evaluate(expression)
+    }
+
+    fn evaluate_list(
+        &mut self,
+        expression: &ListExpression,
+        expected_element: Option<KomeType>,
+    ) -> CodegenResult<TypedValue> {
+        let mut values = Vec::with_capacity(expression.elems.len());
+        let mut element_type = expected_element;
+        for (index, element) in expression.elems.iter().enumerate() {
+            let Some(element) = element else {
+                return Err(CodegenError::at(
+                    "list holes are not valid in a statically typed list",
+                    expression.span,
+                ));
+            };
+            let typed = self.evaluate_with_expected(element, element_type)?;
+            if let Some(expected) = element_type {
+                if typed.kome_type != expected {
+                    return Err(CodegenError::at(
+                        format!(
+                            "list element {index} expects {}, but found {}",
+                            self.info.type_name(expected),
+                            self.info.type_name(typed.kome_type)
+                        ),
+                        element.span(),
+                    ));
+                }
+            } else {
+                element_type = Some(typed.kome_type);
+            }
+            values.push((typed, element.span()));
+        }
+        if values.is_empty() && element_type.is_none() {
+            return Err(CodegenError::at(
+                "an empty list requires a concrete list type annotation",
+                expression.span,
+            ));
+        }
+        let element_type = element_type.expect("nonempty or context-typed list");
+        if element_type == KomeType::Void {
+            return Err(CodegenError::at(
+                "list elements cannot have type Void",
+                expression.span,
+            ));
+        }
+        let length = self
+            .builder
+            .ins()
+            .iconst(types::I64, expression.elems.len() as i64);
+        let alloc =
+            Module::declare_func_in_func(self.module, self.foreign.list_alloc, self.builder.func);
+        let call = self.builder.ins().call(alloc, &[length]);
+        let list = self.builder.inst_results(call)[0];
+        for (index, (typed, span)) in values.into_iter().enumerate() {
+            let value = self.own_value(typed, span)?;
+            let slot = self.value_to_task_slot(value, element_type);
+            self.builder
+                .ins()
+                .store(MachMemFlags::new(), slot, list, (index * 8) as i32);
+        }
+        Ok(TypedValue::some(list, self.info.list_type(element_type)))
     }
 
     fn evaluate_numeric_literal(
@@ -2733,39 +2916,55 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 index.object.span(),
             ));
         };
-        let Expression::Literal(LiteralExpression {
-            kind: LiteralKind::Number(number),
-            ..
-        }) = index.index.as_ref()
-        else {
-            return Err(CodegenError::at(
-                "list indices must currently be integer literals",
-                index.index.span(),
-            ));
+        let typed_index = self.evaluate(&index.index)?;
+        let raw_index = typed_index.expect_value(index.index.span())?;
+        let index_value = match typed_index.kome_type {
+            KomeType::Number => {
+                let convert = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.number_to_i64,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(convert, &[raw_index]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::I8 | KomeType::I16 | KomeType::I32 => {
+                self.builder.ins().sextend(types::I64, raw_index)
+            }
+            KomeType::U8 | KomeType::U16 | KomeType::U32 => {
+                self.builder.ins().uextend(types::I64, raw_index)
+            }
+            KomeType::I64 | KomeType::U64 => raw_index,
+            other => {
+                return Err(CodegenError::at(
+                    format!(
+                        "list index must be an integer, but found {}",
+                        self.info.type_name(other)
+                    ),
+                    index.index.span(),
+                ));
+            }
         };
-        let index_value = number.0.parse::<i32>().map_err(|_| {
-            CodegenError::at(
-                "list index must be a non-negative integer",
-                index.index.span(),
-            )
-        })?;
-        if index_value < 0 {
-            return Err(CodegenError::at(
-                "list index must be a non-negative integer",
-                index.index.span(),
-            ));
-        }
-        let element_type = self.info.list_element(id);
-        let slot = self.builder.ins().load(
-            types::I64,
-            MachMemFlags::new(),
-            object.expect_value(index.object.span())?,
-            index_value * 8,
+        let pointer = object.expect_value(index.object.span())?;
+        let require = Module::declare_func_in_func(
+            self.module,
+            self.foreign.list_require_index,
+            self.builder.func,
         );
+        let call = self.builder.ins().call(require, &[pointer, index_value]);
+        let checked_index = self.builder.inst_results(call)[0];
+        let offset = self.builder.ins().imul_imm_u(checked_index, 8);
+        let address = self.builder.ins().iadd(pointer, offset);
+        let element_type = self.info.list_element(id);
+        let slot = self
+            .builder
+            .ins()
+            .load(types::I64, MachMemFlags::new(), address, 0);
         let value = self.task_slot_to_value(slot, element_type);
         if element_type.is_managed() {
             self.retain_managed(value, element_type);
         }
+        self.release_owned_temporary(typed_index, index.index.span())?;
         self.release_owned_temporary(object, index.object.span())?;
         Ok(TypedValue::some(value, element_type))
     }

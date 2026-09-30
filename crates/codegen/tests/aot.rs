@@ -163,6 +163,27 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_lists_and_for_in() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+
+fn main() {
+    let values = [10, 20, 30]
+    var total = 0
+    for value in values { total += value }
+    var index = 2
+    println(total)
+    println(values[index])
+}
+"#,
+    );
+
+    assert_eq!(stdout, "60\n30\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

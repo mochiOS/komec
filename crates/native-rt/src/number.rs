@@ -512,6 +512,23 @@ pub unsafe extern "C" fn __kome_number_compare(left: u64, right: u64) -> i32 {
     }
 }
 
+/// Converts an integral runtime `Number` to `i64`.
+///
+/// A fractional or out-of-range value terminates with a clear runtime
+/// diagnostic because generated indexing code cannot continue safely.
+///
+/// # Safety
+///
+/// `value` must be a valid Kome `Number` representation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_to_i64(value: u64) -> i64 {
+    let value = unsafe { Number::from_raw_retain(value) };
+    value.to_i64().unwrap_or_else(|| {
+        eprintln!("runtime error: list index must be an integer in i64 range");
+        std::process::exit(1);
+    })
+}
+
 fn parse_decimal(literal: &str) -> Option<(BigInt, u32)> {
     let mut split = literal.split('.');
 

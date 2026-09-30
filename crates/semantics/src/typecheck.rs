@@ -960,12 +960,28 @@ impl TypeChecker {
     }
 
     fn visit_for_in_statement(&mut self, for_in: &ForInStatement) {
-        self.infer_expression(&for_in.right, None);
+        let element_type = match self.infer_expression(&for_in.right, None) {
+            SemanticType::List(element) => *element,
+            SemanticType::Unknown => SemanticType::Unknown,
+            actual => {
+                self.errors.push(TypeCheckError {
+                    message: format!("`for in` expects a List, but found {}", actual.name()),
+                    span: for_in.right.span(),
+                });
+                SemanticType::Unknown
+            }
+        };
 
         self.enter_scope();
 
         if let Pattern::Ident(identifier) = &for_in.pattern {
-            self.declare(&identifier.name, SemanticType::Unknown);
+            if let Some(annotation) = &identifier.type_annotation {
+                let annotated = Self::type_from_annotation(annotation);
+                self.check_compatible(&annotated, &element_type, identifier.span);
+                self.declare(&identifier.name, annotated);
+            } else {
+                self.declare(&identifier.name, element_type);
+            }
         }
 
         self.loop_depth += 1;

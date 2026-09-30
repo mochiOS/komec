@@ -36,6 +36,23 @@ pub unsafe extern "C" fn __kome_list_len(payload: u64) -> usize {
     unsafe { *((payload as *const u8).sub(WORD).cast::<usize>()) }
 }
 
+/// Validates a signed list index and returns it as a byte-addressable index.
+///
+/// Invalid indices terminate with a clear runtime diagnostic.
+///
+/// # Safety
+///
+/// `payload` must be a live handle returned by [`__kome_list_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_list_require_index(payload: u64, index: i64) -> usize {
+    let length = unsafe { __kome_list_len(payload) };
+    if index >= 0 && (index as usize) < length {
+        return index as usize;
+    }
+    eprintln!("runtime error: list index {index} is out of bounds for length {length}");
+    std::process::exit(1);
+}
+
 /// Increments a generated list's owning reference count.
 ///
 /// # Safety

@@ -158,6 +158,61 @@ fn main() {
 }
 
 #[test]
+fn executes_list_literals_dynamic_indexing_and_for_in() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn main() {
+    let values = [10, 20, 30, 40]
+    var total = 0
+    var index = 1
+    report(values[index])
+    for value in values {
+        if value == 20 { continue }
+        if value == 40 { break }
+        total += value
+    }
+    report(total)
+    let empty: Number[] = []
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::Number(Number::parse("20").unwrap()),
+            Value::Number(Number::parse("40").unwrap()),
+        ]
+    );
+    clear_thread_registry();
+}
+
+#[test]
+fn owns_runtime_managed_list_elements() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+
+fn main() {
+    let values = ["a", "b"]
+    for value in values { report(value) }
+    report(values[0])
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::String(KomeString::new("a")),
+            Value::String(KomeString::new("b")),
+            Value::String(KomeString::new("a")),
+        ]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"
