@@ -3373,10 +3373,17 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let mut element_type = expected_element;
         for (index, element) in expression.elems.iter().enumerate() {
             let Some(element) = element else {
-                return Err(CodegenError::at(
-                    "list holes are not valid in a statically typed list",
+                let Some(expected) = element_type else {
+                    return Err(CodegenError::at(
+                        "a list beginning with an empty element requires a concrete list type annotation",
+                        expression.span,
+                    ));
+                };
+                values.push((
+                    TypedValue::some(self.zero_value(expected)?, expected),
                     expression.span,
                 ));
+                continue;
             };
             let typed = self.evaluate_with_expected(element, element_type)?;
             if let Some(expected) = element_type {
@@ -5029,14 +5036,18 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
     fn zero_value(&mut self, kome_type: KomeType) -> CodegenResult<ir::Value> {
         match kome_type {
-            KomeType::Number => Err(CodegenError::new(
-                "Number cannot be zero-initialized without constructing a runtime value",
-                None,
-            )),
-            KomeType::String => Err(CodegenError::new(
-                "String cannot be zero-initialized without constructing a runtime value",
-                None,
-            )),
+            KomeType::Number => self
+                .evaluate_literal(&LiteralExpression {
+                    span: Span::new(0, 0),
+                    kind: LiteralKind::Number(NumberLiteral("0".into())),
+                })?
+                .expect_value(Span::new(0, 0)),
+            KomeType::String => self
+                .evaluate_literal(&LiteralExpression {
+                    span: Span::new(0, 0),
+                    kind: LiteralKind::String(String::new()),
+                })?
+                .expect_value(Span::new(0, 0)),
             KomeType::Socket => Err(CodegenError::new(
                 "Socket cannot be used without an initializer",
                 None,
@@ -5053,21 +5064,41 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 "internal error: Void has no zero value",
                 None,
             )),
-            KomeType::Struct(id) => Err(CodegenError::new(
-                format!(
-                    "{} cannot be used without an initializer",
-                    self.info.struct_info(id).name
-                ),
-                None,
-            )),
+            KomeType::Struct(id) => {
+                let layout = self.info.struct_info(id).clone();
+                let size = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, i64::from(layout.size));
+                let alloc = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.struct_alloc,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(alloc, &[size]);
+                let pointer = self.builder.inst_results(call)[0];
+                for field in &layout.fields {
+                    let value = self.zero_value(field.kome_type)?;
+                    self.builder
+                        .ins()
+                        .store(MachMemFlags::new(), value, pointer, field.offset);
+                }
+                Ok(pointer)
+            }
             KomeType::Task(_) => Err(CodegenError::new(
                 "Task cannot be used without an initializer",
                 None,
             )),
-            KomeType::List(_) => Err(CodegenError::new(
-                "List cannot be used without an initializer",
-                None,
-            )),
+            KomeType::List(_) => {
+                let length = self.builder.ins().iconst(types::I64, 0);
+                let alloc = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.list_alloc,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(alloc, &[length]);
+                Ok(self.builder.inst_results(call)[0])
+            }
             KomeType::Enum(_) => Ok(self.builder.ins().iconst(types::I64, 0)),
             KomeType::Optional(_) => Ok(self.builder.ins().iconst(types::I64, 0)),
         }

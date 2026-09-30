@@ -1180,3 +1180,35 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn generates_default_initialized_bindings_and_list_holes() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+
+struct Defaults { name: String, values: String[] }
+
+fn main() {
+    let defaults: Defaults[] = [,]
+    let values: String[] = [, "set", ,]
+    report(defaults[0].name)
+    report(values[0])
+    report(values[1])
+    report(values[2])
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::String(KomeString::new("")),
+            Value::String(KomeString::new("")),
+            Value::String(KomeString::new("set")),
+            Value::String(KomeString::new("")),
+        ]
+    );
+    clear_thread_registry();
+}
