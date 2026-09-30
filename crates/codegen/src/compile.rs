@@ -30,7 +30,11 @@ use std::collections::HashMap;
 /// The compiled signature of a Kome function.
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
+    /// Parameter names in ABI order.
+    pub param_names: Vec<String>,
+    /// Parameter types in ABI order.
     pub params: Vec<KomeType>,
+    /// Function return type.
     pub ret: KomeType,
 }
 
@@ -1144,6 +1148,7 @@ fn analyze_signature(
     self_type: Option<KomeType>,
 ) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
+    let mut param_names = Vec::with_capacity(function.params.len());
 
     for pattern in &function.params {
         let kome_ast::patterns::Pattern::Ident(identifier) = pattern else {
@@ -1190,6 +1195,7 @@ fn analyze_signature(
         }
 
         params.push(param_type);
+        param_names.push(identifier.name.clone());
     }
 
     let ret = match &function.return_type {
@@ -1203,7 +1209,11 @@ fn analyze_signature(
         None => KomeType::Void,
     };
 
-    Ok(FunctionSignature { params, ret })
+    Ok(FunctionSignature {
+        param_names,
+        params,
+        ret,
+    })
 }
 
 fn type_from_annotation(
@@ -3712,22 +3722,13 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             .expect("callee existence was checked above")
             .signature()
             .clone();
+        let ordered =
+            self.order_call_arguments(&call.args, &signature.param_names, 0, call.span)?;
 
         let mut arguments = Vec::with_capacity(call.args.len());
         let mut argument_values = Vec::with_capacity(call.args.len());
 
-        for (argument, param_type) in call.args.iter().zip(&signature.params) {
-            let expression = match argument {
-                CallArg::Positional(expression) => expression,
-
-                CallArg::Named { span, .. } => {
-                    return Err(CodegenError::at(
-                        "named arguments are not supported yet",
-                        *span,
-                    ));
-                }
-            };
-
+        for (expression, param_type) in ordered.into_iter().zip(&signature.params) {
             let typed = self.evaluate_with_expected(expression, Some(*param_type))?;
 
             if typed.kome_type != *param_type {
@@ -3840,20 +3841,12 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             arguments.push(receiver.expect_value(member.object.span())?);
         }
         let skip = usize::from(method.has_self);
-        for (argument, expected) in call
-            .args
-            .iter()
+        let ordered =
+            self.order_call_arguments(&call.args, &method.signature.param_names, skip, call.span)?;
+        for (expression, expected) in ordered
+            .into_iter()
             .zip(method.signature.params.iter().skip(skip))
         {
-            let expression = match argument {
-                CallArg::Positional(expression) => expression,
-                CallArg::Named { span, .. } => {
-                    return Err(CodegenError::at(
-                        "named arguments are not supported yet",
-                        *span,
-                    ));
-                }
-            };
             let typed = self.evaluate_with_expected(expression, Some(*expected))?;
             if typed.kome_type != *expected {
                 return Err(CodegenError::at(
@@ -3874,6 +3867,64 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             self.release_owned_temporary(value, call.span)?;
         }
         Ok(result)
+    }
+
+    fn order_call_arguments<'d>(
+        &self,
+        arguments: &'d [CallArg],
+        parameter_names: &[String],
+        skip: usize,
+        span: Span,
+    ) -> CodegenResult<Vec<&'d Expression>> {
+        let parameter_names = &parameter_names[skip..];
+        let mut ordered = vec![None; parameter_names.len()];
+        let mut next_positional = 0;
+        for argument in arguments {
+            let (index, expression, argument_span) = match argument {
+                CallArg::Positional(expression) => {
+                    while ordered.get(next_positional).is_some_and(Option::is_some) {
+                        next_positional += 1;
+                    }
+                    (next_positional, expression, expression.span())
+                }
+                CallArg::Named { name, value, span } => {
+                    let index = parameter_names
+                        .iter()
+                        .position(|parameter| parameter == name)
+                        .ok_or_else(|| {
+                            CodegenError::at(format!("unknown named argument `{name}`"), *span)
+                        })?;
+                    (index, value.as_ref(), *span)
+                }
+            };
+            let Some(slot) = ordered.get_mut(index) else {
+                return Err(CodegenError::at("too many call arguments", argument_span));
+            };
+            if slot.is_some() {
+                return Err(CodegenError::at(
+                    format!(
+                        "argument `{}` was supplied more than once",
+                        parameter_names[index]
+                    ),
+                    argument_span,
+                ));
+            }
+            *slot = Some(expression);
+            if index == next_positional {
+                next_positional += 1;
+            }
+        }
+        if let Some((index, _)) = ordered
+            .iter()
+            .enumerate()
+            .find(|(_, expression)| expression.is_none())
+        {
+            return Err(CodegenError::at(
+                format!("missing argument `{}`", parameter_names[index]),
+                span,
+            ));
+        }
+        Ok(ordered.into_iter().map(Option::unwrap).collect())
     }
 
     fn evaluate_assign(&mut self, assignment: &AssignmentExpression) -> CodegenResult<TypedValue> {

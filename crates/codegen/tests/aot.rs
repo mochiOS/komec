@@ -203,6 +203,24 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_named_arguments() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: Number)
+
+fn combine(first: Number, second: Number) -> Number {
+    return first * 10 + second
+}
+
+fn main() { println(combine(second: 2, first: 4)) }
+"#,
+    );
+
+    assert_eq!(stdout, "42\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

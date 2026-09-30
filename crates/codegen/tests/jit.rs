@@ -240,6 +240,41 @@ fn main() {
 }
 
 #[test]
+fn orders_named_function_and_method_arguments() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+struct Calculator { base: Number }
+
+fn combine(first: Number, second: Number) -> Number {
+    return first * 10 + second
+}
+
+for Calculator {
+    fn combine(self, first: Number, second: Number) -> Number {
+        return self.base + first * 10 + second
+    }
+}
+
+fn main() {
+    let calculator = Calculator { base: 100 }
+    report(combine(second: 2, first: 4))
+    report(calculator.combine(second: 3, first: 5))
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![
+            Value::Number(Number::parse("42").unwrap()),
+            Value::Number(Number::parse("153").unwrap()),
+        ]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"
