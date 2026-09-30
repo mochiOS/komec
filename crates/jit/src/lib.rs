@@ -15,12 +15,12 @@ use kome_native_rt::list::{
 use kome_native_rt::number::{
     __kome_number_add, __kome_number_compare, __kome_number_div, __kome_number_mul,
     __kome_number_parse, __kome_number_release, __kome_number_retain, __kome_number_sub,
-    __kome_number_to_i64,
+    __kome_number_to_i64, __kome_number_to_string,
 };
 use kome_native_rt::socket::{__kome_socket_release, __kome_socket_retain};
 use kome_native_rt::string::{
-    __kome_string_compare, __kome_string_concat, __kome_string_create, __kome_string_release,
-    __kome_string_retain,
+    __kome_boolean_to_string, __kome_string_compare, __kome_string_concat, __kome_string_create,
+    __kome_string_release, __kome_string_retain,
 };
 use kome_native_rt::struct_value::{
     __kome_struct_alloc, __kome_struct_dealloc, __kome_struct_release, __kome_struct_retain,
@@ -76,7 +76,7 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    let symbols: [(&str, *const u8); 43] = [
+    let symbols: [(&str, *const u8); 45] = [
         (
             "__kome_native_call",
             __kome_native_call as *const () as *const u8,
@@ -118,6 +118,10 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
             __kome_number_to_i64 as *const () as *const u8,
         ),
         (
+            "__kome_number_to_string",
+            __kome_number_to_string as *const () as *const u8,
+        ),
+        (
             "__kome_string_create",
             __kome_string_create as *const () as *const u8,
         ),
@@ -136,6 +140,10 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         (
             "__kome_string_compare",
             __kome_string_compare as *const () as *const u8,
+        ),
+        (
+            "__kome_boolean_to_string",
+            __kome_boolean_to_string as *const () as *const u8,
         ),
         (
             "__kome_socket_retain",

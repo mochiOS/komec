@@ -184,6 +184,25 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_block_object_and_template_expressions() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: String)
+
+struct User { name: String, score: Number }
+
+fn main() {
+    let user: User = { name: "Kome", score: { 20 + 22 } }
+    println("{user.name}={user.score}")
+}
+"#,
+    );
+
+    assert_eq!(stdout, "Kome=42\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

@@ -17,10 +17,11 @@ use kome_ast::declarations::{
     StructDeclaration, TraitDeclaration, TypeMember,
 };
 use kome_ast::expressions::{
-    AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
-    CancelExpression, Expression, GroupExpression, IdentifierExpression, ListExpression,
-    LiteralExpression, LiteralKind, MemberExpression, NumberLiteral, PropertyKey, StructExpression,
-    TaskExpression, UnaryExpression, UnaryOp, WaitExpression,
+    AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, BlockExpression, CallArg,
+    CallExpression, CancelExpression, Expression, GroupExpression, IdentifierExpression,
+    ListExpression, LiteralExpression, LiteralKind, MemberExpression, NumberLiteral,
+    ObjectExpression, ObjectProperty, PropertyKey, StructExpression, TaskExpression,
+    TemplateExpression, TemplatePart, UnaryExpression, UnaryOp, WaitExpression,
 };
 use kome_ast::statements::{BlockStatement, Statement};
 use std::cell::RefCell;
@@ -783,11 +784,13 @@ struct ForeignFunctions {
     number_div: FuncId,
     number_compare: FuncId,
     number_to_i64: FuncId,
+    number_to_string: FuncId,
     string_create: FuncId,
     string_retain: FuncId,
     string_release: FuncId,
     string_concat: FuncId,
     string_compare: FuncId,
+    boolean_to_string: FuncId,
     socket_retain: FuncId,
     socket_release: FuncId,
     struct_alloc: FuncId,
@@ -874,6 +877,12 @@ impl ForeignFunctions {
             &[types::I64],
             Some(types::I64),
         )?;
+        let number_to_string = declare_foreign(
+            module,
+            "__kome_number_to_string",
+            &[types::I64],
+            Some(types::I64),
+        )?;
 
         let string_create = declare_foreign(
             module,
@@ -895,6 +904,12 @@ impl ForeignFunctions {
             "__kome_string_compare",
             &[types::I64, types::I64],
             Some(types::I32),
+        )?;
+        let boolean_to_string = declare_foreign(
+            module,
+            "__kome_boolean_to_string",
+            &[types::I8],
+            Some(types::I64),
         )?;
         let socket_retain = declare_foreign(module, "__kome_socket_retain", &[types::I64], None)?;
         let socket_release = declare_foreign(module, "__kome_socket_release", &[types::I64], None)?;
@@ -1009,11 +1024,13 @@ impl ForeignFunctions {
             number_div,
             number_compare,
             number_to_i64,
+            number_to_string,
             string_create,
             string_retain,
             string_release,
             string_concat,
             string_compare,
+            boolean_to_string,
             socket_retain,
             socket_release,
             struct_alloc,
@@ -2216,6 +2233,12 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::List(list) => self.evaluate_list(list, None),
 
+            Expression::Block(block) => self.evaluate_block_expression(block, None),
+
+            Expression::Object(object) => self.evaluate_object(object, None),
+
+            Expression::Template(template) => self.evaluate_template(template),
+
             other => Err(CodegenError::at(
                 format!(
                     "expression `{}` is not supported yet",
@@ -2562,8 +2585,146 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             };
             return self.evaluate_list(list, element);
         }
+        if let Expression::Block(block) = expression {
+            return self.evaluate_block_expression(block, expected);
+        }
+        if let Expression::Object(object) = expression {
+            return self.evaluate_object(object, expected);
+        }
 
         self.evaluate(expression)
+    }
+
+    fn evaluate_block_expression(
+        &mut self,
+        expression: &BlockExpression,
+        expected: Option<KomeType>,
+    ) -> CodegenResult<TypedValue> {
+        self.scopes.push(HashMap::new());
+        for statement in &expression.statements {
+            if self.terminated {
+                break;
+            }
+            self.translate_statement(statement)?;
+        }
+        if self.terminated {
+            self.scopes.pop();
+            return Ok(TypedValue::void());
+        }
+        let mut result = match &expression.tail {
+            Some(tail) => self.evaluate_with_expected(tail, expected)?,
+            None => TypedValue::void(),
+        };
+        if result.kome_type.is_managed() {
+            let value = self.own_value(result, expression.span)?;
+            result = TypedValue::some(value, result.kome_type);
+        }
+        let scope = self.scopes.pop().expect("block expression scope exists");
+        for scoped in scope.values() {
+            if scoped.kome_type.is_managed() && scoped.owns_value {
+                let value = self.builder.use_var(scoped.variable);
+                self.release_managed(value, scoped.kome_type);
+            }
+        }
+        Ok(result)
+    }
+
+    fn evaluate_object(
+        &mut self,
+        expression: &ObjectExpression,
+        expected: Option<KomeType>,
+    ) -> CodegenResult<TypedValue> {
+        let Some(KomeType::Struct(id)) = expected else {
+            return Err(CodegenError::at(
+                "an object literal requires a concrete struct type annotation",
+                expression.span,
+            ));
+        };
+        let fields = expression
+            .props
+            .iter()
+            .map(|property| match property {
+                ObjectProperty::KeyValue(property) => property.clone(),
+            })
+            .collect::<Vec<_>>();
+        let name = self.info.struct_info(id).name.clone();
+        self.evaluate_struct_fields(id, &name, &fields, expression.span)
+    }
+
+    fn evaluate_template(&mut self, expression: &TemplateExpression) -> CodegenResult<TypedValue> {
+        let mut result = self.evaluate_literal(&LiteralExpression {
+            span: expression.span,
+            kind: LiteralKind::String(String::new()),
+        })?;
+        for part in &expression.parts {
+            let next = match part {
+                TemplatePart::String { value, span } => {
+                    self.evaluate_literal(&LiteralExpression {
+                        span: *span,
+                        kind: LiteralKind::String(value.clone()),
+                    })?
+                }
+                TemplatePart::Expression { expression, span } => {
+                    let value = self.evaluate(expression)?;
+                    self.format_template_value(value, *span)?
+                }
+            };
+            let left = result.expect_value(expression.span)?;
+            let right = next.expect_value(expression.span)?;
+            let combined = self.emit_number_binary(self.foreign.string_concat, left, right);
+            self.release_owned_temporary(result, expression.span)?;
+            self.release_owned_temporary(next, expression.span)?;
+            result = TypedValue::some(combined, KomeType::String);
+        }
+        Ok(result)
+    }
+
+    fn format_template_value(
+        &mut self,
+        value: TypedValue,
+        span: Span,
+    ) -> CodegenResult<TypedValue> {
+        if value.kome_type == KomeType::String {
+            return Ok(value);
+        }
+        let raw = value.expect_value(span)?;
+        let formatted = match value.kome_type {
+            KomeType::Number => {
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.number_to_string,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(function, &[raw]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::Boolean => {
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.boolean_to_string,
+                    self.builder.func,
+                );
+                let call = self.builder.ins().call(function, &[raw]);
+                self.builder.inst_results(call)[0]
+            }
+            KomeType::Null => {
+                return self.evaluate_literal(&LiteralExpression {
+                    span,
+                    kind: LiteralKind::String("null".into()),
+                });
+            }
+            other => {
+                return Err(CodegenError::at(
+                    format!(
+                        "template interpolation does not support {}",
+                        self.info.type_name(other)
+                    ),
+                    span,
+                ));
+            }
+        };
+        self.release_owned_temporary(value, span)?;
+        Ok(TypedValue::some(formatted, KomeType::String))
     }
 
     fn evaluate_list(
@@ -2723,16 +2884,26 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     expression.span,
                 )
             })?;
+        self.evaluate_struct_fields(id, &expression.name, &expression.fields, expression.span)
+    }
+
+    fn evaluate_struct_fields(
+        &mut self,
+        id: usize,
+        name: &str,
+        properties: &[kome_ast::expressions::KeyValueProperty],
+        span: Span,
+    ) -> CodegenResult<TypedValue> {
         let layout = self.info.struct_info(id).clone();
-        if expression.fields.len() != layout.fields.len() {
+        if properties.len() != layout.fields.len() {
             return Err(CodegenError::at(
                 format!(
                     "struct `{}` expects {} field(s), but received {}",
-                    expression.name,
+                    name,
                     layout.fields.len(),
-                    expression.fields.len()
+                    properties.len()
                 ),
-                expression.span,
+                span,
             ));
         }
         let size = self
@@ -2745,8 +2916,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let pointer = self.builder.inst_results(call)[0];
 
         for field in &layout.fields {
-            let property = expression
-                .fields
+            let property = properties
                 .iter()
                 .find(|property| match &property.key {
                     PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
@@ -2756,12 +2926,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 })
                 .ok_or_else(|| {
                     CodegenError::at(
-                        format!("missing field `{}` in `{}`", field.name, expression.name),
-                        expression.span,
+                        format!("missing field `{}` in `{}`", field.name, name),
+                        span,
                     )
                 })?;
-            let duplicates = expression
-                .fields
+            let duplicates = properties
                 .iter()
                 .filter(|candidate| match &candidate.key {
                     PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => {
@@ -2793,8 +2962,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .ins()
                 .store(MachMemFlags::new(), value, pointer, field.offset);
         }
-        for property in &expression.fields {
-            let name = match &property.key {
+        for property in properties {
+            let property_name = match &property.key {
                 PropertyKey::Ident { name, .. } | PropertyKey::String { value: name, .. } => name,
                 PropertyKey::Number { .. } | PropertyKey::Computed { .. } => {
                     return Err(CodegenError::at(
@@ -2803,9 +2972,13 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     ));
                 }
             };
-            if !layout.fields.iter().any(|field| field.name == *name) {
+            if !layout
+                .fields
+                .iter()
+                .any(|field| field.name == *property_name)
+            {
                 return Err(CodegenError::at(
-                    format!("struct `{}` has no field `{name}`", expression.name),
+                    format!("struct `{name}` has no field `{property_name}`"),
                     property.span,
                 ));
             }

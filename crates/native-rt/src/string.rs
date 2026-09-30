@@ -251,6 +251,12 @@ pub unsafe extern "C" fn __kome_string_compare(left: u64, right: u64) -> i32 {
     }
 }
 
+/// Formats a Kome boolean as an owned Kome `String` handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_boolean_to_string(value: u8) -> u64 {
+    KomeString::new(if value == 0 { "false" } else { "true" }).into_raw()
+}
+
 unsafe fn heap_string(raw: u64) -> &'static HeapString {
     unsafe { &*(raw as *const HeapString) }
 }

@@ -213,6 +213,33 @@ fn main() {
 }
 
 #[test]
+fn executes_block_object_and_template_expressions() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+
+struct User { name: String, score: Number }
+
+fn main() {
+    let user: User = {
+        name: "Kome",
+        score: {
+            let base = 40
+            base + 2
+        },
+    }
+    report("Hello, {user.name}: {user.score} {true} {null}")
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::String(KomeString::new("Hello, Kome: 42 true null"))]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

@@ -529,6 +529,17 @@ pub unsafe extern "C" fn __kome_number_to_i64(value: u64) -> i64 {
     })
 }
 
+/// Formats a runtime `Number` as an owned Kome `String` handle.
+///
+/// # Safety
+///
+/// `value` must be a valid Kome `Number` representation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __kome_number_to_string(value: u64) -> u64 {
+    let value = unsafe { Number::from_raw_retain(value) };
+    crate::string::KomeString::new(&value.to_string()).into_raw()
+}
+
 fn parse_decimal(literal: &str) -> Option<(BigInt, u32)> {
     let mut split = literal.split('.');
 
