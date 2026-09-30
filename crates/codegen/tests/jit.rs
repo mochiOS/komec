@@ -398,6 +398,27 @@ fn main() {
 }
 
 #[test]
+fn passes_fixed_width_numbers_through_native_abi() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report_integer(value: i32)
+@native("test.capture")
+fn report_float(value: f64)
+
+fn main() {
+    report_integer(42)
+    report_float(10.5)
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::SignedInteger(42), Value::Float(10.5)]
+    );
+    clear_thread_registry();
+}
+
+#[test]
 fn recognizes_string_types() {
     let module = kome_parser::parse(
         r#"

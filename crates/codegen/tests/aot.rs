@@ -275,6 +275,25 @@ fn main() { println(BASE + AMOUNT) }
 }
 
 #[test]
+fn builds_and_runs_fixed_width_native_arguments() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn print_integer(value: i32)
+@native("core.write_line")
+fn print_float(value: f64)
+
+fn main() {
+    print_integer(42)
+    print_float(10.5)
+}
+"#,
+    );
+
+    assert_eq!(stdout, "42\n10.5\n");
+}
+
+#[test]
 fn builds_and_runs_conditionals_and_loops() {
     let stdout = build_and_run(
         r#"

@@ -4375,21 +4375,24 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 KomeType::Boolean | KomeType::Null => {
                     self.builder.ins().uextend(types::I64, *value)
                 }
-
-                KomeType::I8
-                | KomeType::I16
-                | KomeType::I32
-                | KomeType::I64
-                | KomeType::U8
-                | KomeType::U16
-                | KomeType::U32
-                | KomeType::U64
-                | KomeType::F32
-                | KomeType::F64 => {
-                    return Err(CodegenError::new(
-                        "fixed-width numeric types are not supported by the native ABI yet",
-                        None,
-                    ));
+                KomeType::I8 | KomeType::I16 | KomeType::I32 => {
+                    self.builder.ins().sextend(types::I64, *value)
+                }
+                KomeType::U8 | KomeType::U16 | KomeType::U32 => {
+                    self.builder.ins().uextend(types::I64, *value)
+                }
+                KomeType::I64 | KomeType::U64 => *value,
+                KomeType::F32 => {
+                    let bits = self
+                        .builder
+                        .ins()
+                        .bitcast(types::I32, MachMemFlags::new(), *value);
+                    self.builder.ins().uextend(types::I64, bits)
+                }
+                KomeType::F64 => {
+                    self.builder
+                        .ins()
+                        .bitcast(types::I64, MachMemFlags::new(), *value)
                 }
 
                 KomeType::Void => {
@@ -4439,25 +4442,24 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
 
+            KomeType::I8 | KomeType::U8 => self.builder.ins().ireduce(types::I8, payload),
+            KomeType::I16 | KomeType::U16 => self.builder.ins().ireduce(types::I16, payload),
+            KomeType::I32 | KomeType::U32 => self.builder.ins().ireduce(types::I32, payload),
+            KomeType::I64 | KomeType::U64 => payload,
+            KomeType::F32 => {
+                let bits = self.builder.ins().ireduce(types::I32, payload);
+                self.builder
+                    .ins()
+                    .bitcast(types::F32, MachMemFlags::new(), bits)
+            }
+            KomeType::F64 => self
+                .builder
+                .ins()
+                .bitcast(types::F64, MachMemFlags::new(), payload),
+
             KomeType::Struct(_) | KomeType::Task(_) | KomeType::List(_) | KomeType::Enum(_) => {
                 return Err(CodegenError::new(
                     "managed aggregate values cannot cross the native ABI",
-                    None,
-                ));
-            }
-
-            KomeType::I8
-            | KomeType::I16
-            | KomeType::I32
-            | KomeType::I64
-            | KomeType::U8
-            | KomeType::U16
-            | KomeType::U32
-            | KomeType::U64
-            | KomeType::F32
-            | KomeType::F64 => {
-                return Err(CodegenError::new(
-                    "fixed-width numeric types are not supported by the native ABI yet",
                     None,
                 ));
             }

@@ -107,6 +107,10 @@ impl KomeType {
             Self::Socket => Ok(abi::TAG_SOCKET),
             Self::Boolean => Ok(abi::TAG_BOOLEAN),
             Self::Null => Ok(abi::TAG_NULL),
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 => Ok(abi::TAG_SIGNED_INTEGER),
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 => Ok(abi::TAG_UNSIGNED_INTEGER),
+            Self::F32 => Ok(abi::TAG_F32),
+            Self::F64 => Ok(abi::TAG_F64),
             Self::Void => Ok(abi::TAG_VOID),
             Self::Struct(_) => Err(CodegenError::new(
                 "user-defined structs cannot cross the native ABI",
@@ -115,19 +119,6 @@ impl KomeType {
             Self::Task(_) => Err(CodegenError::new("tasks cannot cross the native ABI", None)),
             Self::List(_) => Err(CodegenError::new("lists cannot cross the native ABI", None)),
             Self::Enum(_) => Err(CodegenError::new("enums cannot cross the native ABI", None)),
-            Self::I8
-            | Self::I16
-            | Self::I32
-            | Self::I64
-            | Self::U8
-            | Self::U16
-            | Self::U32
-            | Self::U64
-            | Self::F32
-            | Self::F64 => Err(CodegenError::new(
-                "fixed-width numeric types are not supported by the native ABI yet",
-                None,
-            )),
         }
     }
 

@@ -22,6 +22,18 @@ pub const TAG_STRING: i64 = 4;
 /// Payload holds a raw Kome `Socket` runtime handle.
 pub const TAG_SOCKET: i64 = 5;
 
+/// Payload holds a sign-extended fixed-width integer.
+pub const TAG_SIGNED_INTEGER: i64 = 6;
+
+/// Payload holds a zero-extended fixed-width integer.
+pub const TAG_UNSIGNED_INTEGER: i64 = 7;
+
+/// Payload holds the IEEE-754 bits of an `f32`.
+pub const TAG_F32: i64 = 8;
+
+/// Payload holds the IEEE-754 bits of an `f64`.
+pub const TAG_F64: i64 = 9;
+
 /// One marshalled argument or return value exchanged with the native runtime.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]

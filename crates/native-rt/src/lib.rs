@@ -23,7 +23,10 @@ pub mod task;
 use crate::number::Number;
 use crate::socket::KomeSocket;
 use crate::string::KomeString;
-use kome_abi::{Slot, TAG_BOOLEAN, TAG_NULL, TAG_NUMBER, TAG_SOCKET, TAG_STRING, TAG_VOID};
+use kome_abi::{
+    Slot, TAG_BOOLEAN, TAG_F32, TAG_F64, TAG_NULL, TAG_NUMBER, TAG_SIGNED_INTEGER, TAG_SOCKET,
+    TAG_STRING, TAG_UNSIGNED_INTEGER, TAG_VOID,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
@@ -38,6 +41,9 @@ pub enum Value {
     String(KomeString),
     Socket(KomeSocket),
     Boolean(bool),
+    SignedInteger(i64),
+    UnsignedInteger(u64),
+    Float(f64),
     Null,
 }
 
@@ -48,6 +54,9 @@ impl fmt::Display for Value {
             Self::String(value) => write!(formatter, "{value}"),
             Self::Socket(value) => write!(formatter, "{value}"),
             Self::Boolean(value) => write!(formatter, "{value}"),
+            Self::SignedInteger(value) => write!(formatter, "{value}"),
+            Self::UnsignedInteger(value) => write!(formatter, "{value}"),
+            Self::Float(value) => write!(formatter, "{value}"),
             Self::Null => formatter.write_str("null"),
         }
     }
@@ -305,6 +314,10 @@ fn slot_to_value(slot: &Slot) -> Result<Value, String> {
             KomeSocket::from_raw_retain(slot.payload as u64)
         })),
         TAG_BOOLEAN => Ok(Value::Boolean(slot.payload != 0)),
+        TAG_SIGNED_INTEGER => Ok(Value::SignedInteger(slot.payload)),
+        TAG_UNSIGNED_INTEGER => Ok(Value::UnsignedInteger(slot.payload as u64)),
+        TAG_F32 => Ok(Value::Float(f32::from_bits(slot.payload as u32) as f64)),
+        TAG_F64 => Ok(Value::Float(f64::from_bits(slot.payload as u64))),
         TAG_NULL => Ok(Value::Null),
         _ => Err(format!(
             "native call received unknown argument tag {}",
@@ -318,6 +331,16 @@ fn payload_for_return(value: &Value, ret_tag: i64) -> Result<i64, String> {
         return Ok(0);
     }
 
+    let fixed_payload = match (ret_tag, value) {
+        (TAG_SIGNED_INTEGER, Value::SignedInteger(value)) => Some(*value),
+        (TAG_UNSIGNED_INTEGER, Value::UnsignedInteger(value)) => Some(*value as i64),
+        (TAG_F32, Value::Float(value)) => Some((*value as f32).to_bits() as i64),
+        (TAG_F64, Value::Float(value)) => Some(value.to_bits() as i64),
+        _ => None,
+    };
+    if let Some(payload) = fixed_payload {
+        return Ok(payload);
+    }
     if value_tag(value) != ret_tag {
         return Err(format!(
             "native function returned {}, but the caller expected tag {ret_tag}",
@@ -334,6 +357,9 @@ fn scalar_payload(value: &Value) -> i64 {
         Value::String(string) => string.clone().into_raw() as i64,
         Value::Socket(socket) => socket.clone().into_raw() as i64,
         Value::Boolean(flag) => i64::from(*flag),
+        Value::SignedInteger(value) => *value,
+        Value::UnsignedInteger(value) => *value as i64,
+        Value::Float(value) => value.to_bits() as i64,
         Value::Null => 0,
     }
 }
@@ -344,6 +370,9 @@ fn value_tag(value: &Value) -> i64 {
         Value::String(_) => TAG_STRING,
         Value::Socket(_) => TAG_SOCKET,
         Value::Boolean(_) => TAG_BOOLEAN,
+        Value::SignedInteger(_) => TAG_SIGNED_INTEGER,
+        Value::UnsignedInteger(_) => TAG_UNSIGNED_INTEGER,
+        Value::Float(_) => TAG_F64,
         Value::Null => TAG_NULL,
     }
 }
@@ -354,6 +383,9 @@ fn value_type_name(value: &Value) -> &'static str {
         Value::String(_) => "String",
         Value::Socket(_) => "Socket",
         Value::Boolean(_) => "bool",
+        Value::SignedInteger(_) => "signed integer",
+        Value::UnsignedInteger(_) => "unsigned integer",
+        Value::Float(_) => "float",
         Value::Null => "Null",
     }
 }
