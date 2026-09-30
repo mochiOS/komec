@@ -498,9 +498,28 @@ fn main() {
     println(names[0])
     println(names[1])
 }
+
 "#,
     );
     assert_eq!(stdout, "after\nfirst updated\nafter\n");
+}
+
+#[test]
+fn builds_and_runs_persistent_mutable_globals() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: String)
+var LABEL = "Kome"
+fn update() { LABEL += "!" }
+fn main() {
+    update()
+    update()
+    println(LABEL)
+}
+"#,
+    );
+    assert_eq!(stdout, "Kome!!\n");
 }
 
 #[test]

@@ -80,7 +80,7 @@ pub struct ModuleInfo {
     list_types: RefCell<Vec<KomeType>>,
     optional_types: RefCell<Vec<KomeType>>,
     enums: Vec<EnumInfo>,
-    globals: HashMap<String, Binding>,
+    globals: HashMap<String, GlobalInfo>,
     components: HashMap<String, ComponentInfo>,
 }
 
@@ -89,6 +89,18 @@ struct ComponentInfo {
     param_names: Vec<String>,
     param_types: Vec<KomeType>,
     defaults: Vec<Option<Expression>>,
+}
+
+#[derive(Debug, Clone)]
+struct GlobalInfo {
+    binding: Binding,
+    kome_type: Option<KomeType>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GlobalStorage {
+    value: DataId,
+    initialized: DataId,
 }
 
 #[derive(Debug, Clone)]
@@ -285,7 +297,13 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             ));
         };
         if globals
-            .insert(identifier.name.clone(), binding.clone())
+            .insert(
+                identifier.name.clone(),
+                GlobalInfo {
+                    binding: binding.clone(),
+                    kome_type: None,
+                },
+            )
             .is_some()
         {
             return Err(CodegenError::at(
@@ -604,6 +622,40 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         });
     }
 
+    let global_names = globals.keys().cloned().collect::<Vec<_>>();
+    let mut global_type_cache = HashMap::new();
+    for name in global_names {
+        let binding = &globals[&name].binding;
+        let is_closure = binding
+            .init
+            .as_ref()
+            .is_some_and(|initializer| match initializer {
+                Expression::Closure(_) => true,
+                Expression::Group(group) => {
+                    matches!(group.expression.as_ref(), Expression::Closure(_))
+                }
+                _ => false,
+            });
+        if is_closure {
+            continue;
+        }
+        let kome_type = infer_global_type(
+            &name,
+            &globals,
+            &functions,
+            &runtime_types,
+            &struct_ids,
+            &structs,
+            &implementations,
+            &task_types,
+            &list_types,
+            &optional_types,
+            &mut global_type_cache,
+            &mut Vec::new(),
+        )?;
+        globals.get_mut(&name).expect("global exists").kome_type = Some(kome_type);
+    }
+
     Ok(ModuleInfo {
         functions,
         runtime_types,
@@ -775,6 +827,42 @@ pub fn compile_module<M: Module>(
 ) -> CodegenResult<HashMap<String, FuncId>> {
     let mut func_ids = HashMap::new();
     let mut task_entry_ids = HashMap::new();
+    let mut global_storage = HashMap::new();
+
+    for (name, global) in &info.globals {
+        if global.kome_type.is_none() {
+            continue;
+        }
+        let encoded = encode_symbol_part(name);
+        let value = module
+            .declare_data(
+                &format!("kome_global_value_{encoded}"),
+                Linkage::Local,
+                true,
+                false,
+            )
+            .map_err(|error| CodegenError::new(error.to_string(), None))?;
+        let mut value_description = DataDescription::new();
+        value_description.define_zeroinit(8);
+        value_description.set_align(8);
+        module
+            .define_data(value, &value_description)
+            .map_err(|error| CodegenError::new(error.to_string(), None))?;
+        let initialized = module
+            .declare_data(
+                &format!("kome_global_initialized_{encoded}"),
+                Linkage::Local,
+                true,
+                false,
+            )
+            .map_err(|error| CodegenError::new(error.to_string(), None))?;
+        let mut flag_description = DataDescription::new();
+        flag_description.define_zeroinit(1);
+        module
+            .define_data(initialized, &flag_description)
+            .map_err(|error| CodegenError::new(error.to_string(), None))?;
+        global_storage.insert(name.clone(), GlobalStorage { value, initialized });
+    }
 
     for (name, _, signature) in info.user_functions() {
         let cranelift_signature = build_signature(module, signature)?;
@@ -825,6 +913,7 @@ pub fn compile_module<M: Module>(
                 info,
                 func_ids: &func_ids,
                 task_entry_ids: &task_entry_ids,
+                global_storage: &global_storage,
                 foreign: &foreign,
                 native_symbols: &mut native_symbols,
                 scopes: vec![HashMap::new()],
@@ -883,6 +972,7 @@ pub fn compile_module<M: Module>(
                 info,
                 func_ids: &func_ids,
                 task_entry_ids: &task_entry_ids,
+                global_storage: &global_storage,
                 foreign: &foreign,
                 native_symbols: &mut native_symbols,
                 scopes: vec![HashMap::new()],
@@ -1482,6 +1572,251 @@ fn type_from_annotation(
     KomeType::from_annotation(annotation)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn infer_global_type(
+    name: &str,
+    globals: &HashMap<String, GlobalInfo>,
+    functions: &HashMap<String, FunctionKind>,
+    runtime_types: &HashMap<String, KomeType>,
+    struct_ids: &HashMap<String, usize>,
+    structs: &[StructInfo],
+    implementations: &[TypeImplementation],
+    task_types: &RefCell<Vec<KomeType>>,
+    list_types: &RefCell<Vec<KomeType>>,
+    optional_types: &RefCell<Vec<KomeType>>,
+    cache: &mut HashMap<String, KomeType>,
+    visiting: &mut Vec<String>,
+) -> CodegenResult<KomeType> {
+    if let Some(type_) = cache.get(name) {
+        return Ok(*type_);
+    }
+    if visiting.iter().any(|current| current == name) {
+        return Err(CodegenError::new(
+            format!("cyclic global initializer for `{name}`"),
+            None,
+        ));
+    }
+    let global = globals
+        .get(name)
+        .ok_or_else(|| CodegenError::new(format!("global `{name}` was not found"), None))?;
+    if let Some(annotation) = &global.binding.type_annotation {
+        let type_ = type_from_annotation(
+            annotation,
+            runtime_types,
+            struct_ids,
+            task_types,
+            list_types,
+            optional_types,
+        )?;
+        cache.insert(name.to_owned(), type_);
+        return Ok(type_);
+    }
+    let initializer = global.binding.init.as_ref().ok_or_else(|| {
+        CodegenError::at(
+            format!("global `{name}` requires an initializer or type annotation"),
+            global.binding.span,
+        )
+    })?;
+    visiting.push(name.to_owned());
+    let result = infer_codegen_expression_type(
+        initializer,
+        globals,
+        functions,
+        runtime_types,
+        struct_ids,
+        structs,
+        implementations,
+        task_types,
+        list_types,
+        optional_types,
+        cache,
+        visiting,
+    );
+    visiting.pop();
+    let type_ = result.map_err(|_| {
+        CodegenError::at(
+            format!(
+                "cannot infer the code generation type of global `{name}`; add a type annotation"
+            ),
+            initializer.span(),
+        )
+    })?;
+    cache.insert(name.to_owned(), type_);
+    Ok(type_)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_codegen_expression_type(
+    expression: &Expression,
+    globals: &HashMap<String, GlobalInfo>,
+    functions: &HashMap<String, FunctionKind>,
+    runtime_types: &HashMap<String, KomeType>,
+    struct_ids: &HashMap<String, usize>,
+    structs: &[StructInfo],
+    implementations: &[TypeImplementation],
+    task_types: &RefCell<Vec<KomeType>>,
+    list_types: &RefCell<Vec<KomeType>>,
+    optional_types: &RefCell<Vec<KomeType>>,
+    cache: &mut HashMap<String, KomeType>,
+    visiting: &mut Vec<String>,
+) -> CodegenResult<KomeType> {
+    let recurse = |expression: &Expression,
+                   cache: &mut HashMap<String, KomeType>,
+                   visiting: &mut Vec<String>| {
+        infer_codegen_expression_type(
+            expression,
+            globals,
+            functions,
+            runtime_types,
+            struct_ids,
+            structs,
+            implementations,
+            task_types,
+            list_types,
+            optional_types,
+            cache,
+            visiting,
+        )
+    };
+    match expression {
+        Expression::Literal(literal) => Ok(match literal.kind {
+            LiteralKind::String(_) => KomeType::String,
+            LiteralKind::Number(_) | LiteralKind::Percent(_) => KomeType::Number,
+            LiteralKind::Boolean(_) => KomeType::Boolean,
+            LiteralKind::Null => KomeType::Null,
+        }),
+        Expression::Ident(identifier) => infer_global_type(
+            &identifier.name,
+            globals,
+            functions,
+            runtime_types,
+            struct_ids,
+            structs,
+            implementations,
+            task_types,
+            list_types,
+            optional_types,
+            cache,
+            visiting,
+        ),
+        Expression::Unary(_) => Ok(KomeType::Boolean),
+        Expression::Task(task) => {
+            let result = recurse(&task.argument, cache, visiting)?;
+            let mut types = task_types.borrow_mut();
+            let id = types
+                .iter()
+                .position(|item| *item == result)
+                .unwrap_or_else(|| {
+                    types.push(result);
+                    types.len() - 1
+                });
+            Ok(KomeType::Task(id))
+        }
+        Expression::Wait(wait) => match recurse(&wait.argument, cache, visiting)? {
+            KomeType::Task(id) => Ok(task_types.borrow()[id]),
+            _ => Err(CodegenError::at("wait expects Task<T>", wait.span)),
+        },
+        Expression::Cancel(_) => Ok(KomeType::Void),
+        Expression::Binary(binary) => match binary.op {
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::Lte
+            | BinaryOp::Gt
+            | BinaryOp::Gte
+            | BinaryOp::And
+            | BinaryOp::Or => Ok(KomeType::Boolean),
+            _ => recurse(&binary.left, cache, visiting),
+        },
+        Expression::Call(call) => match call.callee.as_ref() {
+            Expression::Ident(identifier) => functions
+                .get(&identifier.name)
+                .map(|function| function.signature().ret)
+                .ok_or_else(|| CodegenError::at("callee type is unknown", identifier.span)),
+            Expression::Member(member) => {
+                let target = if let Expression::Ident(identifier) = member.object.as_ref() {
+                    runtime_types
+                        .get(&identifier.name)
+                        .copied()
+                        .or_else(|| {
+                            struct_ids
+                                .get(&identifier.name)
+                                .copied()
+                                .map(KomeType::Struct)
+                        })
+                        .or_else(|| recurse(&member.object, cache, visiting).ok())
+                } else {
+                    Some(recurse(&member.object, cache, visiting)?)
+                }
+                .ok_or_else(|| CodegenError::at("method receiver type is unknown", member.span))?;
+                implementations
+                    .iter()
+                    .find(|implementation| implementation.target == target)
+                    .and_then(|implementation| implementation.methods.get(&member.property))
+                    .map(|method| method.signature.ret)
+                    .ok_or_else(|| CodegenError::at("method type is unknown", member.span))
+            }
+            Expression::Group(group) => recurse(&group.expression, cache, visiting),
+            _ => Err(CodegenError::at(
+                "callee type is unknown",
+                call.callee.span(),
+            )),
+        },
+        Expression::Member(member) => {
+            let target = recurse(&member.object, cache, visiting)?;
+            match target {
+                KomeType::Struct(id) => structs[id]
+                    .fields
+                    .iter()
+                    .find(|field| field.name == member.property)
+                    .map(|field| field.kome_type)
+                    .ok_or_else(|| CodegenError::at("field type is unknown", member.span)),
+                _ => Err(CodegenError::at("member type is unknown", member.span)),
+            }
+        }
+        Expression::Index(index) => match recurse(&index.object, cache, visiting)? {
+            KomeType::List(id) => Ok(list_types.borrow()[id]),
+            _ => Err(CodegenError::at("index result type is unknown", index.span)),
+        },
+        Expression::Assign(assign) => recurse(&assign.value, cache, visiting),
+        Expression::Group(group) => recurse(&group.expression, cache, visiting),
+        Expression::Block(block) => block
+            .tail
+            .as_deref()
+            .map(|tail| recurse(tail, cache, visiting))
+            .unwrap_or(Ok(KomeType::Void)),
+        Expression::List(list) => {
+            let element = list
+                .elems
+                .iter()
+                .flatten()
+                .next()
+                .ok_or_else(|| CodegenError::at("empty list type is unknown", list.span))?;
+            let element = recurse(element, cache, visiting)?;
+            let mut types = list_types.borrow_mut();
+            let id = types
+                .iter()
+                .position(|item| *item == element)
+                .unwrap_or_else(|| {
+                    types.push(element);
+                    types.len() - 1
+                });
+            Ok(KomeType::List(id))
+        }
+        Expression::Struct(struct_) => struct_ids
+            .get(&struct_.name)
+            .copied()
+            .map(KomeType::Struct)
+            .ok_or_else(|| CodegenError::at("struct type is unknown", struct_.span)),
+        Expression::Template(_) => Ok(KomeType::String),
+        Expression::Is(is) => recurse(&is.body, cache, visiting),
+        Expression::Component(_) => Ok(KomeType::Null),
+        Expression::Object(_) | Expression::Closure(_) | Expression::DotIdent(_) => Err(
+            CodegenError::at("expression type requires context", expression.span()),
+        ),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueOwnership {
     Borrowed,
@@ -1545,6 +1880,7 @@ struct FunctionTranslator<'b, 'c, M: Module> {
     info: &'b ModuleInfo,
     func_ids: &'b HashMap<String, FuncId>,
     task_entry_ids: &'b HashMap<String, FuncId>,
+    global_storage: &'b HashMap<String, GlobalStorage>,
     foreign: &'b ForeignFunctions,
     native_symbols: &'b mut NativeSymbolPool,
     scopes: Vec<HashMap<String, ScopedVariable>>,
@@ -3001,7 +3337,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
     }
 
     fn evaluate_global(&mut self, identifier: &IdentifierExpression) -> CodegenResult<TypedValue> {
-        let binding = self
+        let global = self
             .info
             .globals
             .get(&identifier.name)
@@ -3012,47 +3348,68 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     identifier.span,
                 )
             })?;
+        let expected = global.kome_type.ok_or_else(|| {
+            CodegenError::at(
+                format!("global `{}` is not a runtime value", identifier.name),
+                identifier.span,
+            )
+        })?;
+        let storage = self.global_storage[&identifier.name];
+        let initialized_data =
+            Module::declare_data_in_func(self.module, storage.initialized, self.builder.func);
+        let initialized_pointer = self
+            .builder
+            .ins()
+            .symbol_value(self.module.target_config().pointer_type(), initialized_data);
+        let value_data =
+            Module::declare_data_in_func(self.module, storage.value, self.builder.func);
+        let value_pointer = self
+            .builder
+            .ins()
+            .symbol_value(self.module.target_config().pointer_type(), value_data);
+        let initialized =
+            self.builder
+                .ins()
+                .load(types::I8, MachMemFlags::new(), initialized_pointer, 0);
+        let initialize = self.builder.create_block();
+        let ready = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.append_block_param(
+            done,
+            expected.cranelift().expect("global has a representation"),
+        );
+        self.builder
+            .ins()
+            .brif(initialized, ready, &[], initialize, &[]);
+
+        self.builder.switch_to_block(ready);
+        self.builder.seal_block(ready);
+        let existing = self.builder.ins().load(
+            expected.cranelift().expect("global has a representation"),
+            MachMemFlags::new(),
+            value_pointer,
+            0,
+        );
+        self.builder
+            .ins()
+            .jump(done, &[ir::BlockArg::Value(existing)]);
+
+        self.builder.switch_to_block(initialize);
+        self.builder.seal_block(initialize);
         if self.evaluating_globals.contains(&identifier.name) {
             return Err(CodegenError::at(
                 format!("cyclic global initializer for `{}`", identifier.name),
                 identifier.span,
             ));
         }
-        let expected = binding
-            .type_annotation
-            .as_ref()
-            .map(|annotation| {
-                type_from_annotation(
-                    annotation,
-                    &self.info.runtime_types,
-                    &self.info.struct_ids,
-                    &self.info.task_types,
-                    &self.info.list_types,
-                    &self.info.optional_types,
-                )
-            })
-            .transpose()?;
         self.evaluating_globals.push(identifier.name.clone());
-        let result = match &binding.init {
-            Some(initializer) => self.evaluate_with_expected(initializer, expected),
-            None => {
-                let type_ = expected.ok_or_else(|| {
-                    CodegenError::at(
-                        format!(
-                            "global `{}` requires an initializer or type annotation",
-                            identifier.name
-                        ),
-                        binding.span,
-                    )
-                })?;
-                Ok(TypedValue::some(self.zero_value(type_)?, type_))
-            }
+        let result = match &global.binding.init {
+            Some(initializer) => self.evaluate_with_expected(initializer, Some(expected)),
+            None => Ok(TypedValue::some(self.zero_value(expected)?, expected)),
         };
         self.evaluating_globals.pop();
         let result = result?;
-        if let Some(expected) = expected
-            && result.kome_type != expected
-        {
+        if result.kome_type != expected {
             return Err(CodegenError::at(
                 format!(
                     "global `{}` expects {}, but found {}",
@@ -3063,7 +3420,22 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 identifier.span,
             ));
         }
-        Ok(result)
+        let value = self.own_value(result, identifier.span)?;
+        self.builder
+            .ins()
+            .store(MachMemFlags::new(), value, value_pointer, 0);
+        let initialized = self.builder.ins().iconst(types::I8, 1);
+        self.builder
+            .ins()
+            .store(MachMemFlags::new(), initialized, initialized_pointer, 0);
+        self.builder.ins().jump(done, &[ir::BlockArg::Value(value)]);
+
+        self.builder.switch_to_block(done);
+        self.builder.seal_block(done);
+        Ok(TypedValue::borrowed(
+            self.builder.block_params(done)[0],
+            expected,
+        ))
     }
 
     fn evaluate_group(&mut self, group: &GroupExpression) -> CodegenResult<TypedValue> {
@@ -4484,7 +4856,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .info
                 .globals
                 .get(&identifier.name)
-                .and_then(|binding| binding.init.as_ref())
+                .and_then(|global| global.binding.init.as_ref())
                 .and_then(|initializer| match initializer {
                     Expression::Closure(closure) => Some(closure.clone()),
                     Expression::Group(group) => match group.expression.as_ref() {
@@ -4885,16 +5257,13 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             ));
         };
 
-        let scope = self
+        let Some(scope) = self
             .scopes
             .iter()
             .rposition(|scope| scope.contains_key(&identifier.name))
-            .ok_or_else(|| {
-                CodegenError::at(
-                    format!("variable `{}` is not defined", identifier.name),
-                    identifier.span,
-                )
-            })?;
+        else {
+            return self.evaluate_global_assign(identifier, assignment);
+        };
 
         let scoped = self.scopes[scope][&identifier.name];
         let typed = self.evaluate_with_expected(&assignment.value, Some(scoped.kome_type))?;
@@ -4948,6 +5317,62 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 Ok(TypedValue::borrowed(value, scoped.kome_type))
             }
         }
+    }
+
+    fn evaluate_global_assign(
+        &mut self,
+        identifier: &IdentifierExpression,
+        assignment: &AssignmentExpression,
+    ) -> CodegenResult<TypedValue> {
+        let global = self
+            .info
+            .globals
+            .get(&identifier.name)
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::at(
+                    format!("variable `{}` is not defined", identifier.name),
+                    identifier.span,
+                )
+            })?;
+        if !global.binding.mutable {
+            return Err(CodegenError::at(
+                format!("cannot assign to immutable global `{}`", identifier.name),
+                identifier.span,
+            ));
+        }
+        let old = self.evaluate_global(identifier)?;
+        let kome_type = old.kome_type;
+        let old_value = old.expect_value(identifier.span)?;
+        let right = self.evaluate_with_expected(&assignment.value, Some(kome_type))?;
+        if right.kome_type != kome_type {
+            return Err(CodegenError::at(
+                format!(
+                    "cannot assign {} to global `{}` of type {}",
+                    self.info.type_name(right.kome_type),
+                    identifier.name,
+                    self.info.type_name(kome_type)
+                ),
+                assignment.value.span(),
+            ));
+        }
+        let value = self.assignment_value(old_value, right, assignment)?;
+        if kome_type.is_managed() {
+            self.release_managed(old_value, kome_type);
+        }
+        let storage = self.global_storage[&identifier.name];
+        let data = Module::declare_data_in_func(self.module, storage.value, self.builder.func);
+        let pointer = self
+            .builder
+            .ins()
+            .symbol_value(self.module.target_config().pointer_type(), data);
+        self.builder
+            .ins()
+            .store(MachMemFlags::new(), value, pointer, 0);
+        if kome_type.is_managed() {
+            self.retain_managed(value, kome_type);
+        }
+        Ok(TypedValue::some(value, kome_type))
     }
 
     fn evaluate_member_assign(

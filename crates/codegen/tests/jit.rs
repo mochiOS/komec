@@ -1277,3 +1277,26 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn stores_inferred_mutable_globals_across_calls() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+var LABEL = "Kome"
+fn update() { LABEL += "!" }
+fn main() {
+    update()
+    update()
+    report(LABEL)
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::String(KomeString::new("Kome!!"))]
+    );
+    clear_thread_registry();
+}
