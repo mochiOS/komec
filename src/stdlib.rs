@@ -8,7 +8,7 @@ use std::{
 
 pub const STDLIB_PATH_ENV: &str = "KOME_STDLIB_PATH";
 
-pub const KNOWN_PACKAGES: &[&str] = &["std", "viewkit"];
+pub const KNOWN_PACKAGES: &[&str] = &["std"];
 
 /// Returns whether `name` identifies a bundled standard-library package.
 pub fn is_known_package(name: &str) -> bool {

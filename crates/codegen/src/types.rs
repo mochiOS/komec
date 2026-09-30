@@ -59,7 +59,6 @@ impl KomeType {
             "string" => Ok(Self::String),
             "number" => Ok(Self::Number),
             "socket" => Ok(Self::Socket),
-            "view" => Ok(Self::Null),
             _ => Err(CodegenError::at(
                 format!("unsupported runtime type `{name}`"),
                 span,

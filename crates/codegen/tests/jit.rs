@@ -606,13 +606,11 @@ component Counter(start: Number = 40) {
 fn checks_and_executes_application_body_view_binding() {
     let module = kome_parser::parse(
         r#"
-@runtime("view")
-struct View
 component VStack()
 @application
 component App() {
     @body
-    let body: View = { VStack().padding(24) }
+    let body: Null = { VStack().padding(24) }
 }
 "#,
     )
