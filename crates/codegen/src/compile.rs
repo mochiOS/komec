@@ -5406,6 +5406,26 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             evaluated.push(receiver);
             target
         };
+        if target == KomeType::Null && static_target.is_none() {
+            for argument in &call.args {
+                let expression = match argument {
+                    CallArg::Positional(expression) => expression,
+                    CallArg::Named { value, .. } => value,
+                };
+                if matches!(expression, Expression::DotIdent(_)) {
+                    continue;
+                }
+                let value = self.evaluate(expression)?;
+                self.release_owned_temporary(value, expression.span())?;
+            }
+            for value in evaluated {
+                self.release_owned_temporary(value, member.object.span())?;
+            }
+            return Ok(TypedValue::some(
+                self.builder.ins().iconst(types::I8, 0),
+                KomeType::Null,
+            ));
+        }
         let (_, method, _) = self
             .info
             .implementation_member(target, &member.property)

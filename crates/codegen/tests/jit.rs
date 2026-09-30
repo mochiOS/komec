@@ -483,6 +483,8 @@ fn main() {
         Text("Hello")
         Text(color: .secondary, content: "Kome")
     }
+    .padding(24)
+    .foreground(.secondary)
 }
 
 "#);

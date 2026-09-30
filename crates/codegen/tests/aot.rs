@@ -337,9 +337,10 @@ fn println(value: String)
 
 component Text(content: String)
 component VStack()
+enum Color { primary }
 
 fn main() {
-    VStack { Text("Hello") }
+    VStack { Text("Hello") }.padding(24).foreground(.primary)
     println("built")
 }
 "#,
