@@ -4,3 +4,6 @@
 [submodule "vendor/viewkit"]
 	path = vendor/viewkit
 	url = https://github.com/mochiOS/ViewKit.git
+[submodule "vendor/devkit"]
+	path = vendor/devkit
+	url = https://github.com/mochiOS/devkit
