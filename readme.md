@@ -18,6 +18,6 @@ An installed compiler uses paths relative to its executable:
 └── viewkit/
 ```
 
-External packages such as ViewKit are discovered from their `Kome.toml`.
-`KOME_STDLIB_PATH` and `KOME_LIBRARY_PATH` remain available as explicit
-overrides.
+The Cargo-like `kome` command resolves `Kome.toml` and passes package sources
+and native library paths to `komec`. `komec` only discovers the adjacent
+standard library itself. See [`docs/kome-yakuwari.md`](docs/kome-yakuwari.md).
