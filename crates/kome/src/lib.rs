@@ -503,11 +503,24 @@ fn compiler_path() -> PathBuf {
 fn native_library_paths(dependencies: &[ResolvedDependency]) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for dependency in dependencies {
-        for candidate in [
+        let mut candidates = vec![
             dependency.root.clone(),
             dependency.root.join("target/debug"),
             dependency.root.join("target/release"),
-        ] {
+        ];
+        if dependency
+            .root
+            .file_name()
+            .is_some_and(|name| name == "lib")
+            && let Some(package_root) = dependency.root.parent()
+        {
+            candidates.extend([
+                package_root.to_path_buf(),
+                package_root.join("target/debug"),
+                package_root.join("target/release"),
+            ]);
+        }
+        for candidate in candidates {
             if candidate.is_dir() && !paths.contains(&candidate) {
                 paths.push(candidate);
             }
@@ -624,5 +637,22 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("must set `system = true`"));
+    }
+
+    #[test]
+    fn finds_native_builds_beside_a_development_kome_library() {
+        let root = fixture("native-layout");
+        let library_root = root.join("viewkit/lib");
+        fs::create_dir_all(root.join("viewkit/target/debug")).unwrap();
+        fs::create_dir_all(&library_root).unwrap();
+        let dependency = ResolvedDependency {
+            name: "viewkit".to_owned(),
+            root: library_root,
+            source: root.join("viewkit/lib/src/lib.kome"),
+        };
+
+        let paths = native_library_paths(&[dependency]);
+
+        assert!(paths.contains(&root.join("viewkit/target/debug")));
     }
 }
