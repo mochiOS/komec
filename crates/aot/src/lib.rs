@@ -188,24 +188,6 @@ fn add_external_libraries(command: &mut Command, libraries: &[String]) {
         }
     }
 
-    if let Some(prefix) = installed_prefix() {
-        for library in libraries {
-            let path = Path::new(library);
-            if path.components().count() == 1 && path.extension().is_none() {
-                for directory in [
-                    prefix.join(library),
-                    prefix.join(library).join("lib"),
-                    prefix.join(library).join("target/release"),
-                ] {
-                    if directory.is_dir() {
-                        command.arg(format!("-L{}", directory.display()));
-                        command.arg(format!("-Wl,-rpath,{}", directory.display()));
-                    }
-                }
-            }
-        }
-    }
-
     for library in libraries {
         let path = Path::new(library);
         if path.components().count() > 1 {
@@ -220,37 +202,6 @@ fn add_external_libraries(command: &mut Command, libraries: &[String]) {
         } else {
             command.arg(format!("-l{library}"));
         }
-    }
-}
-
-fn installed_prefix() -> Option<PathBuf> {
-    let executable = std::env::current_exe().ok()?;
-    installed_prefix_from(&executable)
-}
-
-fn installed_prefix_from(executable: &Path) -> Option<PathBuf> {
-    let bin = executable.parent()?;
-    if bin.file_name()? != "bin" {
-        return None;
-    }
-    bin.parent().map(Path::to_path_buf)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::installed_prefix_from;
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn derives_the_installation_prefix_from_the_bin_directory() {
-        assert_eq!(
-            installed_prefix_from(Path::new("/home/user/.kome/bin/komec")),
-            Some(PathBuf::from("/home/user/.kome")),
-        );
-        assert_eq!(
-            installed_prefix_from(Path::new("/workspace/target/debug/komec")),
-            None
-        );
     }
 }
 

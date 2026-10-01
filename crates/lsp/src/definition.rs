@@ -121,21 +121,47 @@ fn import_definition_at(
 
             if !segments
                 .first()
-                .is_some_and(|name| standard_library.has_package(name))
+                .copied()
+                .is_some_and(komec::stdlib::is_known_package)
             {
                 continue;
             }
 
-            let path = standard_library.imported_module_path(&segments)?;
-            let loaded = modules
-                .iter()
-                .find(|loaded| paths_equal(&loaded.path, &path))?;
+            let loaded = find_imported_module(standard_library.root(), modules, &segments)?;
 
             return loaded_location(loaded, Span::new(0, 0));
         }
     }
 
     None
+}
+
+fn find_imported_module<'a>(
+    standard_library_root: &Path,
+    modules: &'a [LoadedModule],
+    segments: &[&str],
+) -> Option<&'a LoadedModule> {
+    let module_segments = segments.get(1..)?;
+
+    if module_segments.is_empty() {
+        return modules
+            .iter()
+            .find(|loaded| loaded.path == standard_library_root.join("prelude.kome"));
+    }
+
+    let mut module_base = standard_library_root.to_path_buf();
+
+    for segment in module_segments {
+        module_base.push(segment);
+    }
+
+    let file_candidate = module_base.with_extension("kome");
+    let directory_candidate = module_base.join("mod.kome");
+
+    modules.iter().find(|loaded| {
+        paths_equal(&loaded.path, &file_candidate)
+            || paths_equal(&loaded.path, &directory_candidate)
+    })
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
