@@ -4,12 +4,20 @@ A compilor for Kome language.
 
 Kome is a programming language for [mochiOS](https://github.com/tas0dev/mochiOS).
 
-## Standard Library
+## Library layout
 
-You can find the standard library [here](https://github.com/mochiOS/kome_std).].
+During development, `komec` loads libraries from `vendor/stdlib` and
+`vendor/viewkit`.
 
-To install, clone the repository and run:
+An installed compiler uses paths relative to its executable:
 
-```sh
-make install
+```text
+~/.kome/
+├── bin/komec
+├── stdlib/
+└── viewkit/
 ```
+
+External packages such as ViewKit are discovered from their `Kome.toml`.
+`KOME_STDLIB_PATH` and `KOME_LIBRARY_PATH` remain available as explicit
+overrides.
