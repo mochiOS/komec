@@ -14,7 +14,7 @@ use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 pub fn syntax_diagnostics(source: &str) -> Vec<Diagnostic> {
     match kome_parser::parse(source) {
         Ok(module) => {
-            let std_import_span = standard_library_import_span(&module);
+            let library_import_span = library_import_span(&module);
 
             let module = match StandardLibrary::discover() {
                 Ok(standard_library) => match standard_library.merge_with_imports(module) {
@@ -23,16 +23,16 @@ pub fn syntax_diagnostics(source: &str) -> Vec<Diagnostic> {
                     Err(error) => {
                         return vec![standard_library_error_to_diagnostic(
                             source,
-                            std_import_span.unwrap_or(Span::new(0, 0)),
+                            library_import_span.unwrap_or(Span::new(0, 0)),
                             error,
                         )];
                     }
                 },
 
-                Err(error) if std_import_span.is_some() => {
+                Err(error) if library_import_span.is_some() => {
                     return vec![standard_library_error_to_diagnostic(
                         source,
-                        std_import_span.unwrap(),
+                        library_import_span.unwrap(),
                         error,
                     )];
                 }
@@ -160,7 +160,7 @@ pub fn frontend_error_span(error: &FrontendError) -> Span {
     }
 }
 
-fn standard_library_import_span(module: &Module) -> Option<Span> {
+fn library_import_span(module: &Module) -> Option<Span> {
     for declaration in &module.declarations {
         let Declaration::Use(use_declaration) = declaration else {
             continue;
@@ -171,17 +171,7 @@ fn standard_library_import_span(module: &Module) -> Option<Span> {
                 continue;
             };
 
-            let is_installed = path.segments.first().is_some_and(|segment| {
-                matches!(
-                    &segment.kind,
-                    kome_ast::declarations::PathSegmentKind::Ident(name)
-                        if komec::stdlib::is_known_package(name)
-                )
-            });
-
-            if is_installed {
-                return Some(path.span);
-            }
+            return Some(path.span);
         }
     }
 
