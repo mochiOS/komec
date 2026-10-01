@@ -1,88 +1,95 @@
-# Kome AST Nodes
+# Kome AST
 
-## Expression (`expressions.rs:7`)
+この文書はコンパイラ実装者向けのAST一覧です。source-levelの仕様は
+[言語リファレンス](language-reference.md)を参照してください。
 
-| Node        | Description                                            |
-|-------------|--------------------------------------------------------|
-| `Literal`   | Literal value (`42`, `"hello"`, `true`, `null`, `50%`) |
-| `Ident`     | Identifier (`foo`, `Bar`)                              |
-| `Unary`     | Unary operation (`!expr`)                              |
-| `Binary`    | Binary operation (`a + b`, `x == y`)                   |
-| `Call`      | Function call (`foo()`, `obj.method(x)`)               |
-| `Member`    | Property access (`object.property`)                    |
-| `Index`     | Index access (`object[index]`)                         |
-| `Assign`    | Assignment (`target = value`, `x += 1`)                |
-| `Group`     | Grouping (`(expr)`)                                    |
-| `List`      | List literal (`[a, b, c]`)                             |
-| `Object`    | Object literal (`{ key: value }`)                      |
-| `Template`  | Template string (`"hello {name}"`)                     |
-| `Closure`   | Closure (`\|x\| expr`)                                 |
-| `DotIdent`  | Dot identifier (`.blue`, `.entered`)                   |
-| `Is`        | Inline is expression (`is x 1 => "one"`)               |
-| `Component` | Component call (`VStack { ... }`)                      |
+## Module
 
-## Statement (`statements.rs:7`)
+`Module`は1つのsource入力を表し、top-level `Declaration`を宣言順に保持します。すべてのnodeは
+元sourceのUTF-8 byte offsetによる`Span`を持ちます。
 
-| Node          | Description                             |
-|---------------|-----------------------------------------|
-| `Block`       | Block (`{ ... }`)                       |
-| `Expression`  | Expression statement (result discarded) |
-| `Let`         | Let statement                           |
-| `If`          | If / else                               |
-| `While`       | While loop                              |
-| `ForIn`       | For-in loop (`for item in iter`)        |
-| `Return`      | Return                                  |
-| `Break`       | Break (optional label)                  |
-| `Continue`    | Continue (optional label)               |
-| `Is`          | Is pattern-match statement              |
-| `Declaration` | Declaration (see below)                 |
+## Declaration
 
-## Declaration (`declarations.rs:7`)
+| Variant | Source construct |
+| --- | --- |
+| `Component` | `component` |
+| `Function` | `fn` |
+| `Struct` | `struct`またはopaque struct |
+| `Trait` | `trait` |
+| `For` | inherentまたはtrait implementation |
+| `Let` | top-level `let`または`var` |
+| `Constant` | top-level `const` |
+| `Use` | `use` |
+| `Enum` | `enum` |
+| `Extern` | `extern "C"` block |
 
-| Node        | Description               |
-|-------------|---------------------------|
-| `Component` | Component declaration     |
-| `Function`  | Function declaration      |
-| `Let`       | Let binding (top-level)   |
-| `Constant`  | Const binding (top-level) |
-| `Use`       | Use import                |
+`ForDeclaration`はtarget型、optional trait型、method、associated constantを保持します。
+`ExternDeclaration`はABI、optional library名、external struct/functionを保持します。
 
-## ComponentMember (`declarations.rs:47`)
+## Statement
 
-| Node        | Description                        |
-|-------------|------------------------------------|
-| `State`     | State variable                     |
-| `Recipe`    | Recipe (event handler / lifecycle) |
-| `Attribute` | Attribute (`@application`)         |
+| Variant | Source construct |
+| --- | --- |
+| `Block` | statement block |
+| `Expression` | valueを破棄するexpression |
+| `Let` | local `let`, `var`, `const` |
+| `If` | `if` / `else` |
+| `While` | `while` |
+| `ForIn` | list iteration |
+| `Return` | `return` |
+| `Break` | `break` |
+| `Continue` | `continue` |
+| `Is` | single-arm pattern matching |
+| `Declaration` | block内declaration用の内部variant |
 
-## Pattern / IsPattern (`patterns.rs:7`, `patterns.rs:14`)
+## Expression
 
-| Node                        | Description                                 |
-|-----------------------------|---------------------------------------------|
-| `Literal` (Pattern)         | Literal pattern                             |
-| `Ident` (Pattern)           | Identifier pattern (`name` or `name: Type`) |
-| `DotIdent` (IsPattern only) | Dot identifier pattern (`.entered`)         |
+| Variant | Source construct |
+| --- | --- |
+| `Literal` | number、string、boolean、null、percent |
+| `Ident` | identifier |
+| `Unary` | `!` |
+| `Task` | `task expression` |
+| `Wait` | `wait expression` |
+| `Cancel` | `cancel expression` |
+| `Binary` | arithmetic、comparison、logical operation |
+| `Call` | function、method、static call |
+| `Member` | member access |
+| `Index` | index access |
+| `Assign` | `=`または`+=` |
+| `Group` | parenthesized expression |
+| `Block` | tail valueを持てるblock expression |
+| `List` | homogeneous list literal |
+| `Object` | structural object literal |
+| `Struct` | named struct construction |
+| `Template` | interpolated string |
+| `Closure` | closure literal |
+| `DotIdent` | context-dependent enum case |
+| `Is` | inline single-arm matching |
+| `Component` | component expressionとchildren |
 
-## Type (`types.rs:7`)
+## Type
 
-| Node        | Description                                       |
-|-------------|---------------------------------------------------|
-| `Primitive` | Primitive (`String`, `Number`, `bool`, `Null`) |
-| `Function`  | Function type (`(param) => ReturnType`)           |
-| `List`      | List type (`ElementType[]`)                       |
-| `Object`    | Object type (`{ key: Type }`)                     |
-| `Named`     | Named type (`Name<Arg>`)                          |
+| Variant | 意味 |
+| --- | --- |
+| `Primitive` | source-level primitive type |
+| `Named` | user type、type parameter、applied generic type |
+| `List` | `T[]` |
+| `Optional` | `T?` |
+| `Pointer` | `*const T`または`*mut T` |
+| `Function` | function type用AST表現 |
+| `Object` | structural object type用AST表現 |
 
-## Sub-nodes
+generic parameter declarationは`GenericParameter`として独立して保持します。意味解析後は
+`SemanticType::TypeParameter`となり、concrete named typeとは区別されます。
 
-| Node           | Definition                                               |
-|----------------|----------------------------------------------------------|
-| `CallArg`      | Positional / Named                                       |
-| `LiteralKind`  | String / Number / Boolean / Null / Percent               |
-| `UnaryOp`      | Not                                                      |
-| `BinaryOp`     | Add, Sub, Mul, Div, Eq, NotEq, Lt, Lte, Gt, Gte, And, Or |
-| `AssignOp`     | Assign / AddAssign                                       |
-| `PropertyKey`  | Ident / String / Number / Computed                       |
-| `TemplatePart` | String / Expression                                      |
-| `UseSpecifier` | Wildcard / Named                                         |
-| `Module`       | Source file (= `Vec<Declaration>`)                       |
+## Pattern
+
+通常の`Pattern`はliteralとidentifierを表します。`IsPattern`はそれらにdot-prefixed enum caseを
+加えます。現在のParserがbindingとparameterで生成するpatternは主にidentifierです。
+
+## Compiler pipeline
+
+ASTはResolver、InitializationChecker、TypeCheckerを通過した後、generic monomorphizationとmodule
+analysisへ渡されます。Codegenは意味解析済みの宣言、concrete type layout、静的dispatch結果を使用し、
+source textから型を再推測しません。
