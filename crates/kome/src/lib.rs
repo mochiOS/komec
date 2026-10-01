@@ -2,11 +2,16 @@
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, ExitStatus};
 
 /// The conventional Kome project manifest filename.
 pub const MANIFEST_FILE: &str = "Kome.toml";
+
+/// Environment variable that overrides the compiler executable used by `kome`.
+pub const COMPILER_ENV: &str = "KOMEC";
 
 /// A parsed Kome package manifest.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -175,6 +180,259 @@ impl Project {
             source,
         })
     }
+}
+
+/// A user-facing project command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    /// Type-checks the application without generating an executable.
+    Check,
+    /// Builds the application as an AOT executable.
+    Build,
+    /// Compiles and runs the application through the JIT.
+    Run,
+    /// Runs each `tests/*.kome` integration test.
+    Test,
+}
+
+/// Options accepted by the `kome` command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cli {
+    /// Requested project operation.
+    pub command: Command,
+    /// Explicit manifest path, or `None` to discover it from the current directory.
+    pub manifest_path: Option<PathBuf>,
+    /// Explicit AOT output path for `build`.
+    pub output: Option<PathBuf>,
+}
+
+impl Cli {
+    /// Parses command-line arguments excluding the executable name.
+    pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
+        let mut arguments = arguments.into_iter();
+        let command = match arguments
+            .next()
+            .and_then(|argument| argument.into_string().ok())
+            .as_deref()
+        {
+            Some("check") => Command::Check,
+            Some("build") => Command::Build,
+            Some("run") => Command::Run,
+            Some("test") => Command::Test,
+            Some(command) => return Err(format!("unknown command `{command}`\n{USAGE}")),
+            None => return Err(USAGE.to_owned()),
+        };
+        let mut manifest_path = None;
+        let mut output = None;
+
+        while let Some(argument) = arguments.next() {
+            match argument.to_str() {
+                Some("--manifest-path") => {
+                    manifest_path = Some(
+                        arguments
+                            .next()
+                            .ok_or_else(|| "`--manifest-path` requires a path".to_owned())?
+                            .into(),
+                    );
+                }
+                Some("--output") if command == Command::Build => {
+                    output = Some(
+                        arguments
+                            .next()
+                            .ok_or_else(|| "`--output` requires a path".to_owned())?
+                            .into(),
+                    );
+                }
+                _ => return Err(USAGE.to_owned()),
+            }
+        }
+
+        Ok(Self {
+            command,
+            manifest_path,
+            output,
+        })
+    }
+}
+
+/// Runs a parsed `kome` command and waits for the compiler or test programs.
+pub fn execute(cli: &Cli, current_directory: &Path) -> Result<(), String> {
+    let project = match &cli.manifest_path {
+        Some(path) => Project::load(path),
+        None => Project::discover(current_directory),
+    }?;
+    let dependencies = project.dependencies()?;
+    let compiler = compiler_path();
+
+    match cli.command {
+        Command::Check => {
+            run_compiler(
+                &compiler,
+                "check",
+                &project.application_source()?,
+                None,
+                &dependencies,
+            )?;
+        }
+        Command::Run => {
+            run_compiler(
+                &compiler,
+                "run",
+                &project.application_source()?,
+                None,
+                &dependencies,
+            )?;
+        }
+        Command::Build => {
+            let output = match &cli.output {
+                Some(path) if path.is_absolute() => path.clone(),
+                Some(path) => current_directory.join(path),
+                None => project
+                    .root()
+                    .join("target/debug")
+                    .join(&project.manifest().package.name),
+            };
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("failed to create `{}`: {error}", parent.display()))?;
+            }
+            run_compiler(
+                &compiler,
+                "build",
+                &project.application_source()?,
+                Some(&output),
+                &dependencies,
+            )?;
+            println!("built `{}`", output.display());
+        }
+        Command::Test => run_tests(&compiler, &project, &dependencies)?,
+    }
+
+    Ok(())
+}
+
+/// Parses process arguments and runs the requested project command.
+pub fn execute_from_env() -> Result<(), String> {
+    let cli = Cli::parse(std::env::args_os().skip(1))?;
+    let current_directory = std::env::current_dir()
+        .map_err(|error| format!("failed to determine the current directory: {error}"))?;
+    execute(&cli, &current_directory)
+}
+
+const USAGE: &str =
+    "usage: kome <check|build|run|test> [--manifest-path <Kome.toml>] [--output <path>]";
+
+fn run_tests(
+    compiler: &Path,
+    project: &Project,
+    dependencies: &[ResolvedDependency],
+) -> Result<(), String> {
+    let tests_directory = project.root().join("tests");
+    let mut tests = if tests_directory.is_dir() {
+        fs::read_dir(&tests_directory)
+            .map_err(|error| format!("failed to read `{}`: {error}", tests_directory.display()))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "kome")
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    tests.sort();
+
+    if tests.is_empty() {
+        println!(
+            "no integration tests found in `{}`",
+            tests_directory.display()
+        );
+        return Ok(());
+    }
+
+    for test in &tests {
+        println!("running `{}`", test.display());
+        run_compiler(compiler, "run", test, None, dependencies)?;
+    }
+    println!("{} test(s) passed", tests.len());
+    Ok(())
+}
+
+fn run_compiler(
+    compiler: &Path,
+    command: &str,
+    source: &Path,
+    output: Option<&Path>,
+    dependencies: &[ResolvedDependency],
+) -> Result<(), String> {
+    let mut invocation = ProcessCommand::new(compiler);
+    invocation.arg(command).arg(source);
+    if let Some(output) = output {
+        invocation.arg(output);
+    }
+    for dependency in dependencies {
+        invocation.arg("--source").arg(&dependency.source);
+    }
+
+    let library_paths = native_library_paths(dependencies);
+    if !library_paths.is_empty() {
+        let value = std::env::join_paths(library_paths.iter())
+            .map_err(|error| format!("failed to construct native library search path: {error}"))?;
+        invocation.env("KOME_LIBRARY_PATH", value);
+    }
+
+    let status = invocation.status().map_err(|error| {
+        format!(
+            "failed to execute compiler `{}`: {error}; set {COMPILER_ENV} to the komec path",
+            compiler.display(),
+        )
+    })?;
+    require_success(status, compiler)
+}
+
+fn require_success(status: ExitStatus, compiler: &Path) -> Result<(), String> {
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "compiler `{}` exited with {status}",
+            compiler.display(),
+        ))
+    }
+}
+
+fn compiler_path() -> PathBuf {
+    if let Some(path) = std::env::var_os(COMPILER_ENV).filter(|path| !path.is_empty()) {
+        return path.into();
+    }
+
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        let sibling = directory.join("komec");
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+
+    PathBuf::from("komec")
+}
+
+fn native_library_paths(dependencies: &[ResolvedDependency]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for dependency in dependencies {
+        for candidate in [
+            dependency.root.clone(),
+            dependency.root.join("target/debug"),
+            dependency.root.join("target/release"),
+        ] {
+            if candidate.is_dir() && !paths.contains(&candidate) {
+                paths.push(candidate);
+            }
+        }
+    }
+    paths
 }
 
 /// A local dependency resolved to concrete compiler inputs.

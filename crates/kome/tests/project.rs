@@ -1,4 +1,4 @@
-use kome::Project;
+use kome::{Cli, Command, Project};
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -64,4 +64,23 @@ fn resolves_a_local_library_dependency() {
     assert_eq!(dependencies.len(), 1);
     assert_eq!(dependencies[0].name, "ui");
     assert_eq!(dependencies[0].source, root.join("vendor/ui/src/lib.kome"));
+}
+
+#[test]
+fn parses_project_commands_and_build_options() {
+    let cli = Cli::parse([
+        "build".into(),
+        "--manifest-path".into(),
+        "examples/Kome.toml".into(),
+        "--output".into(),
+        "build/app".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(cli.command, Command::Build);
+    assert_eq!(
+        cli.manifest_path,
+        Some(std::path::PathBuf::from("examples/Kome.toml"))
+    );
+    assert_eq!(cli.output, Some(std::path::PathBuf::from("build/app")));
 }
