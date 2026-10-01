@@ -423,6 +423,10 @@ fn discover_packages(roots: &[PathBuf]) -> Result<HashMap<String, PackageLibrary
 
 fn installed_prefix() -> Option<PathBuf> {
     let executable = env::current_exe().ok()?;
+    installed_prefix_from(&executable)
+}
+
+fn installed_prefix_from(executable: &Path) -> Option<PathBuf> {
     let bin = executable.parent()?;
     if bin.file_name()? != "bin" {
         return None;
@@ -458,12 +462,24 @@ fn read_source(path: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::StandardLibrary;
+    use super::{StandardLibrary, installed_prefix_from};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn derives_the_installation_prefix_from_the_bin_directory() {
+        assert_eq!(
+            installed_prefix_from(std::path::Path::new("/home/user/.kome/bin/komec")),
+            Some(PathBuf::from("/home/user/.kome")),
+        );
+        assert_eq!(
+            installed_prefix_from(std::path::Path::new("/workspace/target/debug/komec")),
+            None,
+        );
+    }
 
     fn temporary_root() -> PathBuf {
         std::env::temp_dir().join(format!(
