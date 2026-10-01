@@ -4,6 +4,11 @@ A compilor for Kome language.
 
 Kome is a programming language for [mochiOS](https://github.com/tas0dev/mochiOS).
 
+## Documentation
+
+The language reference, Task model, component system, C interoperability, and
+tooling documentation are indexed in [`docs/README.md`](docs/README.md).
+
 ## Library layout
 
 During development, `komec` loads libraries from `vendor/stdlib` and
