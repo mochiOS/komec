@@ -13,6 +13,7 @@
 ## ツール
 
 - [`kome`コマンドの役割](kome-yakuwari.md)
+- [Releaseの作成](releasing.md)
 
 ## 実装資料
 
