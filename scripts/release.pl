@@ -53,6 +53,7 @@ push @archives, package_binary(
     arch => $arch,
     binary => File::Spec->catfile($binary_directory, executable_name('komec')),
     support_files => [
+        File::Spec->catfile($binary_directory, executable_name('kome-lsp')),
         File::Spec->catfile($binary_directory, 'libkome_native_rt.a'),
     ],
 );
@@ -148,6 +149,7 @@ sub build_binaries {
         'cargo', 'build', '--release', '--locked',
         '-p', 'kome', '--bin', 'kome',
         '-p', 'komec', '--bin', 'komec',
+        '-p', 'kome_lsp', '--bin', 'kome-lsp',
     );
     push @command, '--target', $target if defined $target;
     run(@command);

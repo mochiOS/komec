@@ -19,22 +19,40 @@ impl zed::Extension for KomeExtension {
             .as_ref()
             .and_then(|binary| binary.path.clone());
 
-        let command = configured_path
-            .or_else(|| worktree.which("kome-lsp"))
-            .ok_or_else(|| {
-                concat!(
-                    "Could not find the Kome Language Server. ",
-                    "Install kome-lsp in PATH or configure ",
-                    "lsp.kome-lsp.binary.path in Zed settings."
-                )
-                .to_string()
-            })?;
-
-        let args = settings
+        let configured_args = settings
             .binary
             .as_ref()
             .and_then(|binary| binary.arguments.clone())
             .unwrap_or_default();
+
+        let (command, args) = if let Some(command) = configured_path {
+            (command, configured_args)
+        } else if let Some(command) = worktree.which("kome-lsp") {
+            (command, configured_args)
+        } else if worktree.read_text_file("crates/lsp/Cargo.toml").is_ok() {
+            let cargo = worktree.which("cargo").ok_or_else(missing_lsp_message)?;
+            let manifest = format!("{}/Cargo.toml", worktree.root_path());
+            let mut args = vec![
+                "run".to_string(),
+                "--quiet".to_string(),
+                "-p".to_string(),
+                "kome_lsp".to_string(),
+                "--bin".to_string(),
+                "kome-lsp".to_string(),
+                "--manifest-path".to_string(),
+                manifest,
+                "--".to_string(),
+            ];
+            args.extend(configured_args);
+            (cargo, args)
+        } else {
+            let home = worktree
+                .shell_env()
+                .into_iter()
+                .find_map(|(name, value)| (name == "HOME").then_some(value))
+                .ok_or_else(missing_lsp_message)?;
+            (format!("{home}/.kome/bin/kome-lsp"), configured_args)
+        };
 
         let env = settings
             .binary
@@ -65,6 +83,15 @@ impl zed::Extension for KomeExtension {
 
         Ok(settings.settings)
     }
+}
+
+fn missing_lsp_message() -> String {
+    concat!(
+        "Could not find the Kome Language Server. ",
+        "Install kome-lsp in PATH or ~/.kome/bin, or configure ",
+        "lsp.kome-lsp.binary.path in Zed settings."
+    )
+    .to_string()
 }
 
 zed::register_extension!(KomeExtension);
