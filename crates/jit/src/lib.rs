@@ -197,8 +197,50 @@ fn library_candidates(name: &str) -> Vec<PathBuf> {
             }
         }
     }
+    if !is_path && let Some(prefix) = installed_prefix() {
+        let filename = format!("lib{name}.so");
+        candidates.push(prefix.join(name).join(&filename));
+        candidates.push(prefix.join(name).join("lib").join(filename));
+        candidates.push(
+            prefix
+                .join(name)
+                .join("target/release")
+                .join(format!("lib{name}.so")),
+        );
+    }
     candidates.extend(filenames);
     candidates
+}
+
+fn installed_prefix() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    installed_prefix_from(&executable)
+}
+
+fn installed_prefix_from(executable: &Path) -> Option<PathBuf> {
+    let bin = executable.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    bin.parent().map(Path::to_path_buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::installed_prefix_from;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn derives_the_installation_prefix_from_the_bin_directory() {
+        assert_eq!(
+            installed_prefix_from(Path::new("/home/user/.kome/bin/komec")),
+            Some(PathBuf::from("/home/user/.kome")),
+        );
+        assert_eq!(
+            installed_prefix_from(Path::new("/workspace/target/debug/komec")),
+            None
+        );
+    }
 }
 
 /// Builds the ISA for the host process that owns this JIT instance.
