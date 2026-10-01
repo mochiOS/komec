@@ -51,6 +51,9 @@ package_binary(
     version => $versions->{'komec'},
     arch => $arch,
     binary => File::Spec->catfile($binary_directory, executable_name('komec')),
+    support_files => [
+        File::Spec->catfile($binary_directory, 'libkome_native_rt.a'),
+    ],
 );
 package_stdlib(
     version => $versions->{'kome-std'},
@@ -146,6 +149,13 @@ sub build_binaries {
     );
     push @command, '--target', $target if defined $target;
     run(@command);
+
+    my @runtime_command = (
+        'cargo', 'build', '--release', '--locked',
+        '-p', 'kome_native_rt', '--lib',
+    );
+    push @runtime_command, '--target', $target if defined $target;
+    run(@runtime_command);
 }
 
 sub executable_name {
@@ -168,12 +178,22 @@ sub package_binary {
     chmod 0755, $staged_binary
         or die "failed to mark $staged_binary executable: $!\n";
 
+    my @entries = (executable_name($arguments{product}));
+    for my $support_file (@{$arguments{support_files} // []}) {
+        -f $support_file
+            or die "release support file was not found: $support_file\n";
+        my $name = basename_of($support_file);
+        copy($support_file, File::Spec->catfile($stage, $name))
+            or die "failed to stage $support_file: $!\n";
+        push @entries, $name;
+    }
+
     create_artifact(
         product => $arguments{product},
         version => $arguments{version},
         arch => $arguments{arch},
         stage => $stage,
-        entries => [executable_name($arguments{product})],
+        entries => \@entries,
     );
 }
 
