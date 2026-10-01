@@ -77,3 +77,56 @@ resolved source / library paths
   ↓ komecへ入力
 Parser → TypeChecker → Codegen → JIT / AOT
 ```
+
+## 現在の`Kome.toml`
+
+アプリケーションは次のように定義します。`[application]`を省略した場合、
+`src/main.kome`を使用します。
+
+```toml
+[package]
+name = "hello"
+version = "0.1.0"
+
+[application]
+source = "src/main.kome"
+```
+
+ライブラリパッケージは`[lib]`で公開するソースを指定します。
+
+```toml
+[package]
+name = "widgets"
+version = "0.1.0"
+
+[lib]
+source = "src/lib.kome"
+```
+
+初期実装ではローカル依存をサポートします。依存パスはアプリケーションの
+`Kome.toml`があるディレクトリを基準に解決します。
+
+```toml
+[dependencies]
+viewkit = { path = "../viewkit" }
+widgets = "vendor/widgets"
+```
+
+依存パッケージの`[lib].source`は`kome`が解決し、`komec --source`へ明示的に
+渡します。native libraryの探索パスも依存ルートから組み立てて渡します。
+`komec`自身は`Kome.toml`を読みません。
+
+## コマンド
+
+```text
+kome check [--manifest-path path/to/Kome.toml]
+kome run [--manifest-path path/to/Kome.toml]
+kome build [--manifest-path path/to/Kome.toml] [--output path]
+kome test [--manifest-path path/to/Kome.toml]
+```
+
+`KOMEC`で使用するコンパイラを明示できます。未指定時は`kome`と同じ
+ディレクトリにある`komec`を優先し、その後`PATH`上の`komec`を使用します。
+
+`kome test`は`tests/`直下の`.kome`ファイルを名前順にJIT実行します。各ファイルは
+独立した`main`関数を持つintegration testです。

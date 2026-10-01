@@ -1,0 +1,7 @@
+[package]
+name = "answer"
+version = "0.1.0"
+
+[lib]
+source = "src/lib.kome"
+

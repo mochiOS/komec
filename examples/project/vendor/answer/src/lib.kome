@@ -1,0 +1,3 @@
+fn projectAnswer() -> Number {
+	return 42
+}
