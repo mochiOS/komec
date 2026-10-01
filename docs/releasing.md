@@ -34,23 +34,23 @@ scripts/release.pl --target aarch64-unknown-linux-gnu --arch aarch64
 
 ## Output
 
-配布物はproductごとのdirectoryに生成されます。
+配布物はすべて`target/release`直下に生成されます。
 
-| Product | Output directory | Archive content |
-| --- | --- | --- |
-| `kome` | `target/release/kome` | release binary `kome`のみ |
-| `komec` | `target/release/komec` | `komec`とコンパイル済みAOT runtime archive |
-| `kome-std` | `target/release/kome-std` | `vendor/stdlib`内の`.kome`ファイルのみ |
+| Product | Archive content |
+| --- | --- |
+| `kome` | release binary `kome`のみ |
+| `komec` | `komec`とコンパイル済みAOT runtime archive |
+| `kome-std` | `vendor/stdlib`内の`.kome`ファイルのみ |
 
-archive名は`{arch}-{product}-{version}.tar.zst`です。同じdirectoryに
-`{archive}.sha256`を生成します。
+archive名は`{arch}-{product}-{version}.tar.zst`です。3つのarchiveのSHA-256 checksumは
+`target/release/SHA256SUMS`へまとめて生成します。
 
 `libkome_native_rt.a`はKome sourceではなく、`komec build`が生成したprogramへlinkするnative
 runtimeです。`komec`と同じdirectoryへinstallします。それ以外のCargo中間生成物は配布物へ
 含めません。
 
-checksum fileはarchive basenameを記録します。検証時はarchiveのdirectoryで`sha256sum -c`を
-実行します。
+`SHA256SUMS`はarchive basenameを記録します。検証時は`target/release`で
+`sha256sum -c SHA256SUMS`を実行します。
 
 ## Reproducibility
 

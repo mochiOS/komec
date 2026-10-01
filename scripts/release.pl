@@ -40,13 +40,14 @@ my $binary_directory = defined $target
     ? File::Spec->catdir($build_target, $target, 'release')
     : File::Spec->catdir($build_target, 'release');
 
-package_binary(
+my @archives;
+push @archives, package_binary(
     product => 'kome',
     version => $versions->{'kome'},
     arch => $arch,
     binary => File::Spec->catfile($binary_directory, executable_name('kome')),
 );
-package_binary(
+push @archives, package_binary(
     product => 'komec',
     version => $versions->{'komec'},
     arch => $arch,
@@ -55,11 +56,12 @@ package_binary(
         File::Spec->catfile($binary_directory, 'libkome_native_rt.a'),
     ],
 );
-package_stdlib(
+push @archives, package_stdlib(
     version => $versions->{'kome-std'},
     arch => $arch,
     source => File::Spec->catdir($root, 'vendor', 'stdlib'),
 );
+write_checksum_manifest(@archives);
 
 sub usage {
     return "usage: scripts/release.pl [--target <rust-target>] [--arch <artifact-arch>]\n";
@@ -188,7 +190,7 @@ sub package_binary {
         push @entries, $name;
     }
 
-    create_artifact(
+    return create_artifact(
         product => $arguments{product},
         version => $arguments{version},
         arch => $arguments{arch},
@@ -222,7 +224,7 @@ sub package_stdlib {
     @entries = sort @entries;
     @entries or die "standard library contains no .kome files\n";
 
-    create_artifact(
+    return create_artifact(
         product => 'kome-std',
         version => $arguments{version},
         arch => $arguments{arch},
@@ -233,15 +235,7 @@ sub package_stdlib {
 
 sub create_artifact {
     my (%arguments) = @_;
-    my $output_directory = File::Spec->catdir(
-        $root,
-        'target',
-        'release',
-        $arguments{product},
-    );
-    if (-e $output_directory && !-d $output_directory) {
-        die "$output_directory is not a directory; remove the conflicting file first\n";
-    }
+    my $output_directory = File::Spec->catdir($root, 'target', 'release');
     make_path($output_directory);
 
     my $filename = join '-',
@@ -266,18 +260,29 @@ sub create_artifact {
     run('zstd', '-q', '-19', '-f', $tar, '-o', $archive);
     unlink $tar or die "failed to remove temporary archive $tar: $!\n";
 
-    my $checksum_path = "$archive.sha256";
-    open my $input, '<', $archive or die "failed to read $archive: $!\n";
-    binmode $input;
-    my $digest = Digest::SHA->new(256)->addfile($input)->hexdigest;
-    close $input or die "failed to close $archive: $!\n";
+    print "$archive\n";
+    return $archive;
+}
 
-    open my $checksum, '>', $checksum_path
-        or die "failed to write $checksum_path: $!\n";
-    print {$checksum} "$digest  " . basename_of($archive) . "\n";
-    close $checksum or die "failed to close $checksum_path: $!\n";
+sub write_checksum_manifest {
+    my (@archives) = @_;
+    my $output_directory = File::Spec->catdir($root, 'target', 'release');
+    my $checksum_path = File::Spec->catfile($output_directory, 'SHA256SUMS');
+    my $temporary = "$checksum_path.tmp.$$";
 
-    print "$archive\n$checksum_path\n";
+    open my $checksum, '>', $temporary
+        or die "failed to write $temporary: $!\n";
+    for my $archive (@archives) {
+        open my $input, '<', $archive or die "failed to read $archive: $!\n";
+        binmode $input;
+        my $digest = Digest::SHA->new(256)->addfile($input)->hexdigest;
+        close $input or die "failed to close $archive: $!\n";
+        print {$checksum} "$digest  " . basename_of($archive) . "\n";
+    }
+    close $checksum or die "failed to close $temporary: $!\n";
+    rename $temporary, $checksum_path
+        or die "failed to replace $checksum_path: $!\n";
+    print "$checksum_path\n";
 }
 
 sub source_date_epoch {
