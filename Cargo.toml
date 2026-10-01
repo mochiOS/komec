@@ -9,6 +9,7 @@ members = [
   "crates/abi",
   "crates/ast",
   "crates/codegen",
+  "crates/kome",
   "crates/jit",
   "crates/lsp",
   "crates/native-rt",
