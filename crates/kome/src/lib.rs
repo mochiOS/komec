@@ -44,6 +44,9 @@ pub struct Package {
 pub struct Target {
     /// Source file relative to the manifest directory.
     pub source: PathBuf,
+    /// Additional source files that form the same target.
+    #[serde(default)]
+    pub sources: Vec<PathBuf>,
 }
 
 /// A dependency declaration supported by the initial local resolver.
@@ -228,11 +231,24 @@ impl Project {
         })?;
         let source = project.root.join(&target.source);
         require_file(&source, "dependency source")?;
+        let mut sources = Vec::with_capacity(target.sources.len());
+        for relative in &target.sources {
+            let additional = project.root.join(relative);
+            require_file(&additional, "dependency source")?;
+            if additional == source || sources.contains(&additional) {
+                return Err(format!(
+                    "dependency `{name}` lists duplicate source `{}`",
+                    additional.display()
+                ));
+            }
+            sources.push(additional);
+        }
 
         Ok(ResolvedDependency {
             name: name.to_owned(),
             root: project.root,
             source,
+            sources,
         })
     }
 }
@@ -447,6 +463,9 @@ fn run_compiler(
     }
     for dependency in dependencies {
         invocation.arg("--source").arg(&dependency.source);
+        for source in &dependency.sources {
+            invocation.arg("--source").arg(source);
+        }
     }
 
     let mut library_paths = std::env::var_os("KOME_LIBRARY_PATH")
@@ -538,6 +557,8 @@ pub struct ResolvedDependency {
     pub root: PathBuf,
     /// Concrete Kome library source file.
     pub source: PathBuf,
+    /// Additional Kome source files in this library target.
+    pub sources: Vec<PathBuf>,
 }
 
 fn validate_manifest(manifest: &Manifest, path: &Path) -> Result<(), String> {
@@ -649,6 +670,7 @@ mod tests {
             name: "viewkit".to_owned(),
             root: library_root,
             source: root.join("viewkit/lib/src/lib.kome"),
+            sources: Vec::new(),
         };
 
         let paths = native_library_paths(&[dependency]);

@@ -67,6 +67,38 @@ fn resolves_a_local_library_dependency() {
 }
 
 #[test]
+fn resolves_all_library_target_sources() {
+    let root = fixture("multiple-sources");
+    write(
+        &root.join("Kome.toml"),
+        "[package]\nname = \"app\"\n[dependencies]\nappcore = { path = \"vendor/appcore\" }\n",
+    );
+    write(&root.join("src/main.kome"), "fn main() {}\n");
+    write(
+        &root.join("vendor/appcore/Kome.toml"),
+        "[package]\nname = \"appcore\"\n[lib]\nsource = \"src/lib.kome\"\nsources = [\"src/clipboard.kome\", \"src/document.kome\"]\n",
+    );
+    write(&root.join("vendor/appcore/src/lib.kome"), "");
+    write(
+        &root.join("vendor/appcore/src/clipboard.kome"),
+        "struct Clipboard {}\n",
+    );
+    write(
+        &root.join("vendor/appcore/src/document.kome"),
+        "struct Document {}\n",
+    );
+
+    let dependencies = Project::load(&root.join("Kome.toml"))
+        .unwrap()
+        .dependencies()
+        .unwrap();
+
+    assert_eq!(dependencies[0].sources.len(), 2);
+    assert!(dependencies[0].sources[0].ends_with("src/clipboard.kome"));
+    assert!(dependencies[0].sources[1].ends_with("src/document.kome"));
+}
+
+#[test]
 fn parses_project_commands_and_build_options() {
     let cli = Cli::parse([
         "build".into(),
