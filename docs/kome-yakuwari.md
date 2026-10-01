@@ -49,6 +49,7 @@
 ├── bin/
 │   ├── kome
 │   └── komec
+├── appcore/
 ├── stdlib/
 └── viewkit/
 ```
@@ -62,6 +63,7 @@
 ```text
 vendor/stdlib
 vendor/viewkit
+vendor/devkit/crates/appcore
 ```
 
 ## ViewKitとの境界
@@ -111,6 +113,17 @@ source = "src/lib.kome"
 viewkit = { path = "../viewkit" }
 widgets = "vendor/widgets"
 ```
+
+AppCoreやViewKitのようにKomeと一緒に配布されるpackageはsystem dependencyとして
+指定できます。開発時は`vendor/`、インストール後は`kome`と同じprefixから探索します。
+
+```toml
+[dependencies]
+appcore = { system = true }
+```
+
+system dependencyの依存も再帰的に解決されるため、AppCoreからViewKitが自動的に
+読み込まれます。
 
 依存パッケージの`[lib].source`は`kome`が解決し、`komec --source`へ明示的に
 渡します。native libraryの探索パスも依存ルートから組み立てて渡します。

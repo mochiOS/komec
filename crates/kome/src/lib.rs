@@ -52,15 +52,18 @@ pub struct Target {
 pub enum Dependency {
     /// A dependency located at a local filesystem path.
     Detailed { path: PathBuf },
+    /// A package installed beside the Kome toolchain or bundled for development.
+    System { system: bool },
     /// A shorthand local filesystem path.
     Path(PathBuf),
 }
 
 impl Dependency {
-    /// Returns the unresolved path written in the manifest.
-    pub fn path(&self) -> &Path {
+    /// Returns the unresolved local path written in the manifest, if present.
+    pub fn path(&self) -> Option<&Path> {
         match self {
-            Self::Detailed { path } | Self::Path(path) => path,
+            Self::Detailed { path } | Self::Path(path) => Some(path),
+            Self::System { .. } => None,
         }
     }
 }
@@ -143,21 +146,73 @@ impl Project {
         Ok(source)
     }
 
-    /// Resolves all direct local dependencies in deterministic name order.
+    /// Resolves local and system dependencies recursively in deterministic order.
     pub fn dependencies(&self) -> Result<Vec<ResolvedDependency>, String> {
-        self.manifest
-            .dependencies
-            .iter()
-            .map(|(name, dependency)| self.resolve_dependency(name, dependency))
-            .collect()
+        self.dependencies_with_system_roots(&system_package_roots())
+    }
+
+    fn dependencies_with_system_roots(
+        &self,
+        system_roots: &[PathBuf],
+    ) -> Result<Vec<ResolvedDependency>, String> {
+        let mut resolved = Vec::new();
+        let mut visited = Vec::new();
+        self.resolve_dependencies(system_roots, &mut visited, &mut resolved)?;
+        Ok(resolved)
+    }
+
+    fn resolve_dependencies(
+        &self,
+        system_roots: &[PathBuf],
+        visited: &mut Vec<PathBuf>,
+        resolved: &mut Vec<ResolvedDependency>,
+    ) -> Result<(), String> {
+        for (name, dependency) in &self.manifest.dependencies {
+            let dependency = self.resolve_dependency(name, dependency, system_roots)?;
+            let identity = dependency
+                .root
+                .canonicalize()
+                .unwrap_or_else(|_| dependency.root.clone());
+            if visited.contains(&identity) {
+                continue;
+            }
+            visited.push(identity);
+
+            let project = Self::load(&dependency.root.join(MANIFEST_FILE))?;
+            project.resolve_dependencies(system_roots, visited, resolved)?;
+            resolved.push(dependency);
+        }
+        Ok(())
     }
 
     fn resolve_dependency(
         &self,
         name: &str,
         dependency: &Dependency,
+        system_roots: &[PathBuf],
     ) -> Result<ResolvedDependency, String> {
-        let root = self.root.join(dependency.path());
+        let root = match dependency {
+            Dependency::Detailed { path } | Dependency::Path(path) => self.root.join(path),
+            Dependency::System { system: true } => system_roots
+                .iter()
+                .flat_map(|root| [root.join(name), root.join(name).join("lib")])
+                .find(|candidate| candidate.join(MANIFEST_FILE).is_file())
+                .ok_or_else(|| {
+                    format!(
+                        "system dependency `{name}` was not found in {}",
+                        system_roots
+                            .iter()
+                            .map(|path| format!("`{}`", path.display()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?,
+            Dependency::System { system: false } => {
+                return Err(format!(
+                    "dependency `{name}` must set `system = true` or specify `path`"
+                ));
+            }
+        };
         let manifest_path = root.join(MANIFEST_FILE);
         let project = Self::load(&manifest_path).map_err(|error| {
             format!(
@@ -180,6 +235,25 @@ impl Project {
             source,
         })
     }
+}
+
+fn system_package_roots() -> Vec<PathBuf> {
+    let Ok(executable) = std::env::current_exe() else {
+        return Vec::new();
+    };
+    let Some(binary_directory) = executable.parent() else {
+        return Vec::new();
+    };
+
+    let mut roots = Vec::new();
+    if let Some(installation_root) = binary_directory.parent() {
+        roots.push(installation_root.to_path_buf());
+    }
+    if let Some(repository_root) = binary_directory.parent().and_then(Path::parent) {
+        roots.push(repository_root.join("vendor"));
+        roots.push(repository_root.join("vendor/devkit/crates"));
+    }
+    roots
 }
 
 /// A user-facing project command.
@@ -469,5 +543,86 @@ fn require_file(path: &Path, description: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{description} `{}` was not found", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    fn fixture(name: &str) -> PathBuf {
+        let serial = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "kome-system-package-test-{}-{name}-{serial}",
+            std::process::id(),
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn resolves_system_packages_and_their_dependencies() {
+        let root = fixture("recursive");
+        let project_root = root.join("project");
+        let packages = root.join("packages");
+        write(
+            &project_root.join(MANIFEST_FILE),
+            "[package]\nname = \"app\"\n[dependencies]\nappcore = { system = true }\n",
+        );
+        write(
+            &packages.join("appcore/Kome.toml"),
+            "[package]\nname = \"appcore\"\n[lib]\nsource = \"src/lib.kome\"\n[dependencies]\nviewkit = { system = true }\n",
+        );
+        write(
+            &packages.join("appcore/src/lib.kome"),
+            "struct Clipboard {}\n",
+        );
+        write(
+            &packages.join("viewkit/lib/Kome.toml"),
+            "[package]\nname = \"viewkit\"\n[lib]\nsource = \"src/lib.kome\"\n",
+        );
+        write(
+            &packages.join("viewkit/lib/src/lib.kome"),
+            "struct View {}\n",
+        );
+
+        let dependencies = Project::load(&project_root.join(MANIFEST_FILE))
+            .unwrap()
+            .dependencies_with_system_roots(std::slice::from_ref(&packages))
+            .unwrap();
+
+        assert_eq!(
+            dependencies
+                .iter()
+                .map(|dependency| dependency.name.as_str())
+                .collect::<Vec<_>>(),
+            ["viewkit", "appcore"]
+        );
+    }
+
+    #[test]
+    fn rejects_disabled_system_dependencies() {
+        let root = fixture("disabled");
+        write(
+            &root.join(MANIFEST_FILE),
+            "[package]\nname = \"app\"\n[dependencies]\nappcore = { system = false }\n",
+        );
+
+        let error = Project::load(&root.join(MANIFEST_FILE))
+            .unwrap()
+            .dependencies_with_system_roots(&[])
+            .unwrap_err();
+
+        assert!(error.contains("must set `system = true`"));
     }
 }
