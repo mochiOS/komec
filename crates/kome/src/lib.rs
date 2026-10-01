@@ -375,7 +375,14 @@ fn run_compiler(
         invocation.arg("--source").arg(&dependency.source);
     }
 
-    let library_paths = native_library_paths(dependencies);
+    let mut library_paths = std::env::var_os("KOME_LIBRARY_PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for path in native_library_paths(dependencies) {
+        if !library_paths.contains(&path) {
+            library_paths.push(path);
+        }
+    }
     if !library_paths.is_empty() {
         let value = std::env::join_paths(library_paths.iter())
             .map_err(|error| format!("failed to construct native library search path: {error}"))?;
