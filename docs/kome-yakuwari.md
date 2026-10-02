@@ -137,6 +137,7 @@ kome check [--manifest-path path/to/Kome.toml]
 kome run [--manifest-path path/to/Kome.toml]
 kome build [--manifest-path path/to/Kome.toml] [--output path]
 kome test [--manifest-path path/to/Kome.toml]
+kome doc [--manifest-path path/to/Kome.toml] [--output path]
 ```
 
 `KOMEC`で使用するコンパイラを明示できます。未指定時は`kome`と同じ
@@ -144,3 +145,7 @@ kome test [--manifest-path path/to/Kome.toml]
 
 `kome test`は`tests/`直下の`.kome`ファイルを名前順にJIT実行します。各ファイルは
 独立した`main`関数を持つintegration testです。
+
+`kome doc`は`[lib]`に含まれる各ソースから公開APIのReferenceを生成します。出力先を省略した
+場合は`target/doc/<package>.md`へ保存します。非公開宣言と`pub(package)`宣言は含めず、
+`pub use`による再公開も記録します。

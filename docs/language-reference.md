@@ -86,8 +86,11 @@ let message = "Hello, {name}"
 ### Optional型
 
 `T?`は`T`または`null`を保持します。`null`はoptional型とのみ互換になります。
-optional値が保持する`T`を直接取り出す構文はまだありません。現時点では`null`との比較、
-関数の受け渡し、struct fieldへの保存に利用できます。
+後置`!`は値が存在することを確認して`T`を取り出します。値が`null`の場合は、明確な実行時
+エラーになります。`!`による取り出しは所有権を引き継ぐため、実行時管理値でも二重解放されません。
+
+標準ライブラリの`Result<T, E>`はoptional値を内部表現に使います。`isOk()`と`isErr()`で状態を
+確認し、`value()`または`error()`で対応する値を取得できます。
 
 ### List型
 
@@ -319,6 +322,8 @@ brace内の最後のexpressionはblock全体の値になります。最後がsta
 `.`です。`use std::io`の後は`io::println(...)`、`use std::io::println`の後は
 `println(...)`と記述します。`use std::io as console`による別名と、`use std::io::*`による
 公開宣言の一括取り込みも使用できます。一括取り込みで同名の宣言が生じた場合はエラーです。
+`pub use`は取り込んだ宣言を別パッケージへ再公開します。別名と一括再公開も使用できます。
+元の宣言より広い公開範囲で再公開することはできません。
 
 宣言の完全な名前は、利用側の別名に左右されません。たとえば`io::println`と
 `console::println`は、どちらも`std::io::println`を参照します。異なるパッケージにある同名宣言は
@@ -385,5 +390,4 @@ ABI契約を明示する必要があります。
 - generic制約、associated type、const generic、default type argumentはありません。
 - operator overloadはありません。
 - exception処理とruntime errorをcatchする構文はありません。
-- optional値をunwrapする専用構文はありません。
 - pointer演算とKome側のdereferenceはありません。
