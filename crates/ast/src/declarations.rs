@@ -276,7 +276,11 @@ pub struct UseDeclaration {
 pub enum UseImport {
     Module(Path),
 
+    AliasedModule { path: Path, alias: PathSegment },
+
     Wildcard { span: Span },
+
+    WildcardFrom { path: Path, span: Span },
 }
 
 /// A path like `std::io`, `self::super::thing`.
@@ -385,7 +389,10 @@ impl AstNode for UseImport {
     fn span(&self) -> Span {
         match self {
             UseImport::Module(path) => path.span,
-            UseImport::Wildcard { span } => *span,
+            UseImport::AliasedModule { path, alias } => {
+                Span::new(path.span.start, alias.span.end)
+            }
+            UseImport::Wildcard { span } | UseImport::WildcardFrom { span, .. } => *span,
         }
     }
 }

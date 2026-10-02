@@ -167,7 +167,7 @@ fn standard_library_import_span(module: &Module) -> Option<Span> {
         };
 
         for import in &use_declaration.imports {
-            let UseImport::Module(path) = import else {
+            let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import else {
                 continue;
             };
 

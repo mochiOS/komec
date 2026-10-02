@@ -102,7 +102,7 @@ fn import_definition_at(
         };
 
         for import in &use_declaration.imports {
-            let UseImport::Module(path) = import else {
+            let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import else {
                 continue;
             };
 

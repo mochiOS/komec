@@ -231,7 +231,7 @@ fn standard_library_imports(module: &Module) -> Vec<Vec<String>> {
         };
 
         for import in &use_declaration.imports {
-            let UseImport::Module(path) = import else {
+            let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import else {
                 continue;
             };
 

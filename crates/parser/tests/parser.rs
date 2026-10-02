@@ -82,6 +82,48 @@ fn parses_double_colon_use_declaration() {
 }
 
 #[test]
+fn parses_aliased_and_wildcard_imports() {
+    let module = parse("use std::io as console\nuse std::net::*").unwrap();
+
+    let Declaration::Use(alias_declaration) = &module.declarations[0] else {
+        panic!("expected use declaration");
+    };
+    assert!(matches!(
+        &alias_declaration.imports[0],
+        UseImport::AliasedModule { path, alias }
+            if path.segments.len() == 2
+                && alias.kind == PathSegmentKind::Ident("console".into())
+    ));
+
+    let Declaration::Use(wildcard_declaration) = &module.declarations[1] else {
+        panic!("expected use declaration");
+    };
+    assert!(matches!(
+        &wildcard_declaration.imports[0],
+        UseImport::WildcardFrom { path, .. } if path.segments.len() == 2
+    ));
+}
+
+#[test]
+fn parses_qualified_expression_names() {
+    let module = parse("fn main() { io::println(\"hello\") }").unwrap();
+    let Declaration::Function(main) = &module.declarations[0] else {
+        panic!("expected function declaration");
+    };
+    let statement = &main.body.as_ref().unwrap().statements[0];
+    let kome_ast::statements::Statement::Expression(statement) = statement else {
+        panic!("expected expression statement");
+    };
+    let Expression::Call(call) = &statement.expression else {
+        panic!("expected call expression");
+    };
+    assert!(matches!(
+        call.callee.as_ref(),
+        Expression::Ident(identifier) if identifier.name == "io::println"
+    ));
+}
+
+#[test]
 fn parses_task_keyword_in_use_path() {
     let source = "use std::task";
     let module = parse(source).unwrap();

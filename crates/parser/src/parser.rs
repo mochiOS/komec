@@ -1930,7 +1930,18 @@ impl Parser {
 
             TokenKind::Null => Ok(Expression::literal(LiteralKind::Null, span)),
 
-            TokenKind::Ident(name) => Ok(Expression::ident(name, span)),
+            TokenKind::Ident(mut name) => {
+                let mut end = span.end;
+                while self.at(|kind| matches!(kind, TokenKind::ColonColon)) {
+                    self.advance();
+                    let (segment, segment_span) =
+                        self.expect_identifier("a path segment after `::`")?;
+                    name.push_str("::");
+                    name.push_str(&segment);
+                    end = segment_span.end;
+                }
+                Ok(Expression::ident(name, Span::new(span.start, end)))
+            }
 
             TokenKind::Self_ => Ok(Expression::ident("self", span)),
 
@@ -2305,9 +2316,15 @@ impl Parser {
                 let start = token_span.start;
                 let mut end = token_span.end;
 
+                let mut wildcard_span = None;
                 loop {
                     if self.at(|kind| matches!(kind, TokenKind::ColonColon)) {
                         self.advance();
+                        if self.at(|kind| matches!(kind, TokenKind::Star)) {
+                            let star = self.advance();
+                            wildcard_span = Some(Span::new(start, star.span.end));
+                            break;
+                        }
                         separators.push(PathSeparator::ColonColon);
 
                         let segment_token = self.advance();
@@ -2340,11 +2357,31 @@ impl Parser {
                     }
                 }
 
-                Ok(UseImport::Module(Path {
+                let path = Path {
                     span: Span::new(start, end),
                     segments,
                     separators,
-                }))
+                };
+
+                if let Some(span) = wildcard_span {
+                    return Ok(UseImport::WildcardFrom { path, span });
+                }
+
+                let alias = if self.at(|kind| matches!(kind, TokenKind::As)) {
+                    self.advance();
+                    let (name, span) = self.expect_identifier("an import alias after `as`")?;
+                    Some(PathSegment {
+                        span,
+                        kind: PathSegmentKind::Ident(name),
+                    })
+                } else {
+                    None
+                };
+
+                match alias {
+                    Some(alias) => Ok(UseImport::AliasedModule { path, alias }),
+                    None => Ok(UseImport::Module(path)),
+                }
             }
 
             found => Err(ParseError::new(
