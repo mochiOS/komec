@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitStatus};
 
+pub mod docs;
+
 /// The conventional Kome project manifest filename.
 pub const MANIFEST_FILE: &str = "Kome.toml";
 
@@ -149,6 +151,22 @@ impl Project {
         Ok(source)
     }
 
+    /// Resolves every source file belonging to the package library target.
+    pub fn library_sources(&self) -> Result<Vec<PathBuf>, String> {
+        let target = self.manifest.lib.as_ref().ok_or_else(|| {
+            format!(
+                "package `{}` has no `[lib]` target",
+                self.manifest.package.name
+            )
+        })?;
+        let mut sources = vec![self.root.join(&target.source)];
+        sources.extend(target.sources.iter().map(|source| self.root.join(source)));
+        for source in &sources {
+            require_file(source, "library source")?;
+        }
+        Ok(sources)
+    }
+
     /// Resolves local and system dependencies recursively in deterministic order.
     pub fn dependencies(&self) -> Result<Vec<ResolvedDependency>, String> {
         self.dependencies_with_system_roots(&system_package_roots())
@@ -283,6 +301,8 @@ pub enum Command {
     Run,
     /// Runs each `tests/*.kome` integration test.
     Test,
+    /// Generates package reference documentation.
+    Doc,
 }
 
 /// Options accepted by the `kome` command line.
@@ -309,6 +329,7 @@ impl Cli {
             Some("build") => Command::Build,
             Some("run") => Command::Run,
             Some("test") => Command::Test,
+            Some("doc") => Command::Doc,
             Some(command) => return Err(format!("unknown command `{command}`\n{USAGE}")),
             None => return Err(USAGE.to_owned()),
         };
@@ -325,7 +346,7 @@ impl Cli {
                             .into(),
                     );
                 }
-                Some("--output") if command == Command::Build => {
+                Some("--output") if matches!(command, Command::Build | Command::Doc) => {
                     output = Some(
                         arguments
                             .next()
@@ -396,6 +417,18 @@ pub fn execute(cli: &Cli, current_directory: &Path) -> Result<(), String> {
             println!("built `{}`", output.display());
         }
         Command::Test => run_tests(&compiler, &project, &dependencies)?,
+        Command::Doc => {
+            let output = match &cli.output {
+                Some(path) if path.is_absolute() => path.clone(),
+                Some(path) => current_directory.join(path),
+                None => project
+                    .root()
+                    .join("target/doc")
+                    .join(format!("{}.md", project.manifest().package.name)),
+            };
+            docs::generate_reference(&project, &output)?;
+            println!("generated `{}`", output.display());
+        }
     }
 
     Ok(())
@@ -410,7 +443,7 @@ pub fn execute_from_env() -> Result<(), String> {
 }
 
 const USAGE: &str =
-    "usage: kome <check|build|run|test> [--manifest-path <Kome.toml>] [--output <path>]";
+    "usage: kome <check|build|run|test|doc> [--manifest-path <Kome.toml>] [--output <path>]";
 
 fn run_tests(
     compiler: &Path,

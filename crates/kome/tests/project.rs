@@ -1,3 +1,4 @@
+use kome::docs::generate_reference;
 use kome::{Cli, Command, Project};
 use std::fs;
 use std::path::Path;
@@ -115,4 +116,55 @@ fn parses_project_commands_and_build_options() {
         Some(std::path::PathBuf::from("examples/Kome.toml"))
     );
     assert_eq!(cli.output, Some(std::path::PathBuf::from("build/app")));
+}
+
+#[test]
+fn parses_documentation_output_options() {
+    let cli = Cli::parse(["doc".into(), "--output".into(), "reference/api.md".into()]).unwrap();
+
+    assert_eq!(cli.command, Command::Doc);
+    assert_eq!(
+        cli.output,
+        Some(std::path::PathBuf::from("reference/api.md"))
+    );
+}
+
+#[test]
+fn generates_reference_for_public_library_apis() {
+    let root = fixture("documentation");
+    write(
+        &root.join("Kome.toml"),
+        "[package]\nname = \"sample\"\nversion = \"1.0.0\"\n[lib]\nsource = \"src/lib.kome\"\n",
+    );
+    write(
+        &root.join("src/lib.kome"),
+        r#"/// 公開する値です。
+pub struct Value {
+    /// 数値です。
+    pub number: Number,
+    hidden: Number,
+}
+
+for Value {
+    /// 数値を返します。
+    pub fn get(self) -> Number { return self.number }
+    fn hidden(self) {}
+}
+
+fn internal() {}
+"#,
+    );
+    let project = Project::load(&root.join("Kome.toml")).unwrap();
+    let output = root.join("target/doc/sample.md");
+
+    generate_reference(&project, &output).unwrap();
+    let generated = fs::read_to_string(output).unwrap();
+
+    assert!(generated.contains("# sample"));
+    assert!(generated.contains("構造体 `Value`"));
+    assert!(generated.contains("公開する値です。"));
+    assert!(generated.contains("フィールド `number`"));
+    assert!(generated.contains("関数 `Value.get`"));
+    assert!(!generated.contains("internal"));
+    assert!(!generated.contains("Value.hidden"));
 }

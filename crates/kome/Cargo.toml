@@ -9,5 +9,7 @@ name = "kome"
 path = "src/main.rs"
 
 [dependencies]
+kome_ast.workspace = true
+kome_parser.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "1.1.2"
