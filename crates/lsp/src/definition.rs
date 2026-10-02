@@ -58,19 +58,90 @@ pub fn definition_at(
      * ASTs. This avoids losing source-file identity while modules are
      * combined for semantic analysis.
      */
-    standard_symbol_definition(&target_reference.name, &standard_modules)
+    standard_symbol_definition(&target_reference.name, &application, &standard_modules)
 }
 
-fn standard_symbol_definition(name: &str, modules: &[LoadedModule]) -> Option<Location> {
-    for loaded in modules {
-        let Some(definition_span) = find_top_level_definition(&loaded.module, name) else {
+fn standard_symbol_definition(
+    name: &str,
+    application: &Module,
+    modules: &[LoadedModule],
+) -> Option<Location> {
+    let (loaded, symbol) = imported_symbol(name, application, modules)?;
+    let definition_span = find_top_level_definition(&loaded.module, &symbol)?;
+
+    loaded_location(loaded, definition_span)
+}
+
+fn imported_symbol<'a>(
+    name: &str,
+    application: &Module,
+    modules: &'a [LoadedModule],
+) -> Option<(&'a LoadedModule, String)> {
+    for declaration in &application.declarations {
+        let Declaration::Use(use_declaration) = declaration else {
             continue;
         };
+        for import in &use_declaration.imports {
+            let (path, alias, wildcard) = match import {
+                UseImport::Module(path) => (path, None, false),
+                UseImport::AliasedModule { path, alias } => {
+                    let kome_ast::declarations::PathSegmentKind::Ident(alias) = &alias.kind else {
+                        continue;
+                    };
+                    (path, Some(alias.as_str()), false)
+                }
+                UseImport::WildcardFrom { path, .. } => (path, None, true),
+                UseImport::Wildcard { .. } => continue,
+            };
+            let segments = identifier_segments(path);
+            let module = modules.iter().find(|loaded| loaded.name == segments);
+            if let Some(module) = module {
+                if wildcard && find_top_level_definition(&module.module, name).is_some() {
+                    return Some((module, name.to_owned()));
+                }
+                let local = alias
+                    .unwrap_or_else(|| segments.last().map(String::as_str).unwrap_or_default());
+                if let Some(symbol) = name.strip_prefix(&format!("{local}::")) {
+                    return Some((module, symbol.to_owned()));
+                }
+                continue;
+            }
 
-        return loaded_location(loaded, definition_span);
+            let (symbol, module_segments) = segments.split_last()?;
+            let module = modules
+                .iter()
+                .find(|loaded| loaded.name == module_segments)?;
+            let local = alias.unwrap_or(symbol);
+            if name == local {
+                return Some((module, symbol.clone()));
+            }
+        }
     }
 
+    let parts = name.split("::").collect::<Vec<_>>();
+    for loaded in modules {
+        let module_len = loaded.name.len();
+        if parts.len() == module_len + 1
+            && loaded
+                .name
+                .iter()
+                .map(String::as_str)
+                .eq(parts[..module_len].iter().copied())
+        {
+            return Some((loaded, parts[module_len].to_owned()));
+        }
+    }
     None
+}
+
+fn identifier_segments(path: &kome_ast::declarations::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .filter_map(|segment| match &segment.kind {
+            kome_ast::declarations::PathSegmentKind::Ident(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn find_top_level_definition(module: &Module, name: &str) -> Option<Span> {
@@ -84,6 +155,16 @@ fn find_top_level_definition(module: &Module, name: &str) -> Option<Span> {
 
             Declaration::Enum(enum_declaration) if enum_declaration.name == name => {
                 Some(enum_declaration.span)
+            }
+
+            Declaration::Struct(declaration) if declaration.name == name => Some(declaration.span),
+
+            Declaration::Trait(declaration) if declaration.name == name => Some(declaration.span),
+
+            Declaration::Constant(binding)
+                if matches!(&binding.pattern, kome_ast::patterns::Pattern::Ident(value) if value.name == name) =>
+            {
+                Some(binding.span)
             }
 
             _ => None,
@@ -102,8 +183,11 @@ fn import_definition_at(
         };
 
         for import in &use_declaration.imports {
-            let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import else {
-                continue;
+            let path = match import {
+                UseImport::Module(path)
+                | UseImport::AliasedModule { path, .. }
+                | UseImport::WildcardFrom { path, .. } => path,
+                UseImport::Wildcard { .. } => continue,
             };
 
             if !span_contains_cursor(path.span, byte_offset) {
@@ -127,7 +211,14 @@ fn import_definition_at(
                 continue;
             }
 
-            let loaded = find_imported_module(standard_library.root(), modules, &segments)?;
+            let loaded = find_imported_module(standard_library.root(), modules, &segments)
+                .or_else(|| {
+                    segments
+                        .get(..segments.len().saturating_sub(1))
+                        .and_then(|segments| {
+                            find_imported_module(standard_library.root(), modules, segments)
+                        })
+                })?;
 
             return loaded_location(loaded, Span::new(0, 0));
         }

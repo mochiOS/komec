@@ -114,3 +114,20 @@ fn reports_invalid_let_location_diagnostic() {
     assert_eq!(diagnostics.len(), 1);
     assert!(diagnostics[0].message.contains("`let` is not allowed"));
 }
+
+#[test]
+fn resolves_qualified_standard_library_names() {
+    let source = "use std::io\nfn main() { io::println(\"hello\") }";
+    assert!(syntax_diagnostics(source).is_empty());
+}
+
+#[test]
+fn does_not_import_module_members_into_the_global_namespace() {
+    let source = "use std::io\nfn main() { println(\"hello\") }";
+    let diagnostics = syntax_diagnostics(source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("undefined name `println`"))
+    );
+}

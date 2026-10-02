@@ -3,6 +3,7 @@ use kome_ast::Span;
 use kome_ast::declarations::{Declaration, Module, UseImport};
 use kome_parser::{FrontendError, LexError, LexErrorKind, ParseError, ParseErrorKind};
 use kome_semantics::error::ResolutionError;
+use kome_semantics::modules::{SourceModule, link_modules};
 use kome_semantics::resolver::ScopeBuilder;
 use komec::stdlib::StandardLibrary;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
@@ -17,8 +18,36 @@ pub fn syntax_diagnostics(source: &str) -> Vec<Diagnostic> {
             let std_import_span = standard_library_import_span(&module);
 
             let module = match StandardLibrary::discover() {
-                Ok(standard_library) => match standard_library.merge_with_imports(module) {
-                    Ok(module) => module,
+                Ok(standard_library) => match standard_library.modules_for(&module) {
+                    Ok(loaded) => {
+                        let mut sources = loaded
+                            .into_iter()
+                            .map(|loaded| {
+                                SourceModule::new(
+                                    "std",
+                                    loaded.name.into_iter().skip(1).collect(),
+                                    loaded.module,
+                                    false,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        sources.push(SourceModule::new("__app", Vec::new(), module, true));
+                        match link_modules(sources) {
+                            Ok(module) => module,
+                            Err(errors) => {
+                                return errors
+                                    .into_iter()
+                                    .map(|error| {
+                                        standard_library_error_to_diagnostic(
+                                            source,
+                                            error.span,
+                                            error.message,
+                                        )
+                                    })
+                                    .collect();
+                            }
+                        }
+                    }
 
                     Err(error) => {
                         return vec![standard_library_error_to_diagnostic(
@@ -167,8 +196,11 @@ fn standard_library_import_span(module: &Module) -> Option<Span> {
         };
 
         for import in &use_declaration.imports {
-            let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import else {
-                continue;
+            let path = match import {
+                UseImport::Module(path)
+                | UseImport::AliasedModule { path, .. }
+                | UseImport::WildcardFrom { path, .. } => path,
+                UseImport::Wildcard { .. } => continue,
             };
 
             let is_installed = path.segments.first().is_some_and(|segment| {
