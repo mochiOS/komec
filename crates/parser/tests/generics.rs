@@ -1,5 +1,7 @@
 use kome_ast::declarations::Declaration;
 use kome_ast::expressions::Expression;
+use kome_ast::patterns::Pattern;
+use kome_ast::types::{PrimitiveTypeKind, Type};
 
 #[test]
 fn parses_generic_declarations_and_specializations() {
@@ -54,4 +56,30 @@ fn main() {
 fn keeps_less_than_as_a_binary_operator() {
     let expression = kome_parser::parse_expression("left < right").unwrap();
     assert!(matches!(expression, Expression::Binary(_)));
+}
+
+#[test]
+fn parses_function_types_in_parameters() {
+    let module = kome_parser::parse(
+        "fn apply(value: Number, transform: (item: Number) => String) -> String { return transform(value) }",
+    )
+    .unwrap();
+    let Declaration::Function(function) = &module.declarations[0] else {
+        panic!()
+    };
+    let Pattern::Ident(transform) = &function.params[1] else {
+        panic!()
+    };
+    let Type::Function(function_type) = transform.type_annotation.as_ref().unwrap() else {
+        panic!()
+    };
+    assert_eq!(function_type.params.len(), 1);
+    assert!(matches!(
+        function_type.params[0].type_,
+        Type::Primitive(ref value) if value.kind == PrimitiveTypeKind::Number
+    ));
+    assert!(matches!(
+        function_type.return_type.as_ref(),
+        Type::Primitive(value) if value.kind == PrimitiveTypeKind::String
+    ));
 }
