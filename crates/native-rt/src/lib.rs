@@ -33,6 +33,7 @@ use std::ffi::{CStr, c_char};
 use std::fmt;
 use std::io::Write;
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 /// A value exchanged between Kome code and a registered native function.
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +139,7 @@ pub fn builtin_registry() -> NativeRegistry {
     registry.register("io.socket_read", io_socket_read);
     registry.register("io.socket_write", io_socket_write);
     registry.register("io.socket_close", io_socket_close);
+    registry.register("time.monotonic_milliseconds", monotonic_milliseconds);
     registry
 }
 
@@ -148,6 +150,20 @@ fn integer_argument(value: &Value, name: &str) -> Result<i64, RuntimeError> {
     value
         .to_i64()
         .ok_or_else(|| RuntimeError::native(format!("{name} must be an integer in i64 range")))
+}
+
+fn monotonic_milliseconds(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    if !arguments.is_empty() {
+        return Err(RuntimeError::native(
+            "time.monotonic_milliseconds expects no arguments",
+        ));
+    }
+
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    let elapsed = ORIGIN.get_or_init(Instant::now).elapsed().as_millis();
+    let elapsed = i64::try_from(elapsed).unwrap_or(i64::MAX);
+
+    Ok(Value::Number(Number::from_i64(elapsed)))
 }
 
 fn io_sleep(arguments: &[Value]) -> Result<Value, RuntimeError> {
