@@ -43,6 +43,26 @@ extern "C" from "viewkit" {
 }
 
 #[test]
+fn parses_public_external_items() {
+    let module =
+        kome_parser::parse("extern \"C\" { pub struct Handle pub fn open() -> *mut Handle }")
+            .unwrap();
+    let Declaration::Extern(declaration) = &module.declarations[0] else {
+        panic!("expected external declaration");
+    };
+    assert!(matches!(
+        &declaration.items[0],
+        kome_ast::declarations::ExternItem::Struct(value)
+            if value.visibility == kome_ast::declarations::Visibility::Public
+    ));
+    assert!(matches!(
+        &declaration.items[1],
+        kome_ast::declarations::ExternItem::Function(value)
+            if value.visibility == kome_ast::declarations::Visibility::Public
+    ));
+}
+
+#[test]
 fn parses_process_external_symbols_without_a_library() {
     let module = kome_parser::parse("extern \"C\" { fn host_version() -> u32 }").unwrap();
     let Declaration::Extern(external) = &module.declarations[0] else {

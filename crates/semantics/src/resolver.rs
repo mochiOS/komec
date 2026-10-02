@@ -871,9 +871,13 @@ impl ScopeBuilder {
     }
 
     fn visit_named_type(&mut self, named: &NamedType) {
-        let root = named.name.split("::").next().unwrap_or(&named.name);
-        if root != "Task" {
-            self.record_reference(root, named.span);
+        if self.resolve_name(&named.name).is_some() {
+            self.record_reference(&named.name, named.span);
+        } else {
+            let root = named.name.split("::").next().unwrap_or(&named.name);
+            if root != "Task" {
+                self.record_reference(root, named.span);
+            }
         }
 
         for arg in &named.type_arguments {

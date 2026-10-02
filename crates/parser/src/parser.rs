@@ -221,12 +221,14 @@ impl Parser {
             if self.current().is_eof() {
                 return Err(self.expected("`}`"));
             }
+            let visibility = self.parse_visibility()?;
             if self.at(|kind| matches!(kind, TokenKind::Struct)) {
-                items.push(ExternItem::Struct(
-                    self.parse_struct_declaration(Vec::new())?,
-                ));
+                let mut declaration = self.parse_struct_declaration(Vec::new())?;
+                declaration.visibility = visibility;
+                items.push(ExternItem::Struct(declaration));
             } else if self.at(|kind| matches!(kind, TokenKind::Fn)) {
-                let function = self.parse_function_declaration(Vec::new())?;
+                let mut function = self.parse_function_declaration(Vec::new())?;
+                function.visibility = visibility;
                 if function.body.is_some() {
                     return Err(ParseError::new(
                         ParseErrorKind::Expected {
