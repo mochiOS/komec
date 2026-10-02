@@ -202,3 +202,26 @@ fn rejects_private_types_in_public_signatures() {
             .contains("public API exposes less-visible type")
     }));
 }
+
+#[test]
+fn rejects_cyclic_module_imports() {
+    let errors = link_modules(vec![
+        source(
+            "library",
+            &["first"],
+            "use library::second\npub fn first() {}",
+            false,
+        ),
+        source(
+            "library",
+            &["second"],
+            "use library::first\npub fn second() {}",
+            false,
+        ),
+    ])
+    .unwrap_err();
+
+    assert!(errors.iter().any(|error| {
+        error.message == "cyclic module import: library::first -> library::second -> library::first"
+    }));
+}

@@ -93,6 +93,7 @@ struct ModuleIndex {
 pub fn link_modules(mut sources: Vec<SourceModule>) -> Result<Module, Vec<ModuleError>> {
     let index = build_index(&sources);
     let mut errors = Vec::new();
+    validate_import_cycles(&sources, &index, &mut errors);
     let mut declarations = Vec::new();
     let span = sources
         .iter()
@@ -159,6 +160,94 @@ pub fn link_modules(mut sources: Vec<SourceModule>) -> Result<Module, Vec<Module
     } else {
         Err(errors)
     }
+}
+
+fn validate_import_cycles(
+    sources: &[SourceModule],
+    index: &ModuleIndex,
+    errors: &mut Vec<ModuleError>,
+) {
+    let mut graph: HashMap<String, Vec<(String, Span)>> = HashMap::new();
+    for source in sources {
+        let module = source.canonical_path();
+        let edges = graph.entry(module.clone()).or_default();
+        for declaration in &source.module.declarations {
+            let Declaration::Use(declaration) = declaration else {
+                continue;
+            };
+            for import in &declaration.imports {
+                let (path, span) = match import {
+                    UseImport::Module(path) | UseImport::AliasedModule { path, .. } => {
+                        (path, path.span)
+                    }
+                    UseImport::WildcardFrom { path, span } => (path, *span),
+                    UseImport::Wildcard { .. } => continue,
+                };
+                let canonical = normalize_path(source, path);
+                let target = if index.modules.contains(&canonical) {
+                    Some(canonical)
+                } else {
+                    index
+                        .declarations
+                        .get(&canonical)
+                        .map(|export| export.module.clone())
+                };
+                if let Some(target) = target
+                    && target != module
+                {
+                    edges.push((target, span));
+                }
+            }
+        }
+    }
+
+    let mut visited = HashSet::new();
+    let mut visiting = HashSet::new();
+    let mut stack = Vec::new();
+    for source in sources {
+        let module = source.canonical_path();
+        find_import_cycle(
+            &module,
+            &graph,
+            &mut visited,
+            &mut visiting,
+            &mut stack,
+            errors,
+        );
+    }
+}
+
+fn find_import_cycle(
+    module: &str,
+    graph: &HashMap<String, Vec<(String, Span)>>,
+    visited: &mut HashSet<String>,
+    visiting: &mut HashSet<String>,
+    stack: &mut Vec<String>,
+    errors: &mut Vec<ModuleError>,
+) {
+    if visited.contains(module) || !visiting.insert(module.to_owned()) {
+        return;
+    }
+    stack.push(module.to_owned());
+
+    if let Some(edges) = graph.get(module) {
+        for (target, span) in edges {
+            if let Some(start) = stack.iter().position(|entry| entry == target) {
+                let mut cycle = stack[start..].to_vec();
+                cycle.push(target.clone());
+                errors.push(ModuleError {
+                    message: format!("cyclic module import: {}", cycle.join(" -> ")),
+                    span: *span,
+                });
+                continue;
+            }
+            find_import_cycle(target, graph, visited, visiting, stack, errors);
+        }
+    }
+
+    stack.pop();
+    visiting.remove(module);
+    visited.insert(module.to_owned());
 }
 
 fn validate_public_api(
