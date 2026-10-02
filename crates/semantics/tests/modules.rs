@@ -290,3 +290,26 @@ fn rejects_reexports_that_widen_visibility() {
             .any(|error| error.message.contains("wider visibility"))
     );
 }
+
+#[test]
+fn keeps_declarations_visible_across_files_in_one_module_with_reexports() {
+    let linked = link_modules(vec![
+        source("dependency", &[], "pub struct External {}", false),
+        source(
+            "library",
+            &[],
+            "pub struct Local {}\npub use dependency::External",
+            false,
+        ),
+        source(
+            "library",
+            &[],
+            "pub fn make() -> Local { return Local {} }",
+            false,
+        ),
+    ])
+    .unwrap();
+
+    assert!(ScopeBuilder::resolve(&linked).errors.is_empty());
+    assert!(TypeChecker::check(&linked).errors.is_empty());
+}

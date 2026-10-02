@@ -102,15 +102,19 @@ pub fn link_modules(mut sources: Vec<SourceModule>) -> Result<Module, Vec<Module
 
     for source in &mut sources {
         let module_name = source.canonical_path();
-        let local_names = declaration_names(&source.module)
+        let local_names = index
+            .module_declarations
+            .get(&module_name)
             .into_iter()
+            .flatten()
+            .filter(|(name, export)| export.target == format!("{module_name}::{name}"))
             .map(|(name, _)| {
                 let canonical = if source.application {
                     name.clone()
                 } else {
                     format!("{module_name}::{name}")
                 };
-                (name, canonical)
+                (name.clone(), canonical)
             })
             .collect::<HashMap<_, _>>();
         let resolution = ScopeBuilder::resolve(&source.module);

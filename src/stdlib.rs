@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_only_explicitly_imported_modules() {
+    fn loads_explicit_and_transitive_standard_modules() {
         let standard_library =
             StandardLibrary::load(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/stdlib"))
                 .unwrap();
@@ -344,7 +344,7 @@ mod tests {
         let imported = kome_parser::parse("use std::core\nuse std::net\nfn main() {}").unwrap();
         let modules = standard_library.modules_for(&imported).unwrap();
 
-        assert_eq!(modules.len(), 2);
+        assert_eq!(modules.len(), 3);
         assert!(
             modules
                 .iter()
@@ -354,6 +354,11 @@ mod tests {
             modules
                 .iter()
                 .any(|module| module.path.ends_with("net/mod.kome"))
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.path.ends_with("io/mod.kome"))
         );
     }
 }
