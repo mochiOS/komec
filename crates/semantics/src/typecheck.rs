@@ -313,6 +313,8 @@ pub struct TypeChecker {
     implementations: Vec<TypeImplementationInfo>,
     return_type: SemanticType,
     loop_depth: usize,
+    in_drop_body: bool,
+    allow_drop_self_access: bool,
     errors: Vec<TypeCheckError>,
 }
 
@@ -328,6 +330,8 @@ impl TypeChecker {
             implementations: Vec::new(),
             return_type: SemanticType::Void,
             loop_depth: 0,
+            in_drop_body: false,
+            allow_drop_self_access: false,
             errors: Vec::new(),
         };
 
@@ -598,6 +602,7 @@ impl TypeChecker {
     }
 
     fn validate_implementations(&mut self, module: &Module) {
+        let mut drop_targets = Vec::new();
         for (index, declaration) in module
             .declarations
             .iter()
@@ -620,6 +625,33 @@ impl TypeChecker {
                 continue;
             };
             let target = self.implementations[index].target.clone();
+            if trait_name == "Drop" {
+                let target_name = match &target {
+                    SemanticType::Named(name) | SemanticType::Applied(name, _) => Some(name),
+                    _ => None,
+                };
+                let is_user_struct = target_name
+                    .and_then(|name| self.structs.get(name))
+                    .is_some_and(|info| info.runtime.is_none() && info.fields.is_some());
+                if !is_user_struct {
+                    self.errors.push(TypeCheckError {
+                        message: "`Drop` can only be implemented by a user-defined struct"
+                            .to_owned(),
+                        span: declaration.span,
+                    });
+                }
+                if drop_targets.iter().any(|existing| existing == &target) {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "type `{}` has more than one `Drop` implementation",
+                            target.name()
+                        ),
+                        span: declaration.span,
+                    });
+                } else {
+                    drop_targets.push(target.clone());
+                }
+            }
             if trait_info.type_parameters.len() != trait_arguments.len() {
                 self.errors.push(TypeCheckError {
                     message: format!(
@@ -861,7 +893,13 @@ impl TypeChecker {
         }
         for member in &declaration.members {
             if let TypeMember::Function(function) = member {
+                let previous_drop_body = self.in_drop_body;
+                self.in_drop_body = matches!(
+                    declaration.trait_.as_ref(),
+                    Some(Type::Named(named)) if named.name == "Drop"
+                ) && function.name == "drop";
                 self.visit_function_with_self(function, Some(&target));
+                self.in_drop_body = previous_drop_body;
             }
         }
         self.exit_scope();
@@ -1080,9 +1118,16 @@ impl TypeChecker {
                 LiteralKind::Null => SemanticType::Null,
             },
 
-            Expression::Ident(identifier) => self
-                .resolve(&identifier.name)
-                .unwrap_or(SemanticType::Unknown),
+            Expression::Ident(identifier) => {
+                if self.in_drop_body && identifier.name == "self" && !self.allow_drop_self_access {
+                    self.errors.push(TypeCheckError {
+                        message: "destructor `self` may only be used to access fields".to_owned(),
+                        span: identifier.span,
+                    });
+                }
+                self.resolve(&identifier.name)
+                    .unwrap_or(SemanticType::Unknown)
+            }
 
             Expression::Unary(unary) => match unary.op {
                 UnaryOp::Not => {
@@ -1203,7 +1248,14 @@ impl TypeChecker {
                         .cloned()
                         .unwrap_or(SemanticType::Unknown);
                 }
+                let previous_access = self.allow_drop_self_access;
+                if self.in_drop_body
+                    && matches!(member.object.as_ref(), Expression::Ident(identifier) if identifier.name == "self")
+                {
+                    self.allow_drop_self_access = true;
+                }
                 let object = self.infer_expression(&member.object, None);
+                self.allow_drop_self_access = previous_access;
 
                 match object {
                     SemanticType::Named(name) => self
@@ -1543,7 +1595,7 @@ impl TypeChecker {
                 Some(target) => target.clone(),
                 None => self.infer_expression(&member.object, None),
             };
-            let signature = self.implementations.iter().find_map(|implementation| {
+            let resolved = self.implementations.iter().find_map(|implementation| {
                 let mut substitutions = HashMap::new();
                 if implementation.target != target
                     && infer_type_parameters(&implementation.target, &target, &mut substitutions)
@@ -1554,20 +1606,34 @@ impl TypeChecker {
                 implementation
                     .methods
                     .get(&member.property)
-                    .map(|signature| FunctionSignature {
-                        params: signature
-                            .params
-                            .iter()
-                            .map(|parameter| ParameterType {
-                                name: parameter.name.clone(),
-                                type_: substitute_semantic(&parameter.type_, &substitutions),
-                            })
-                            .collect(),
-                        return_type: substitute_semantic(&signature.return_type, &substitutions),
-                        type_parameters: Vec::new(),
+                    .map(|signature| {
+                        (
+                            FunctionSignature {
+                                params: signature
+                                    .params
+                                    .iter()
+                                    .map(|parameter| ParameterType {
+                                        name: parameter.name.clone(),
+                                        type_: substitute_semantic(
+                                            &parameter.type_,
+                                            &substitutions,
+                                        ),
+                                    })
+                                    .collect(),
+                                return_type: substitute_semantic(
+                                    &signature.return_type,
+                                    &substitutions,
+                                ),
+                                type_parameters: Vec::new(),
+                            },
+                            matches!(
+                                implementation.trait_.as_ref(),
+                                Some(SemanticType::Named(name)) if name == "Drop"
+                            ),
+                        )
                     })
             });
-            let Some(signature) = signature else {
+            let Some((signature, is_destructor)) = resolved else {
                 for argument in &call.args {
                     self.infer_expression(
                         match argument {
@@ -1579,6 +1645,12 @@ impl TypeChecker {
                 }
                 return SemanticType::Unknown;
             };
+            if is_destructor {
+                self.errors.push(TypeCheckError {
+                    message: "destructor `drop` cannot be called directly".to_owned(),
+                    span: call.span,
+                });
+            }
             let has_self = signature
                 .params
                 .first()

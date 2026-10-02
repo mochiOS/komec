@@ -188,6 +188,39 @@ fn main() {
 }
 
 #[test]
+fn runs_a_struct_destructor_once_for_the_final_reference() {
+    let stdout = build_and_run(
+        r#"
+trait Drop {
+    fn drop(self)
+}
+
+@native("core.write_line")
+fn printLine(value: String)
+
+struct Resource {
+    value: i32,
+}
+
+for Resource: Drop {
+    fn drop(self) {
+        printLine("dropped")
+    }
+}
+
+fn main() {
+    let resource = Resource { value: 42 }
+    let copy = resource
+    resource.value
+    copy.value
+}
+"#,
+    );
+
+    assert_eq!(stdout, "dropped\n");
+}
+
+#[test]
 fn builds_and_runs_number_arithmetic() {
     let stdout = build_and_run(
         r#"

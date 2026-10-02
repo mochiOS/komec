@@ -5,6 +5,7 @@ use kome_native_rt::string::KomeString;
 use kome_native_rt::{
     NativeRegistry, RuntimeError, Value, clear_thread_registry, set_thread_registry,
 };
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A single-argument capture sink installed as a native function.
@@ -156,6 +157,50 @@ fn main() {
 
     assert_eq!(capture.recorded(), vec![Value::Boolean(true)]);
 
+    clear_thread_registry();
+}
+
+#[test]
+fn runs_a_struct_destructor_once_for_the_final_reference() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let recorded = Arc::clone(&drops);
+    let mut registry = NativeRegistry::new();
+    registry.register("test.record_drop", move |arguments: &[Value]| {
+        if !arguments.is_empty() {
+            return Err(RuntimeError::native("record_drop expects no arguments"));
+        }
+        recorded.fetch_add(1, Ordering::SeqCst);
+        Ok(Value::Null)
+    });
+    set_thread_registry(registry);
+
+    run(r#"
+trait Drop {
+    fn drop(self)
+}
+
+@native("test.record_drop")
+fn recordDrop()
+
+struct Resource {
+    value: i32,
+}
+
+for Resource: Drop {
+    fn drop(self) {
+        recordDrop()
+    }
+}
+
+fn main() {
+    let resource = Resource { value: 42 }
+    let copy = resource
+    resource.value
+    copy.value
+}
+"#);
+
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
     clear_thread_registry();
 }
 

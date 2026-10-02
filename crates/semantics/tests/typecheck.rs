@@ -488,6 +488,51 @@ fn main() {
 }
 
 #[test]
+fn validates_drop_implementations_and_rejects_direct_calls() {
+    let valid = parse(
+        "trait Drop { fn drop(self) }\nstruct Resource { raw: Number }\nfor Resource: Drop { fn drop(self) {} }\nfn main() { let resource = Resource { raw: 1 } }",
+    )
+    .unwrap();
+    let valid_result = TypeChecker::check(&valid);
+    assert!(valid_result.errors.is_empty(), "{:?}", valid_result.errors);
+
+    let direct = parse(
+        "trait Drop { fn drop(self) }\nstruct Resource { raw: Number }\nfor Resource: Drop { fn drop(self) {} }\nfn main() { let resource = Resource { raw: 1 }\nresource.drop() }",
+    )
+    .unwrap();
+    let direct_result = TypeChecker::check(&direct);
+    assert!(
+        direct_result
+            .errors
+            .iter()
+            .any(|error| error.message == "destructor `drop` cannot be called directly"),
+        "{:?}",
+        direct_result
+    );
+
+    let runtime = parse(
+        "trait Drop { fn drop(self) }\n@runtime(\"string\") struct Text\nfor Text: Drop { fn drop(self) {} }",
+    )
+    .unwrap();
+    assert!(TypeChecker::check(&runtime).errors.iter().any(|error| {
+        error.message == "`Drop` can only be implemented by a user-defined struct"
+    }));
+
+    let escaping_self = parse(
+        "trait Drop { fn drop(self) }\nstruct Resource { raw: Number }\nfor Resource: Drop { fn drop(self) { let escaped = self } }",
+    )
+    .unwrap();
+    assert!(
+        TypeChecker::check(&escaping_self)
+            .errors
+            .iter()
+            .any(|error| {
+                error.message == "destructor `self` may only be used to access fields"
+            })
+    );
+}
+
+#[test]
 fn rejects_trait_implementation_missing_a_required_method() {
     let module = parse(
         r#"

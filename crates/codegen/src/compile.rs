@@ -242,6 +242,26 @@ impl ModuleInfo {
             .min_by_key(|(implementation, _, _)| implementation.trait_name.is_some())
     }
 
+    fn drop_method(&self, target: KomeType) -> Option<&ImplementationMethod> {
+        self.implementations
+            .iter()
+            .find(|implementation| {
+                implementation.target == target
+                    && implementation.trait_name.as_deref() == Some("Drop")
+            })
+            .and_then(|implementation| implementation.methods.get("drop"))
+    }
+
+    fn is_drop_function(&self, function_key: &str) -> bool {
+        self.implementations.iter().any(|implementation| {
+            implementation.trait_name.as_deref() == Some("Drop")
+                && implementation
+                    .methods
+                    .get("drop")
+                    .is_some_and(|method| method.function_key == function_key)
+        })
+    }
+
     /// The entry point's signature, validated for direct invocation.
     pub fn entry_signature(&self, entry: &str) -> CodegenResult<&FunctionSignature> {
         match self.get(entry) {
@@ -782,6 +802,25 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &list_types,
                 &optional_types,
             )?;
+            if trait_name == "Drop" {
+                if !matches!(target, KomeType::Struct(_)) {
+                    return Err(CodegenError::at(
+                        "`Drop` can only be implemented by a user-defined struct",
+                        implementation.span,
+                    ));
+                }
+                if implementations.iter().any(|existing: &TypeImplementation| {
+                    existing.target == target && existing.trait_name.as_deref() == Some("Drop")
+                }) {
+                    return Err(CodegenError::at(
+                        format!(
+                            "type `{}` has more than one `Drop` implementation",
+                            type_code(target)
+                        ),
+                        implementation.span,
+                    ));
+                }
+            }
         }
         implementations.push(TypeImplementation {
             target,
@@ -1106,7 +1145,7 @@ pub fn compile_module<M: Module>(
                 inline_returns: Vec::new(),
             };
 
-            translator.translate_function(declaration, signature)?;
+            translator.translate_function(declaration, signature, info.is_drop_function(name))?;
         }
 
         module
@@ -2692,6 +2731,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         mut self,
         declaration: &FunctionDeclaration,
         signature: &FunctionSignature,
+        is_drop_function: bool,
     ) -> CodegenResult<()> {
         let entry_block = self.builder.create_block();
 
@@ -2723,12 +2763,16 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 unreachable!("non-identifier parameter patterns are rejected during analysis");
             };
 
-            self.declare_variable(
-                &identifier.name,
-                value,
-                *param_type,
-                ValueOwnership::Borrowed,
-            )?;
+            if is_drop_function && identifier.name == "self" {
+                self.declare_nonowning_variable(&identifier.name, value, *param_type)?;
+            } else {
+                self.declare_variable(
+                    &identifier.name,
+                    value,
+                    *param_type,
+                    ValueOwnership::Borrowed,
+                )?;
+            }
         }
 
         self.translate_block(body)?;
@@ -3303,6 +3347,34 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             },
         );
 
+        Ok(())
+    }
+
+    fn declare_nonowning_variable(
+        &mut self,
+        name: &str,
+        value: ir::Value,
+        kome_type: KomeType,
+    ) -> CodegenResult<()> {
+        let representation = kome_type.cranelift().ok_or_else(|| {
+            CodegenError::new("internal error: Void cannot be stored in a variable", None)
+        })?;
+        let variable = self.builder.declare_var(representation);
+        self.builder.def_var(variable, value);
+        let binding_id = self.next_binding_id;
+        self.next_binding_id += 1;
+        self.scopes
+            .last_mut()
+            .expect("scope stack is never empty")
+            .insert(
+                name.to_owned(),
+                ScopedVariable {
+                    variable,
+                    kome_type,
+                    owns_value: false,
+                    binding_id,
+                },
+            );
         Ok(())
     }
 
@@ -5772,7 +5844,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 KomeType::Null,
             ));
         }
-        let (_, method, _) = self
+        let (implementation, method, _) = self
             .info
             .implementation_member(target, &member.property)
             .ok_or_else(|| {
@@ -5785,6 +5857,12 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     member.span,
                 )
             })?;
+        if implementation.trait_name.as_deref() == Some("Drop") {
+            return Err(CodegenError::at(
+                "destructor `drop` cannot be called directly",
+                call.span,
+            ));
+        }
         let method = method.cloned().ok_or_else(|| {
             CodegenError::at(
                 format!(
@@ -6621,6 +6699,14 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         self.builder.ins().brif(is_last, destroy, &[], done, &[]);
         self.builder.switch_to_block(destroy);
         self.builder.seal_block(destroy);
+        if let Some(method) = self.info.drop_method(KomeType::Struct(id)).cloned() {
+            let function = Module::declare_func_in_func(
+                self.module,
+                self.func_ids[&method.function_key],
+                self.builder.func,
+            );
+            self.builder.ins().call(function, &[value]);
+        }
         let layout = self.info.struct_info(id).clone();
         for field in &layout.fields {
             if field.kome_type.is_managed() {
