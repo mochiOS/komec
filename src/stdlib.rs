@@ -361,4 +361,56 @@ mod tests {
                 .any(|module| module.path.ends_with("io/mod.kome"))
         );
     }
+
+    #[test]
+    fn executes_result_value_or_for_success_and_failure() {
+        let standard_library =
+            StandardLibrary::load(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/stdlib"))
+                .unwrap();
+        let application = kome_parser::parse(
+            r#"
+use std::core
+
+fn main() {
+    let failure = core::Result<Number, String>.err("失敗")
+    let fallback: Number = failure.valueOr(42)
+    let success = core::Result<Number, String>.ok(21)
+    let value: Number = success.valueOr(0)
+}
+"#,
+        )
+        .unwrap();
+        let mut sources = standard_library
+            .modules_for(&application)
+            .unwrap()
+            .into_iter()
+            .map(|loaded| {
+                kome_semantics::modules::SourceModule::new(
+                    "std",
+                    loaded.name.into_iter().skip(1).collect(),
+                    loaded.module,
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        sources.push(kome_semantics::modules::SourceModule::new(
+            "__app",
+            Vec::new(),
+            application,
+            true,
+        ));
+        let linked = kome_semantics::modules::link_modules(sources).unwrap();
+
+        assert!(
+            kome_semantics::resolver::ScopeBuilder::resolve(&linked)
+                .errors
+                .is_empty()
+        );
+        assert!(
+            kome_semantics::typecheck::TypeChecker::check(&linked)
+                .errors
+                .is_empty()
+        );
+        kome_jit::execute(&linked, "main").unwrap();
+    }
 }
