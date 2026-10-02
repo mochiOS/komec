@@ -10,7 +10,7 @@ use kome_ast::{
         Attribute, Binding, ComponentDeclaration, ComponentMember, Declaration, EnumCase,
         EnumDeclaration, ExternDeclaration, ExternItem, ForDeclaration, FunctionDeclaration,
         GenericParameter, Module, RecipeDeclaration, StructDeclaration, StructField,
-        TraitDeclaration, TypeMember, UseDeclaration,
+        TraitDeclaration, TypeMember, UseDeclaration, Visibility,
     },
     expressions::{
         AssignOp, AssignmentExpression, BinaryOp, BlockExpression, CallArg, CallExpression,
@@ -100,55 +100,65 @@ impl Parser {
 
     fn parse_declaration(&mut self) -> Result<Declaration, ParseError> {
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_visibility()?;
 
         if self.at(|kind| matches!(kind, TokenKind::Component)) {
-            return self
-                .parse_component_declaration(attributes)
-                .map(Declaration::Component);
+            let mut declaration = self.parse_component_declaration(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(Declaration::Component(declaration));
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Struct)) {
-            return self
-                .parse_struct_declaration(attributes)
-                .map(Declaration::Struct);
+            let mut declaration = self.parse_struct_declaration(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(Declaration::Struct(declaration));
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Trait)) && attributes.is_empty() {
-            return self.parse_trait_declaration().map(Declaration::Trait);
+            let mut declaration = self.parse_trait_declaration()?;
+            declaration.visibility = visibility;
+            return Ok(Declaration::Trait(declaration));
         }
 
-        if self.at(|kind| matches!(kind, TokenKind::For)) && attributes.is_empty() {
+        if self.at(|kind| matches!(kind, TokenKind::For))
+            && attributes.is_empty()
+            && visibility == Visibility::Private
+        {
             return self.parse_for_declaration().map(Declaration::For);
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Enum)) {
-            return self
-                .parse_enum_declaration(attributes)
-                .map(Declaration::Enum);
+            let mut declaration = self.parse_enum_declaration(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(Declaration::Enum(declaration));
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Fn)) {
-            return self
-                .parse_function_declaration(attributes)
-                .map(Declaration::Function);
+            let mut declaration = self.parse_function_declaration(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(Declaration::Function(declaration));
         }
 
-        if self.at(|kind| matches!(kind, TokenKind::Let)) {
+        if self.at(|kind| matches!(kind, TokenKind::Let))
+            && visibility == Visibility::Private
+        {
             return self.parse_let_binding(attributes).map(Declaration::Let);
         }
 
-        if self.at(|kind| matches!(kind, TokenKind::Var)) {
+        if self.at(|kind| matches!(kind, TokenKind::Var))
+            && visibility == Visibility::Private
+        {
             return self.parse_var_binding(attributes).map(Declaration::Let);
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Const)) {
-            return self
-                .parse_const_binding(attributes)
-                .map(Declaration::Constant);
+            let mut declaration = self.parse_const_binding(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(Declaration::Constant(declaration));
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Use)) {
-            if attributes.is_empty() {
+            if attributes.is_empty() && visibility == Visibility::Private {
                 return self.parse_use_declaration().map(Declaration::Use);
             }
 
@@ -158,7 +168,7 @@ impl Parser {
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Extern)) {
-            if attributes.is_empty() {
+            if attributes.is_empty() && visibility == Visibility::Private {
                 return self.parse_extern_declaration().map(Declaration::Extern);
             }
             return Err(self.expected("an external declaration without attributes"));
@@ -169,6 +179,25 @@ impl Parser {
         } else {
             Err(self.expected("a declaration after attributes"))
         }
+    }
+
+    fn parse_visibility(&mut self) -> Result<Visibility, ParseError> {
+        if !self.at(|kind| matches!(kind, TokenKind::Pub)) {
+            return Ok(Visibility::Private);
+        }
+
+        self.advance();
+        if !self.at(|kind| matches!(kind, TokenKind::LParen)) {
+            return Ok(Visibility::Public);
+        }
+
+        self.advance();
+        let (scope, _) = self.expect_identifier("`package` in a visibility modifier")?;
+        if scope != "package" {
+            return Err(self.expected("`package` in a visibility modifier"));
+        }
+        self.expect("`)`", |kind| matches!(kind, TokenKind::RParen))?;
+        Ok(Visibility::Package)
     }
 
     fn parse_extern_declaration(&mut self) -> Result<ExternDeclaration, ParseError> {
@@ -242,6 +271,7 @@ impl Parser {
         if !self.at(|kind| matches!(kind, TokenKind::LBrace)) {
             return Ok(StructDeclaration {
                 span: Span::new(start, name_span.end),
+                visibility: Visibility::Private,
                 attributes,
                 name,
                 type_parameters,
@@ -257,12 +287,14 @@ impl Parser {
                 return Err(self.expected("`}`"));
             }
 
+            let visibility = self.parse_visibility()?;
             let (field_name, field_span) = self.expect_identifier("a struct field")?;
             self.expect("`:`", |kind| matches!(kind, TokenKind::Colon))?;
             let type_ = self.parse_type()?;
             let end = type_.span().end;
             fields.push(StructField {
                 span: Span::new(field_span.start, end),
+                visibility,
                 name: field_name,
                 type_,
             });
@@ -281,6 +313,7 @@ impl Parser {
 
         Ok(StructDeclaration {
             span: Span::new(start, closing.span.end),
+            visibility: Visibility::Private,
             attributes,
             name,
             type_parameters,
@@ -322,10 +355,16 @@ impl Parser {
             }
 
             let attributes = self.parse_attributes()?;
+            let visibility = self.parse_visibility()?;
             if !self.at(|kind| matches!(kind, TokenKind::Fn)) {
                 return Err(self.expected("a `fn` trait member"));
             }
-            functions.push(self.parse_function_declaration(attributes)?);
+            let mut function = self.parse_function_declaration(attributes)?;
+            function.visibility = match visibility {
+                Visibility::Private => Visibility::Public,
+                visibility => visibility,
+            };
+            functions.push(function);
 
             if self.at(|kind| matches!(kind, TokenKind::Comma)) {
                 self.advance();
@@ -335,6 +374,7 @@ impl Parser {
         let closing = self.expect("`}`", |kind| matches!(kind, TokenKind::RBrace))?;
         Ok(TraitDeclaration {
             span: Span::new(keyword.span.start, closing.span.end),
+            visibility: Visibility::Private,
             name,
             type_parameters,
             functions,
@@ -363,17 +403,18 @@ impl Parser {
 
     fn parse_type_member(&mut self) -> Result<TypeMember, ParseError> {
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_visibility()?;
 
         if self.at(|kind| matches!(kind, TokenKind::Const)) {
-            return self
-                .parse_const_binding(attributes)
-                .map(TypeMember::Constant);
+            let mut declaration = self.parse_const_binding(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(TypeMember::Constant(declaration));
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Fn)) {
-            return self
-                .parse_function_declaration(attributes)
-                .map(TypeMember::Function);
+            let mut declaration = self.parse_function_declaration(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(TypeMember::Function(declaration));
         }
 
         Err(self.expected("a `const` or `fn` type member"))
@@ -434,6 +475,7 @@ impl Parser {
 
         Ok(EnumDeclaration {
             span: Span::new(start, closing.span.end),
+            visibility: Visibility::Private,
             attributes,
             name,
             cases,
@@ -515,6 +557,7 @@ impl Parser {
         if !self.at(|kind| matches!(kind, TokenKind::LBrace)) {
             return Ok(ComponentDeclaration {
                 span: Span::new(start, closing_parenthesis.span.end),
+                visibility: Visibility::Private,
                 name,
                 params,
                 attributes,
@@ -538,6 +581,7 @@ impl Parser {
 
         Ok(ComponentDeclaration {
             span: Span::new(start, closing_brace.span.end),
+            visibility: Visibility::Private,
             name,
             params,
             attributes,
@@ -598,35 +642,38 @@ impl Parser {
 
     fn parse_component_member(&mut self) -> Result<ComponentMember, ParseError> {
         let attributes = self.parse_attributes()?;
+        let visibility = self.parse_visibility()?;
 
         if self.at(|kind| matches!(kind, TokenKind::State)) {
-            return self
-                .parse_state_binding(attributes)
-                .map(|binding| ComponentMember::State(Box::new(binding)));
+            let mut binding = self.parse_state_binding(attributes)?;
+            binding.visibility = visibility;
+            return Ok(ComponentMember::State(Box::new(binding)));
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Let)) {
-            return self
-                .parse_let_binding(attributes)
-                .map(|binding| ComponentMember::Let(Box::new(binding)));
+            let mut binding = self.parse_let_binding(attributes)?;
+            binding.visibility = visibility;
+            return Ok(ComponentMember::Let(Box::new(binding)));
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Var)) {
-            return self
-                .parse_var_binding(attributes)
-                .map(|binding| ComponentMember::Let(Box::new(binding)));
+            let mut binding = self.parse_var_binding(attributes)?;
+            binding.visibility = visibility;
+            return Ok(ComponentMember::Let(Box::new(binding)));
         }
 
-        if self.at(|kind| matches!(kind, TokenKind::Recipe)) {
+        if self.at(|kind| matches!(kind, TokenKind::Recipe))
+            && visibility == Visibility::Private
+        {
             return self
                 .parse_recipe_declaration(attributes)
                 .map(ComponentMember::Recipe);
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Fn)) {
-            return self
-                .parse_function_declaration(attributes)
-                .map(ComponentMember::Function);
+            let mut declaration = self.parse_function_declaration(attributes)?;
+            declaration.visibility = visibility;
+            return Ok(ComponentMember::Function(declaration));
         }
 
         if attributes.is_empty() {
@@ -710,6 +757,7 @@ impl Parser {
 
         Ok(FunctionDeclaration {
             span: Span::new(start, end),
+            visibility: Visibility::Private,
             attributes,
             name,
             type_parameters,
@@ -879,6 +927,7 @@ impl Parser {
 
         Ok(Binding {
             span: Span::new(start, end),
+            visibility: Visibility::Private,
             attributes,
             mutable,
             pattern: Pattern::Ident(IdentifierPattern {

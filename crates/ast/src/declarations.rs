@@ -19,6 +19,18 @@ pub enum Declaration {
     Extern(ExternDeclaration),
 }
 
+/// The source-level visibility of a declaration or member.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Visibility {
+    /// Visible only from the declaring module.
+    #[default]
+    Private,
+    /// Visible from every module in the declaring package.
+    Package,
+    /// Visible from dependent packages.
+    Public,
+}
+
 // ---- External C declarations ----
 
 /// A group of declarations resolved through an external ABI.
@@ -46,6 +58,7 @@ pub enum ExternItem {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDeclaration {
     pub span: Span,
+    pub visibility: Visibility,
     pub attributes: Vec<Attribute>,
     pub name: String,
     /// Type parameters declared between `<` and `>`.
@@ -57,6 +70,7 @@ pub struct StructDeclaration {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
     pub span: Span,
+    pub visibility: Visibility,
     pub name: String,
     pub type_: crate::types::Type,
 }
@@ -65,6 +79,7 @@ pub struct StructField {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitDeclaration {
     pub span: Span,
+    pub visibility: Visibility,
     pub name: String,
     /// Type parameters declared between `<` and `>`.
     pub type_parameters: Vec<GenericParameter>,
@@ -139,6 +154,7 @@ pub struct GenericParameter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComponentDeclaration {
     pub span: Span,
+    pub visibility: Visibility,
     pub name: String,
     pub params: Vec<crate::types::Parameter>,
     pub attributes: Vec<Attribute>,
@@ -208,6 +224,7 @@ pub struct Attribute {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDeclaration {
     pub span: Span,
+    pub visibility: Visibility,
     pub attributes: Vec<Attribute>,
     pub name: String,
     /// Type parameters declared between `<` and `>`.
@@ -230,6 +247,7 @@ pub struct FunctionDeclaration {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub span: Span,
+    pub visibility: Visibility,
     pub attributes: Vec<Attribute>,
     pub mutable: bool,
     pub pattern: crate::patterns::Pattern,
@@ -307,6 +325,7 @@ pub enum PathSeparator {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDeclaration {
     pub span: Span,
+    pub visibility: Visibility,
     pub attributes: Vec<Attribute>,
     pub name: String,
     pub cases: Vec<EnumCase>,

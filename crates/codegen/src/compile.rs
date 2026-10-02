@@ -640,6 +640,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         });
         let declaration = FunctionDeclaration {
             span: application.span,
+            visibility: kome_ast::declarations::Visibility::Private,
             attributes: Vec::new(),
             name: "main".into(),
             type_parameters: Vec::new(),

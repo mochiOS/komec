@@ -671,6 +671,7 @@ impl<'a> Expander<'a> {
                 };
                 self.output.push(Declaration::Function(FunctionDeclaration {
                     span: value.span,
+                    visibility: kome_ast::declarations::Visibility::Private,
                     attributes: Vec::new(),
                     name: name.clone(),
                     type_parameters: Vec::new(),

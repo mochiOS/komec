@@ -83,6 +83,7 @@ fn main() {
     );
 
     let counter_state = ComponentMember::State(Box::new(Binding {
+        visibility: kome_ast::declarations::Visibility::Private,
         span: Span::new(35, 52),
         attributes: Vec::new(),
         mutable: false,
@@ -146,6 +147,7 @@ fn main() {
     });
 
     let body_binding = ComponentMember::Let(Box::new(Binding {
+        visibility: kome_ast::declarations::Visibility::Private,
         span: Span::new(68, 145),
         attributes: vec![body_attribute],
         mutable: false,
@@ -231,6 +233,7 @@ fn main() {
     // fn greet(name: String) { ... }
 
     let greet_function = ComponentMember::Function(FunctionDeclaration {
+        visibility: kome_ast::declarations::Visibility::Private,
         type_parameters: Vec::new(),
         span: Span::new(211, 273),
         attributes: Vec::new(),
@@ -246,6 +249,7 @@ fn main() {
     // component App
 
     let component = Declaration::Component(ComponentDeclaration {
+        visibility: kome_ast::declarations::Visibility::Private,
         span: Span::new(0, SOURCE.len()),
         name: "App".into(),
         params: Vec::new(),
