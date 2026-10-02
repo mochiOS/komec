@@ -1611,7 +1611,10 @@ impl Parser {
     }
 
     fn parse_unary_expression(&mut self) -> Result<Expression, ParseError> {
-        if self.at(|kind| matches!(kind, TokenKind::Task | TokenKind::Wait | TokenKind::Cancel)) {
+        if self.at(|kind| matches!(kind, TokenKind::Wait | TokenKind::Cancel))
+            || (self.at(|kind| matches!(kind, TokenKind::Task))
+                && !matches!(self.next().kind, TokenKind::ColonColon))
+        {
             let operator = self.advance();
             let argument = self.parse_unary_expression()?;
             let span = Span::new(operator.span.start, argument.span().end);
@@ -1938,6 +1941,20 @@ impl Parser {
             TokenKind::Null => Ok(Expression::literal(LiteralKind::Null, span)),
 
             TokenKind::Ident(mut name) => {
+                let mut end = span.end;
+                while self.at(|kind| matches!(kind, TokenKind::ColonColon)) {
+                    self.advance();
+                    let (segment, segment_span) =
+                        self.expect_identifier("a path segment after `::`")?;
+                    name.push_str("::");
+                    name.push_str(&segment);
+                    end = segment_span.end;
+                }
+                Ok(Expression::ident(name, Span::new(span.start, end)))
+            }
+
+            TokenKind::Task => {
+                let mut name = "task".to_owned();
                 let mut end = span.end;
                 while self.at(|kind| matches!(kind, TokenKind::ColonColon)) {
                     self.advance();

@@ -53,3 +53,15 @@ fn parses_all_result_list_annotations() {
         Some(kome_ast::types::Type::List(_))
     ));
 }
+
+#[test]
+fn parses_task_module_qualified_calls() {
+    let Expression::Call(call) = kome_parser::parse_expression("task::sleep(value)").unwrap()
+    else {
+        panic!("expected a call expression")
+    };
+    assert!(matches!(
+        call.callee.as_ref(),
+        Expression::Ident(identifier) if identifier.name == "task::sleep"
+    ));
+}
