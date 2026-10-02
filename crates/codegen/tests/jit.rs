@@ -13,6 +13,33 @@ struct Capture {
     values: Arc<Mutex<Vec<Value>>>,
 }
 
+#[test]
+fn extracts_owned_values_from_optionals() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+struct Container<T> { value: T? }
+
+for Container<T> {
+    fn get(self) -> T { return self.value! }
+}
+
+@native("test.capture")
+fn report(value: String)
+
+fn main() {
+    let container = Container<String> { value: "Kome" }
+    report(container.get())
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::String(KomeString::new("Kome"))]
+    );
+    clear_thread_registry();
+}
+
 impl Capture {
     /// Installs `symbol` on the current thread's registry.
     fn install(symbol: &'static str) -> Self {

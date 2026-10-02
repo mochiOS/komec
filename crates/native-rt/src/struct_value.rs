@@ -65,3 +65,13 @@ pub unsafe extern "C" fn __kome_struct_dealloc(payload: u64, payload_size: usize
     let base = unsafe { (payload as *mut u8).sub(HEADER) };
     unsafe { dealloc(base, layout(payload_size)) };
 }
+
+/// Returns a present optional payload or terminates with a runtime diagnostic.
+#[unsafe(no_mangle)]
+pub extern "C" fn __kome_optional_require(payload: u64) -> u64 {
+    if payload == 0 {
+        eprintln!("runtime error: attempted to extract an absent optional value");
+        std::process::exit(1);
+    }
+    payload
+}

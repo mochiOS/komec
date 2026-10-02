@@ -717,6 +717,17 @@ impl<'a> Expander<'a> {
                     _ => Err(CodegenError::at("`wait` expects Task<T>", value.span)),
                 }
             }
+            Expression::Unwrap(value) => {
+                let optional =
+                    self.rewrite_expression(&mut value.argument, environment, substitution, None)?;
+                match optional {
+                    Type::Optional(optional) => Ok(optional.inner.as_ref().clone()),
+                    _ => Err(CodegenError::at(
+                        "postfix `!` expects an optional value",
+                        value.span,
+                    )),
+                }
+            }
             Expression::Cancel(value) => {
                 self.rewrite_expression(&mut value.argument, environment, substitution, None)?;
                 Ok(unknown_type(value.span))
@@ -1014,6 +1025,7 @@ fn collect_captures(
             }
         }
         Expression::Unary(value) => collect_captures(&value.argument, environment, captures),
+        Expression::Unwrap(value) => collect_captures(&value.argument, environment, captures),
         Expression::Task(value) => collect_captures(&value.argument, environment, captures),
         Expression::Wait(value) => collect_captures(&value.argument, environment, captures),
         Expression::Cancel(value) => collect_captures(&value.argument, environment, captures),

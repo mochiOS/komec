@@ -21,7 +21,7 @@ use kome_ast::expressions::{
     CallExpression, CancelExpression, Expression, GroupExpression, IdentifierExpression,
     ListExpression, LiteralExpression, LiteralKind, MemberExpression, NumberLiteral,
     ObjectExpression, ObjectProperty, PropertyKey, StructExpression, TaskExpression,
-    TemplateExpression, TemplatePart, UnaryExpression, UnaryOp, WaitExpression,
+    TemplateExpression, TemplatePart, UnaryExpression, UnaryOp, UnwrapExpression, WaitExpression,
 };
 use kome_ast::patterns::IsPattern;
 use kome_ast::statements::{BlockStatement, Statement};
@@ -1258,6 +1258,7 @@ struct ForeignFunctions {
     struct_retain: FuncId,
     struct_release: FuncId,
     struct_dealloc: FuncId,
+    optional_require: FuncId,
     task_spawn: FuncId,
     task_cancel: FuncId,
     task_is_cancelled: FuncId,
@@ -1292,6 +1293,13 @@ impl ForeignFunctions {
             module,
             "__kome_number_parse",
             &[types::I64, types::I64],
+            Some(types::I64),
+        )?;
+
+        let optional_require = declare_foreign(
+            module,
+            "__kome_optional_require",
+            &[types::I64],
             Some(types::I64),
         )?;
 
@@ -1500,6 +1508,7 @@ impl ForeignFunctions {
 
         Ok(Self {
             native_call,
+            optional_require,
             number_parse,
             number_retain,
             number_release,
@@ -1937,6 +1946,13 @@ fn infer_codegen_expression_type(
             visiting,
         ),
         Expression::Unary(_) => Ok(KomeType::Boolean),
+        Expression::Unwrap(unwrap) => match recurse(&unwrap.argument, cache, visiting)? {
+            KomeType::Optional(id) => Ok(optional_types.borrow()[id]),
+            _ => Err(CodegenError::at(
+                "postfix `!` expects an optional value",
+                unwrap.span,
+            )),
+        },
         Expression::Task(task) => {
             let result = recurse(&task.argument, cache, visiting)?;
             let mut types = task_types.borrow_mut();
@@ -2333,6 +2349,7 @@ fn expression_contains_closure(expression: &Expression) -> bool {
     match expression {
         Expression::Closure(_) => true,
         Expression::Unary(value) => expression_contains_closure(&value.argument),
+        Expression::Unwrap(value) => expression_contains_closure(&value.argument),
         Expression::Task(value) => expression_contains_closure(&value.argument),
         Expression::Wait(value) => expression_contains_closure(&value.argument),
         Expression::Cancel(value) => expression_contains_closure(&value.argument),
@@ -2524,6 +2541,8 @@ impl ReadCounter {
             }
 
             Expression::Unary(unary) => self.visit_expression(&unary.argument),
+
+            Expression::Unwrap(unwrap) => self.visit_expression(&unwrap.argument),
 
             Expression::Task(task) => self.visit_expression(&task.argument),
 
@@ -3399,6 +3418,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::Unary(unary) => self.evaluate_unary(unary),
 
+            Expression::Unwrap(unwrap) => self.evaluate_unwrap(unwrap),
+
             Expression::Group(group) => self.evaluate_group(group),
 
             Expression::Task(task) => self.evaluate_task(task, None),
@@ -3697,6 +3718,38 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 unary.span,
             )),
         }
+    }
+
+    fn evaluate_unwrap(&mut self, unwrap: &UnwrapExpression) -> CodegenResult<TypedValue> {
+        let optional = self.evaluate(&unwrap.argument)?;
+        let KomeType::Optional(id) = optional.kome_type else {
+            return Err(CodegenError::at(
+                format!(
+                    "postfix `!` expects an optional value, but found {}",
+                    self.info.type_name(optional.kome_type)
+                ),
+                unwrap.argument.span(),
+            ));
+        };
+        let pointer = optional.expect_value(unwrap.argument.span())?;
+        let require = Module::declare_func_in_func(
+            self.module,
+            self.foreign.optional_require,
+            self.builder.func,
+        );
+        let call = self.builder.ins().call(require, &[pointer]);
+        let pointer = self.builder.inst_results(call)[0];
+        let inner = self.info.optional_inner(id);
+        let slot = self
+            .builder
+            .ins()
+            .load(types::I64, MachMemFlags::new(), pointer, 0);
+        let value = self.task_slot_to_value(slot, inner);
+        if inner.is_managed() {
+            self.retain_managed(value, inner);
+        }
+        self.release_owned_temporary(optional, unwrap.argument.span())?;
+        Ok(TypedValue::some(value, inner))
     }
 
     fn evaluate_identifier(

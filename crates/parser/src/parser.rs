@@ -18,7 +18,7 @@ use kome_ast::{
         Expression, GroupExpression, IndexExpression, KeyValueProperty, ListExpression,
         LiteralKind, MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty,
         PropertyKey, StructExpression, TaskExpression, TemplateExpression, TemplatePart,
-        UnaryExpression, UnaryOp, WaitExpression,
+        UnaryExpression, UnaryOp, UnwrapExpression, WaitExpression,
     },
     patterns::{DotIdentPattern, IdentifierPattern, IsPattern, LiteralPattern, Pattern},
     statements::{
@@ -1702,6 +1702,15 @@ impl Parser {
             if self.at(|kind| matches!(kind, TokenKind::LBracket)) {
                 expression = self.parse_index_expression(expression)?;
 
+                continue;
+            }
+
+            if self.at(|kind| matches!(kind, TokenKind::Not)) {
+                let operator = self.advance();
+                expression = Expression::Unwrap(UnwrapExpression {
+                    span: Span::new(expression.span().start, operator.span.end),
+                    argument: Box::new(expression),
+                });
                 continue;
             }
 

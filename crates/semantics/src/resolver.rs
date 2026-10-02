@@ -677,6 +677,7 @@ impl ScopeBuilder {
             Expression::Unary(unary) => {
                 self.visit_expression(&unary.argument);
             }
+            Expression::Unwrap(unwrap) => self.visit_expression(&unwrap.argument),
             Expression::Task(task) => self.visit_expression(&task.argument),
             Expression::Wait(wait) => self.visit_expression(&wait.argument),
             Expression::Cancel(cancel) => self.visit_expression(&cancel.argument),

@@ -571,3 +571,19 @@ for Point: Add {
             .any(|error| error.message.contains("incompatible signature"))
     );
 }
+
+#[test]
+fn extracts_optional_values_and_rejects_non_optional_values() {
+    let valid = parse(
+        "struct Box { value: Number? }\nfn main() { let box = Box { value: 42 }\nlet value: Number = box.value! }",
+    )
+    .unwrap();
+    assert!(TypeChecker::check(&valid).errors.is_empty());
+
+    let invalid = parse("fn main() { let value = 42! }").unwrap();
+    assert!(TypeChecker::check(&invalid).errors.iter().any(|error| {
+        error
+            .message
+            .contains("postfix `!` expects an optional value")
+    }));
+}

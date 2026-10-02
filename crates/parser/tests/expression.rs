@@ -369,3 +369,13 @@ fn expression_span_covers_source() {
 
     assert_eq!(expression.span(), Span::new(0, source.len()),);
 }
+
+#[test]
+fn parses_postfix_optional_extraction() {
+    let expression = parse_expression("container.value!").unwrap();
+
+    let Expression::Unwrap(unwrap) = expression else {
+        panic!("expected an optional extraction expression");
+    };
+    assert!(matches!(unwrap.argument.as_ref(), Expression::Member(_)));
+}

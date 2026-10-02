@@ -984,6 +984,7 @@ impl Rewriter<'_> {
                 value.name = self.resolve_name(&value.name, value.span);
             }
             Expression::Unary(value) => self.rewrite_expression(&mut value.argument),
+            Expression::Unwrap(value) => self.rewrite_expression(&mut value.argument),
             Expression::Task(value) => self.rewrite_expression(&mut value.argument),
             Expression::Wait(value) => self.rewrite_expression(&mut value.argument),
             Expression::Cancel(value) => self.rewrite_expression(&mut value.argument),

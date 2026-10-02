@@ -332,6 +332,8 @@ impl InitializationChecker {
                 self.visit_expression(&unary.argument);
             }
 
+            Expression::Unwrap(unwrap) => self.visit_expression(&unwrap.argument),
+
             Expression::Task(task) => self.visit_expression(&task.argument),
 
             Expression::Wait(wait) => self.visit_expression(&wait.argument),

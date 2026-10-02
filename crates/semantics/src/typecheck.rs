@@ -1173,6 +1173,21 @@ impl TypeChecker {
                 }
             },
 
+            Expression::Unwrap(unwrap) => match self.infer_expression(&unwrap.argument, None) {
+                SemanticType::Optional(inner) => *inner,
+                SemanticType::Unknown => SemanticType::Unknown,
+                actual => {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "postfix `!` expects an optional value, but found {}",
+                            actual.name()
+                        ),
+                        span: unwrap.argument.span(),
+                    });
+                    SemanticType::Unknown
+                }
+            },
+
             Expression::Task(task) => {
                 let result_expected = match expected {
                     Some(SemanticType::Applied(name, arguments))

@@ -15,6 +15,9 @@ pub enum Expression {
     /// A unary operator expression: `!expr`.
     Unary(UnaryExpression),
 
+    /// Extracts a present optional value: `expr!`.
+    Unwrap(UnwrapExpression),
+
     /// Starts evaluation as a task: `task expression`.
     Task(TaskExpression),
 
@@ -123,6 +126,13 @@ pub enum UnaryOp {
 pub struct UnaryExpression {
     pub span: Span,
     pub op: UnaryOp,
+    pub argument: Box<Expression>,
+}
+
+/// A postfix optional-value extraction expression.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwrapExpression {
+    pub span: Span,
     pub argument: Box<Expression>,
 }
 
@@ -471,6 +481,7 @@ impl AstNode for Expression {
             Expression::Literal(expression) => expression.span,
             Expression::Ident(expression) => expression.span,
             Expression::Unary(expression) => expression.span,
+            Expression::Unwrap(expression) => expression.span,
             Expression::Task(expression) => expression.span,
             Expression::Wait(expression) => expression.span,
             Expression::Cancel(expression) => expression.span,
