@@ -587,3 +587,48 @@ fn extracts_optional_values_and_rejects_non_optional_values() {
             .contains("postfix `!` expects an optional value")
     }));
 }
+
+#[test]
+fn checks_closure_parameters_and_results_against_function_types() {
+    let valid = parse(
+        r#"
+fn apply(value: Number, transform: (item: Number) -> Number) -> Number {
+    return transform(value)
+}
+fn main() {
+    let amount = apply(21, |value: Number| value * 2)
+}
+"#,
+    )
+    .unwrap();
+    assert!(TypeChecker::check(&valid).errors.is_empty());
+
+    let invalid = parse(
+        r#"
+fn apply(transform: (item: Number) -> Number) -> Number {
+    return transform(1)
+}
+fn main() {
+    let amount = apply(|value: String| value)
+}
+"#,
+    )
+    .unwrap();
+    assert!(!TypeChecker::check(&invalid).errors.is_empty());
+}
+
+#[test]
+fn checks_empty_closure_calls() {
+    let module = parse(
+        r#"
+fn invoke(action: () -> Number) -> Number {
+    return action()
+}
+fn main() {
+    let value = invoke(|| 42)
+}
+"#,
+    )
+    .unwrap();
+    assert!(TypeChecker::check(&module).errors.is_empty());
+}

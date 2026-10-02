@@ -31,6 +31,13 @@ fn collect_semantic_parameters(type_: &SemanticType, output: &mut Vec<String>) {
         }
         SemanticType::Optional(inner) => collect_semantic_parameters(inner, output),
         SemanticType::List(inner) => collect_semantic_parameters(inner, output),
+        SemanticType::Function(parameters, return_type) => {
+            for parameter in parameters {
+                collect_semantic_parameters(parameter, output);
+            }
+            collect_semantic_parameters(return_type, output);
+        }
+        SemanticType::Pointer { pointee, .. } => collect_semantic_parameters(pointee, output),
         _ => {}
     }
 }
@@ -57,6 +64,20 @@ fn substitute_semantic(
         SemanticType::List(inner) => {
             SemanticType::List(Box::new(substitute_semantic(inner, substitutions)))
         }
+        SemanticType::Function(parameters, return_type) => SemanticType::Function(
+            parameters
+                .iter()
+                .map(|parameter| substitute_semantic(parameter, substitutions))
+                .collect(),
+            Box::new(substitute_semantic(return_type, substitutions)),
+        ),
+        SemanticType::Pointer {
+            mutability,
+            pointee,
+        } => SemanticType::Pointer {
+            mutability: *mutability,
+            pointee: Box::new(substitute_semantic(pointee, substitutions)),
+        },
         _ => type_.clone(),
     }
 }
@@ -102,6 +123,18 @@ fn infer_type_parameters(
                 return Err(String::new());
             }
         }
+        SemanticType::Function(formal_parameters, formal_return) => {
+            if let SemanticType::Function(actual_parameters, actual_return) = actual
+                && formal_parameters.len() == actual_parameters.len()
+            {
+                for (formal, actual) in formal_parameters.iter().zip(actual_parameters) {
+                    infer_type_parameters(formal, actual, substitutions)?;
+                }
+                infer_type_parameters(formal_return, actual_return, substitutions)?;
+            } else {
+                return Err(String::new());
+            }
+        }
         SemanticType::Unknown => {}
         _ if formal != actual => return Err(String::new()),
         _ => {}
@@ -137,6 +170,7 @@ pub enum SemanticType {
         mutability: kome_ast::types::PointerMutability,
         pointee: Box<SemanticType>,
     },
+    Function(Vec<SemanticType>, Box<SemanticType>),
     Void,
 
     /// A type that cannot be determined by the current type-checking pass.
@@ -190,6 +224,15 @@ impl SemanticType {
                 };
                 format!("*{qualifier} {}", pointee.name())
             }
+            Self::Function(parameters, return_type) => format!(
+                "({}) -> {}",
+                parameters
+                    .iter()
+                    .map(Self::name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                return_type.name()
+            ),
             Self::Void => "Void".to_owned(),
             Self::Unknown => "<unknown>".to_owned(),
         }
@@ -1398,25 +1441,54 @@ impl TypeChecker {
             Expression::Struct(struct_) => self.infer_struct_expression(struct_),
 
             Expression::Closure(closure) => {
+                let expected_function = match expected {
+                    Some(SemanticType::Function(parameters, return_type)) => {
+                        Some((parameters.as_slice(), return_type.as_ref()))
+                    }
+                    _ => None,
+                };
+                if let Some((parameters, _)) = expected_function
+                    && parameters.len() != closure.params.len()
+                {
+                    self.errors.push(TypeCheckError {
+                        message: format!(
+                            "closure expects {} parameter(s), but the target type requires {}",
+                            closure.params.len(),
+                            parameters.len()
+                        ),
+                        span: closure.span,
+                    });
+                }
                 self.enter_scope();
-
-                for parameter in &closure.params {
+                let mut parameter_types = Vec::new();
+                for (index, parameter) in closure.params.iter().enumerate() {
                     if let Pattern::Ident(identifier) = parameter {
-                        let type_ = identifier
+                        let annotated = identifier
                             .type_annotation
                             .as_ref()
-                            .map(Self::type_from_annotation)
+                            .map(Self::type_from_annotation);
+                        let contextual = expected_function
+                            .and_then(|(parameters, _)| parameters.get(index))
+                            .cloned();
+                        if let (Some(annotated), Some(contextual)) = (&annotated, &contextual) {
+                            self.check_compatible(contextual, annotated, identifier.span);
+                        }
+                        let type_ = annotated
+                            .or(contextual)
                             .unwrap_or(SemanticType::Unknown);
 
-                        self.declare(&identifier.name, type_);
+                        self.declare(&identifier.name, type_.clone());
+                        parameter_types.push(type_);
                     }
                 }
-
-                self.infer_expression(&closure.body, None);
+                let expected_return = expected_function.map(|(_, return_type)| return_type);
+                let return_type = self.infer_expression(&closure.body, expected_return);
+                if let Some(expected_return) = expected_return {
+                    self.check_compatible(expected_return, &return_type, closure.body.span());
+                }
 
                 self.exit_scope();
-
-                SemanticType::Unknown
+                SemanticType::Function(parameter_types, Box::new(return_type))
             }
 
             Expression::Is(is_expression) => {
@@ -1792,21 +1864,36 @@ impl TypeChecker {
             }
             return signature.return_type;
         }
+        if let Expression::Ident(identifier) = call.callee.as_ref()
+            && let Some(SemanticType::Function(parameters, return_type)) =
+                self.resolve(&identifier.name)
+        {
+            return self.check_callable_arguments(
+                &parameters,
+                return_type.as_ref(),
+                &call.args,
+                call.span,
+            );
+        }
         let Expression::Ident(identifier) = call.callee.as_ref() else {
-            self.infer_expression(&call.callee, None);
-
-            for argument in &call.args {
-                match argument {
-                    CallArg::Positional(expression) => {
-                        self.infer_expression(expression, None);
-                    }
-
-                    CallArg::Named { value, .. } => {
-                        self.infer_expression(value, None);
-                    }
-                }
+            let callee = self.infer_expression(&call.callee, None);
+            if let SemanticType::Function(parameters, return_type) = callee {
+                return self.check_callable_arguments(
+                    &parameters,
+                    return_type.as_ref(),
+                    &call.args,
+                    call.span,
+                );
             }
-
+            for argument in &call.args {
+                self.infer_expression(
+                    match argument {
+                        CallArg::Positional(expression) => expression,
+                        CallArg::Named { value, .. } => value,
+                    },
+                    None,
+                );
+            }
             return SemanticType::Unknown;
         };
 
@@ -1894,6 +1981,34 @@ impl TypeChecker {
         }
 
         signature.return_type
+    }
+
+    fn check_callable_arguments(
+        &mut self,
+        parameters: &[SemanticType],
+        return_type: &SemanticType,
+        arguments: &[CallArg],
+        span: Span,
+    ) -> SemanticType {
+        if parameters.len() != arguments.len() {
+            self.errors.push(TypeCheckError {
+                message: format!(
+                    "closure expects {} argument(s), but received {}",
+                    parameters.len(),
+                    arguments.len()
+                ),
+                span,
+            });
+        }
+        for (argument, expected) in arguments.iter().zip(parameters) {
+            let expression = match argument {
+                CallArg::Positional(expression) => expression,
+                CallArg::Named { value, .. } => value,
+            };
+            let actual = self.infer_expression(expression, Some(expected));
+            self.check_compatible(expected, &actual, expression.span());
+        }
+        return_type.clone()
     }
 
     fn infer_task_builtin(&mut self, name: &str, call: &CallExpression) -> SemanticType {
@@ -2123,7 +2238,21 @@ impl TypeChecker {
                 )),
             },
 
-            _ => SemanticType::Unknown,
+            Type::Function(function) => SemanticType::Function(
+                function
+                    .params
+                    .iter()
+                    .map(|parameter| {
+                        Self::type_from_annotation_with(&parameter.type_, parameters)
+                    })
+                    .collect(),
+                Box::new(Self::type_from_annotation_with(
+                    &function.return_type,
+                    parameters,
+                )),
+            ),
+
+            Type::Object(_) => SemanticType::Unknown,
         }
     }
 
