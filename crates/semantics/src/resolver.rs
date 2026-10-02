@@ -144,7 +144,8 @@ impl ScopeBuilder {
             };
 
             for import in &use_declaration.imports {
-                let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import else {
+                let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import
+                else {
                     continue;
                 };
 

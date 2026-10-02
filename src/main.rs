@@ -2,13 +2,22 @@ mod stdlib;
 
 use kome_ast::declarations::Module;
 use kome_semantics::{
-    error::ResolutionError, initialization::InitializationChecker, resolver::ScopeBuilder,
+    error::ResolutionError,
+    initialization::InitializationChecker,
+    modules::{SourceModule, link_modules},
+    resolver::ScopeBuilder,
     typecheck::TypeChecker,
 };
 use std::{env, fs, path::Path, path::PathBuf, process::ExitCode};
 
 const USAGE: &str =
-    "usage: komec <check|run|build> <file> [output] [--source <dependency-source>]...";
+    "usage: komec <check|run|build> <file> [output] [--package-source <package> <source>]...";
+
+#[derive(Debug)]
+struct DependencySource {
+    package: String,
+    path: PathBuf,
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -35,13 +44,17 @@ fn run() -> Result<(), String> {
     let mut output = None;
     let mut dependency_sources = Vec::new();
     while let Some(argument) = arguments.next() {
-        if argument == "--source" {
-            dependency_sources.push(
-                arguments
-                    .next()
-                    .ok_or_else(|| "`--source` requires a path".to_string())?
-                    .into(),
-            );
+        if argument == "--package-source" {
+            let package = arguments
+                .next()
+                .ok_or_else(|| "`--package-source` requires a package name".to_string())?
+                .into_string()
+                .map_err(|_| "package names must be valid UTF-8".to_string())?;
+            let path = arguments
+                .next()
+                .ok_or_else(|| "`--package-source` requires a source path".to_string())?
+                .into();
+            dependency_sources.push(DependencySource { package, path });
         } else if command == "build" && output.is_none() {
             output = Some(argument);
         } else {
@@ -66,7 +79,7 @@ fn run() -> Result<(), String> {
     }
 }
 
-fn check(path: &Path, dependency_sources: &[PathBuf]) -> Result<(), String> {
+fn check(path: &Path, dependency_sources: &[DependencySource]) -> Result<(), String> {
     load_checked_module(path, dependency_sources)?;
 
     println!("{}: check succeeded", path.display());
@@ -119,7 +132,7 @@ fn format_resolution_error(error: &ResolutionError) -> String {
     }
 }
 
-fn run_program(path: &Path, dependency_sources: &[PathBuf]) -> Result<(), String> {
+fn run_program(path: &Path, dependency_sources: &[DependencySource]) -> Result<(), String> {
     let module = load_checked_module(path, dependency_sources)?;
 
     kome_jit::execute(&module, "main").map_err(|error| error.to_string())
@@ -128,7 +141,7 @@ fn run_program(path: &Path, dependency_sources: &[PathBuf]) -> Result<(), String
 fn build_program(
     path: &Path,
     output: Option<&std::ffi::OsStr>,
-    dependency_sources: &[PathBuf],
+    dependency_sources: &[DependencySource],
 ) -> Result<(), String> {
     let module = load_checked_module(path, dependency_sources)?;
 
@@ -149,7 +162,10 @@ fn build_program(
     Ok(())
 }
 
-fn load_checked_module(path: &Path, dependency_sources: &[PathBuf]) -> Result<Module, String> {
+fn load_checked_module(
+    path: &Path,
+    dependency_sources: &[DependencySource],
+) -> Result<Module, String> {
     let standard_library = stdlib::StandardLibrary::discover()?;
 
     let source = fs::read_to_string(path)
@@ -158,23 +174,46 @@ fn load_checked_module(path: &Path, dependency_sources: &[PathBuf]) -> Result<Mo
     let application =
         kome_parser::parse(&source).map_err(|error| format!("{}: {error}", path.display()))?;
 
-    let mut dependency_declarations = Vec::new();
+    let mut dependency_modules = Vec::new();
+    let mut import_declarations = Vec::new();
 
-    for dependency_path in dependency_sources {
-        let dependency_source = fs::read_to_string(dependency_path).map_err(|error| {
+    for dependency in dependency_sources {
+        let dependency_source = fs::read_to_string(&dependency.path).map_err(|error| {
             format!(
                 "failed to read dependency source `{}`: {error}",
-                dependency_path.display(),
+                dependency.path.display(),
             )
         })?;
         let dependency = kome_parser::parse(&dependency_source)
-            .map_err(|error| format!("{}: {error}", dependency_path.display()))?;
-        dependency_declarations.extend(dependency.declarations);
+            .map_err(|error| format!("{}: {error}", dependency.path.display()))?;
+        import_declarations.extend(dependency.declarations.clone());
+        dependency_modules.push(dependency);
     }
 
-    dependency_declarations.extend(application.declarations);
-    let combined = Module::new(dependency_declarations, application.span);
-    let module = standard_library.merge_with_imports(combined)?;
+    import_declarations.extend(application.declarations.clone());
+    let import_module = Module::new(import_declarations, application.span);
+    let standard_modules = standard_library.modules_for(&import_module)?;
+    let mut sources = standard_modules
+        .into_iter()
+        .map(|loaded| {
+            SourceModule::new(
+                "std",
+                loaded.name.into_iter().skip(1).collect(),
+                loaded.module,
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    sources.extend(dependency_sources.iter().zip(dependency_modules).map(
+        |(dependency, module)| SourceModule::new(&dependency.package, Vec::new(), module, false),
+    ));
+    sources.push(SourceModule::new("__app", Vec::new(), application, true));
+    let module = link_modules(sources).map_err(|errors| {
+        for error in &errors {
+            eprintln!("{}: {error}", path.display());
+        }
+        format!("check failed with {} module error(s)", errors.len())
+    })?;
 
     let resolution = ScopeBuilder::resolve(&module);
 

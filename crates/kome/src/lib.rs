@@ -462,9 +462,15 @@ fn run_compiler(
         invocation.arg(output);
     }
     for dependency in dependencies {
-        invocation.arg("--source").arg(&dependency.source);
+        invocation
+            .arg("--package-source")
+            .arg(&dependency.name)
+            .arg(&dependency.source);
         for source in &dependency.sources {
-            invocation.arg("--source").arg(source);
+            invocation
+                .arg("--package-source")
+                .arg(&dependency.name)
+                .arg(source);
         }
     }
 

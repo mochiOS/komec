@@ -1,7 +1,7 @@
 use std::io
 
 fn greet() {
-    println("Hello")
+    io::println("Hello")
 }
 
 fn main() {

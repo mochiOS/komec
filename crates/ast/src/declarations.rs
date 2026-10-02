@@ -389,9 +389,7 @@ impl AstNode for UseImport {
     fn span(&self) -> Span {
         match self {
             UseImport::Module(path) => path.span,
-            UseImport::AliasedModule { path, alias } => {
-                Span::new(path.span.start, alias.span.end)
-            }
+            UseImport::AliasedModule { path, alias } => Span::new(path.span.start, alias.span.end),
             UseImport::Wildcard { span } | UseImport::WildcardFrom { span, .. } => *span,
         }
     }

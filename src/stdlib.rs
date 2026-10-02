@@ -29,6 +29,8 @@ struct KomeupConfig {
 #[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct LoadedModule {
+    /// Canonical module path beginning with `std`.
+    pub name: Vec<String>,
     pub path: PathBuf,
     pub source: String,
     pub module: Module,
@@ -129,7 +131,13 @@ impl StandardLibrary {
 
         let mut loaded = HashSet::new();
 
-        while let Some(path) = pending.pop_front() {
+        while let Some(mut path) = pending.pop_front() {
+            if !self.module_exists(&path)
+                && path.len() > 2
+                && self.module_exists(&path[..path.len() - 1])
+            {
+                path.pop();
+            }
             let key = path.join(".");
 
             if !loaded.insert(key) {
@@ -215,10 +223,22 @@ impl StandardLibrary {
             kome_parser::parse(&source).map_err(|error| format!("{}: {error}", path.display(),))?;
 
         Ok(LoadedModule {
+            name: segments.to_vec(),
             path,
             source,
             module,
         })
+    }
+
+    fn module_exists(&self, segments: &[String]) -> bool {
+        if segments.len() < 2 || !is_known_package(&segments[0]) {
+            return false;
+        }
+        let mut base = self.root.clone();
+        for segment in &segments[1..] {
+            base.push(segment);
+        }
+        base.with_extension("kome").is_file() || base.join("mod.kome").is_file()
     }
 }
 
@@ -231,8 +251,11 @@ fn standard_library_imports(module: &Module) -> Vec<Vec<String>> {
         };
 
         for import in &use_declaration.imports {
-            let (UseImport::Module(path) | UseImport::AliasedModule { path, .. }) = import else {
-                continue;
+            let path = match import {
+                UseImport::Module(path)
+                | UseImport::AliasedModule { path, .. }
+                | UseImport::WildcardFrom { path, .. } => path,
+                UseImport::Wildcard { .. } => continue,
             };
 
             let segments = path

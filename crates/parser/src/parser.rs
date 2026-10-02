@@ -139,15 +139,11 @@ impl Parser {
             return Ok(Declaration::Function(declaration));
         }
 
-        if self.at(|kind| matches!(kind, TokenKind::Let))
-            && visibility == Visibility::Private
-        {
+        if self.at(|kind| matches!(kind, TokenKind::Let)) && visibility == Visibility::Private {
             return self.parse_let_binding(attributes).map(Declaration::Let);
         }
 
-        if self.at(|kind| matches!(kind, TokenKind::Var))
-            && visibility == Visibility::Private
-        {
+        if self.at(|kind| matches!(kind, TokenKind::Var)) && visibility == Visibility::Private {
             return self.parse_var_binding(attributes).map(Declaration::Let);
         }
 
@@ -662,9 +658,7 @@ impl Parser {
             return Ok(ComponentMember::Let(Box::new(binding)));
         }
 
-        if self.at(|kind| matches!(kind, TokenKind::Recipe))
-            && visibility == Visibility::Private
-        {
+        if self.at(|kind| matches!(kind, TokenKind::Recipe)) && visibility == Visibility::Private {
             return self
                 .parse_recipe_declaration(attributes)
                 .map(ComponentMember::Recipe);
