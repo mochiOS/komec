@@ -2,7 +2,10 @@ use kome_lsp::definition::definition_at;
 use kome_lsp::diagnostics::syntax_diagnostics;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
-use tower_lsp::lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, OneOf};
+use tower_lsp::lsp_types::{
+    CompletionOptions, CompletionParams, CompletionResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, OneOf,
+};
 use tower_lsp::{
     Client, LanguageServer, LspService, Server,
     jsonrpc::Result,
@@ -45,6 +48,8 @@ impl LanguageServer for Backend {
                 )),
 
                 definition_provider: Some(OneOf::Left(true)),
+
+                completion_provider: Some(CompletionOptions::default()),
 
                 ..ServerCapabilities::default()
             },
@@ -151,6 +156,18 @@ impl LanguageServer for Backend {
 
         Ok(definition.map(GotoDefinitionResponse::Scalar))
     }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let documents = self.documents.read().await;
+        let Some(source) = documents.get(&uri) else {
+            return Ok(None);
+        };
+        Ok(Some(CompletionResponse::Array(completion_at(
+            source, position,
+        ))))
+    }
 }
 
 #[tokio::main]
@@ -165,3 +182,4 @@ async fn main() {
 
     Server::new(stdin, stdout, socket).serve(service).await;
 }
+use kome_lsp::completion::completion_at;

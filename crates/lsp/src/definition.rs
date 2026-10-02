@@ -1,6 +1,6 @@
 use crate::position::{position_to_byte_offset, span_to_range};
 use kome_ast::Span;
-use kome_ast::declarations::{Declaration, Module, UseImport};
+use kome_ast::declarations::{Declaration, Module, PathSegmentKind, UseImport, Visibility};
 use kome_semantics::resolver::ScopeBuilder;
 use kome_semantics::scope::Reference;
 use komec::stdlib::{LoadedModule, StandardLibrary};
@@ -67,9 +67,71 @@ fn standard_symbol_definition(
     modules: &[LoadedModule],
 ) -> Option<Location> {
     let (loaded, symbol) = imported_symbol(name, application, modules)?;
-    let definition_span = find_top_level_definition(&loaded.module, &symbol)?;
-
+    let mut visited = Vec::new();
+    let (loaded, definition_span) = exported_definition(loaded, &symbol, modules, &mut visited)?;
     loaded_location(loaded, definition_span)
+}
+
+fn exported_definition<'a>(
+    loaded: &'a LoadedModule,
+    symbol: &str,
+    modules: &'a [LoadedModule],
+    visited: &mut Vec<(Vec<String>, String)>,
+) -> Option<(&'a LoadedModule, Span)> {
+    let key = (loaded.name.clone(), symbol.to_owned());
+    if visited.contains(&key) {
+        return None;
+    }
+    visited.push(key);
+
+    if let Some(span) = find_top_level_definition(&loaded.module, symbol) {
+        return Some((loaded, span));
+    }
+
+    for declaration in &loaded.module.declarations {
+        let Declaration::Use(use_declaration) = declaration else {
+            continue;
+        };
+        if use_declaration.visibility != Visibility::Public {
+            continue;
+        }
+        for import in &use_declaration.imports {
+            match import {
+                UseImport::Module(path) | UseImport::AliasedModule { path, .. } => {
+                    let segments = identifier_segments(path);
+                    let (target_symbol, module_name) = segments.split_last()?;
+                    let local = match import {
+                        UseImport::AliasedModule { alias, .. } => match &alias.kind {
+                            PathSegmentKind::Ident(name) => name,
+                            _ => continue,
+                        },
+                        _ => target_symbol,
+                    };
+                    if local != symbol {
+                        continue;
+                    }
+                    let target = modules.iter().find(|module| module.name == module_name)?;
+                    if let Some(definition) =
+                        exported_definition(target, target_symbol, modules, visited)
+                    {
+                        return Some(definition);
+                    }
+                }
+                UseImport::WildcardFrom { path, .. } => {
+                    let segments = identifier_segments(path);
+                    let Some(target) = modules.iter().find(|module| module.name == segments) else {
+                        continue;
+                    };
+                    if let Some(definition) = exported_definition(target, symbol, modules, visited)
+                    {
+                        return Some(definition);
+                    }
+                }
+                UseImport::Wildcard { .. } => {}
+            }
+        }
+    }
+    None
 }
 
 fn imported_symbol<'a>(
@@ -211,16 +273,16 @@ fn import_definition_at(
                 continue;
             }
 
-            let loaded = find_imported_module(standard_library.root(), modules, &segments)
-                .or_else(|| {
-                    segments
-                        .get(..segments.len().saturating_sub(1))
-                        .and_then(|segments| {
-                            find_imported_module(standard_library.root(), modules, segments)
-                        })
-                })?;
-
-            return loaded_location(loaded, Span::new(0, 0));
+            if let Some(loaded) = find_imported_module(standard_library.root(), modules, &segments)
+            {
+                return loaded_location(loaded, Span::new(0, 0));
+            }
+            let (symbol, module_segments) = segments.split_last()?;
+            let loaded = find_imported_module(standard_library.root(), modules, module_segments)?;
+            let mut visited = Vec::new();
+            let (definition_module, span) =
+                exported_definition(loaded, symbol, modules, &mut visited)?;
+            return loaded_location(definition_module, span);
         }
     }
 
