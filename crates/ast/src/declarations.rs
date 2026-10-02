@@ -260,10 +260,10 @@ pub struct Binding {
 /// One or more module imports.
 ///
 /// ```kome
-/// use std.io
-/// use viewKit
-/// use collections, io
-/// use *
+/// use std::io
+/// use std::io::println
+/// use std::io as console
+/// use std::io::*
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseDeclaration {

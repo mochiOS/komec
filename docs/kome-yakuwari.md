@@ -125,8 +125,9 @@ appcore = { system = true }
 system dependencyの依存も再帰的に解決されるため、AppCoreからViewKitが自動的に
 読み込まれます。
 
-依存パッケージの`[lib].source`は`kome`が解決し、`komec --source`へ明示的に
-渡します。native libraryの探索パスも依存ルートから組み立てて渡します。
+依存パッケージの`[lib].source`は`kome`が解決し、
+`komec --package-source <package> <source>`へ明示的に渡します。native libraryの探索パスも
+依存ルートから組み立てて渡します。
 `komec`自身は`Kome.toml`を読みません。
 
 ## コマンド

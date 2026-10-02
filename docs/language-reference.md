@@ -315,15 +315,41 @@ brace内の最後のexpressionはblock全体の値になります。最後がsta
 
 ## Import
 
-`use`はpackage moduleへの参照を宣言します。path separatorは`::`です。
-標準ライブラリでは、たとえば`use std::io`により対応するmoduleを読み込みます。
+`use`はパッケージやモジュールへの参照を宣言します。パスの区切りは`::`、値のメンバー参照は
+`.`です。`use std::io`の後は`io::println(...)`、`use std::io::println`の後は
+`println(...)`と記述します。`use std::io as console`による別名と、`use std::io::*`による
+公開宣言の一括取り込みも使用できます。一括取り込みで同名の宣言が生じた場合はエラーです。
 
-packageの場所とsource fileは`kome`が解決します。`komec`は解決済みsourceを受け取り、
-package registryや`Kome.toml`を探索しません。現在のmodule結合は単一のglobal namespaceを
-使用するため、依存間の同名宣言は衝突します。
+宣言の完全な名前は、利用側の別名に左右されません。たとえば`io::println`と
+`console::println`は、どちらも`std::io::println`を参照します。異なるパッケージにある同名宣言は
+別の宣言として扱われます。モジュール間の循環参照はエラーです。
 
-現在、宣言単位の`public`または`private`修飾子はありません。結合されたpackage sourceのtop-level
-宣言は同じmoduleから参照可能です。
+パッケージの場所とソースファイルは`kome`が解決します。`komec`は
+`--package-source <package> <source>`で解決済みソースを受け取り、パッケージの登録先や
+`Kome.toml`を探索しません。
+
+## 公開範囲
+
+修飾子のない宣言は、そのモジュール内だけで参照できます。`pub(package)`は同じパッケージ内、
+`pub`は依存する別パッケージからも参照できます。この規則はトップレベル宣言、構造体の
+フィールド、固有実装の関数、関連定数に適用されます。traitに宣言した関数は公開されます。
+
+公開フィールドを非公開の構造体に置くことや、公開関数の引数または戻り値に、それより狭い
+公開範囲の型を使うことはできません。構造体の生成でもフィールド参照でも、利用位置から見える
+フィールドだけを使用できます。
+
+```kome
+pub struct User {
+	pub name: String,
+	id: Number,
+}
+
+for User {
+	pub fn name(self) -> String {
+		return self.name
+	}
+}
+```
 
 ## Attribute
 
@@ -361,4 +387,3 @@ ABI契約を明示する必要があります。
 - exception処理とruntime errorをcatchする構文はありません。
 - optional値をunwrapする専用構文はありません。
 - pointer演算とKome側のdereferenceはありません。
-- moduleごとのnamespace分離はまだありません。
