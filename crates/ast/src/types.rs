@@ -56,7 +56,7 @@ pub struct PointerType {
     pub pointee: Box<Type>,
 }
 
-/// `(parameter) => ReturnType`
+/// `(parameter: Type) -> ReturnType`
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionType {
     pub span: Span,

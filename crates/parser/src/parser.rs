@@ -26,8 +26,8 @@ use kome_ast::{
         IfStatement, IsStatement, ReturnStatement, Statement, WhileStatement,
     },
     types::{
-        NamedType, OptionalType, Parameter, PointerMutability, PointerType, PrimitiveType,
-        PrimitiveTypeKind, Type,
+        FunctionType, NamedType, OptionalType, Parameter, PointerMutability, PointerType,
+        PrimitiveType, PrimitiveTypeKind, Type,
     },
 };
 
@@ -957,6 +957,8 @@ impl Parser {
                 mutability,
                 pointee: Box::new(pointee),
             })
+        } else if self.at(|kind| matches!(kind, TokenKind::LParen)) {
+            self.parse_function_type()?
         } else {
             self.parse_primary_type()?
         };
@@ -984,6 +986,39 @@ impl Parser {
         }
 
         Ok(type_)
+    }
+
+    fn parse_function_type(&mut self) -> Result<Type, ParseError> {
+        let opening = self.expect("`(`", |kind| matches!(kind, TokenKind::LParen))?;
+        let mut params = Vec::new();
+
+        while !self.at(|kind| matches!(kind, TokenKind::RParen)) {
+            let (name, name_span) = self.expect_identifier("a function type parameter name")?;
+            self.expect("`:`", |kind| matches!(kind, TokenKind::Colon))?;
+            let type_ = self.parse_type()?;
+            params.push(Parameter {
+                span: Span::new(name_span.start, type_.span().end),
+                name,
+                type_,
+                default: None,
+            });
+
+            if !self.at(|kind| matches!(kind, TokenKind::Comma)) {
+                break;
+            }
+            self.advance();
+        }
+
+        self.expect("`)`", |kind| matches!(kind, TokenKind::RParen))?;
+        self.expect("`->`", |kind| matches!(kind, TokenKind::ThinArrow))?;
+        let return_type = self.parse_type()?;
+        let span = Span::new(opening.span.start, return_type.span().end);
+
+        Ok(Type::Function(FunctionType {
+            span,
+            params,
+            return_type: Box::new(return_type),
+        }))
     }
 
     fn parse_primary_type(&mut self) -> Result<Type, ParseError> {
@@ -1892,6 +1927,10 @@ impl Parser {
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
+        if self.at(|kind| matches!(kind, TokenKind::Or)) {
+            return self.parse_empty_closure_expression();
+        }
+
         if self.at(|kind| matches!(kind, TokenKind::Pipe)) {
             return self.parse_closure_expression();
         }
@@ -2040,6 +2079,18 @@ impl Parser {
         Ok(Expression::Closure(ClosureExpression {
             span,
             params,
+            body: Box::new(body),
+        }))
+    }
+
+    fn parse_empty_closure_expression(&mut self) -> Result<Expression, ParseError> {
+        let opening = self.expect("`||`", |kind| matches!(kind, TokenKind::Or))?;
+        let body = self.parse_assignment_expression()?;
+        let span = Span::new(opening.span.start, body.span().end);
+
+        Ok(Expression::Closure(ClosureExpression {
+            span,
+            params: Vec::new(),
             body: Box::new(body),
         }))
     }

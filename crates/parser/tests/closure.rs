@@ -82,6 +82,15 @@ fn parses_typed_closure_parameter() {
 }
 
 #[test]
+fn parses_empty_closure() {
+    let expression = kome_parser::parse_expression("|| 42").unwrap();
+    let Expression::Closure(closure) = expression else {
+        panic!("expected closure")
+    };
+    assert!(closure.params.is_empty());
+}
+
+#[test]
 fn parses_closure_with_block_body() {
     let expression = parse_expression(
         r#"|value| {
