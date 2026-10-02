@@ -1,4 +1,6 @@
-use kome_native_rt::io::{sleep, socket_connect, socket_read, socket_write};
+use kome_native_rt::io::{
+    managed_socket_accept, sleep, socket_bind, socket_connect, socket_read, socket_write,
+};
 use kome_native_rt::string::{KomeString, release};
 use kome_native_rt::task::{
     __kome_task_dealloc, __kome_task_release, __kome_task_result, __kome_task_spawn,
@@ -109,4 +111,20 @@ fn managed_socket_connects_to_a_tcp_listener() {
     assert!(!socket.is_closed());
     socket.close().unwrap();
     let _ = server.join().unwrap();
+}
+
+#[test]
+fn managed_listener_accepts_a_tcp_connection() {
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let listener = socket_bind("127.0.0.1", port).unwrap();
+    let client = std::thread::spawn(move || std::net::TcpStream::connect(("127.0.0.1", port)));
+
+    let accepted = managed_socket_accept(&listener).unwrap();
+    assert!(!accepted.is_closed());
+    accepted.close().unwrap();
+    listener.close().unwrap();
+    let _ = client.join().unwrap();
 }

@@ -311,10 +311,9 @@ mod tests {
 
     #[test]
     fn loads_only_explicitly_imported_modules() {
-        let standard_library = StandardLibrary::load(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/stdlib"),
-        )
-        .unwrap();
+        let standard_library =
+            StandardLibrary::load(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/stdlib"))
+                .unwrap();
 
         let empty = kome_parser::parse("fn main() {}").unwrap();
         assert!(standard_library.modules_for(&empty).unwrap().is_empty());
@@ -323,7 +322,15 @@ mod tests {
         let modules = standard_library.modules_for(&imported).unwrap();
 
         assert_eq!(modules.len(), 2);
-        assert!(modules.iter().any(|module| module.path.ends_with("core/mod.kome")));
-        assert!(modules.iter().any(|module| module.path.ends_with("net/mod.kome")));
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.path.ends_with("core/mod.kome"))
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.path.ends_with("net/mod.kome"))
+        );
     }
 }

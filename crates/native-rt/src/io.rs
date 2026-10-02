@@ -88,6 +88,84 @@ pub fn socket_connect(host: &str, port: u16) -> io::Result<KomeSocket> {
     Ok(socket)
 }
 
+/// Opens a non-blocking TCP listener on a numeric IPv4 or IPv6 address.
+pub fn socket_bind(host: &str, port: u16) -> io::Result<KomeSocket> {
+    let address = host.parse::<IpAddr>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "listener host must be a numeric IPv4 or IPv6 address",
+        )
+    })?;
+    let domain = match address {
+        IpAddr::V4(_) => libc::AF_INET,
+        IpAddr::V6(_) => libc::AF_INET6,
+    };
+    let fd = unsafe {
+        libc::socket(
+            domain,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let socket = KomeSocket::from_owned_fd(fd)?;
+    let reuse = 1_i32;
+    let status = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&reuse as *const i32).cast(),
+            std::mem::size_of_val(&reuse) as libc::socklen_t,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let status = match address {
+        IpAddr::V4(address) => bind_v4(fd, address, port),
+        IpAddr::V6(address) => bind_v6(fd, address, port),
+    };
+    if status < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::listen(fd, 128) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(socket)
+}
+
+/// Cooperatively waits for and accepts one connection from a TCP listener.
+pub fn managed_socket_accept(listener: &KomeSocket) -> io::Result<KomeSocket> {
+    let fd = listener.fd()?;
+    loop {
+        let accepted = unsafe {
+            libc::accept4(
+                fd,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            )
+        };
+        if accepted >= 0 {
+            return KomeSocket::from_owned_fd(accepted);
+        }
+        let error = io::Error::last_os_error();
+        match error.kind() {
+            io::ErrorKind::Interrupted => continue,
+            io::ErrorKind::WouldBlock => {
+                let status = __kome_task_wait_readable(fd);
+                if status < 0 {
+                    return Err(io::Error::from_raw_os_error(-status));
+                }
+            }
+            _ => return Err(error),
+        }
+    }
+}
+
 fn connect_v4(fd: RawFd, address: Ipv4Addr, port: u16) -> i32 {
     let address = libc::sockaddr_in {
         sin_family: libc::AF_INET as libc::sa_family_t,
@@ -118,6 +196,43 @@ fn connect_v6(fd: RawFd, address: Ipv6Addr, port: u16) -> i32 {
     };
     unsafe {
         libc::connect(
+            fd,
+            (&address as *const libc::sockaddr_in6).cast(),
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    }
+}
+
+fn bind_v4(fd: RawFd, address: Ipv4Addr, port: u16) -> i32 {
+    let address = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: port.to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from_ne_bytes(address.octets()),
+        },
+        sin_zero: [0; 8],
+    };
+    unsafe {
+        libc::bind(
+            fd,
+            (&address as *const libc::sockaddr_in).cast(),
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    }
+}
+
+fn bind_v6(fd: RawFd, address: Ipv6Addr, port: u16) -> i32 {
+    let address = libc::sockaddr_in6 {
+        sin6_family: libc::AF_INET6 as libc::sa_family_t,
+        sin6_port: port.to_be(),
+        sin6_flowinfo: 0,
+        sin6_addr: libc::in6_addr {
+            s6_addr: address.octets(),
+        },
+        sin6_scope_id: 0,
+    };
+    unsafe {
+        libc::bind(
             fd,
             (&address as *const libc::sockaddr_in6).cast(),
             std::mem::size_of_val(&address) as libc::socklen_t,

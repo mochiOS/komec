@@ -136,6 +136,8 @@ pub fn builtin_registry() -> NativeRegistry {
     registry.register("core.write_error_line", write_error_line);
     registry.register("io.sleep", io_sleep);
     registry.register("io.socket_connect", io_socket_connect);
+    registry.register("io.socket_bind", io_socket_bind);
+    registry.register("io.socket_accept", io_socket_accept);
     registry.register("io.socket_read", io_socket_read);
     registry.register("io.socket_write", io_socket_write);
     registry.register("io.socket_close", io_socket_close);
@@ -190,6 +192,31 @@ fn io_socket_connect(arguments: &[Value]) -> Result<Value, RuntimeError> {
     io::socket_connect(host.as_str(), port)
         .map(Value::Socket)
         .map_err(|error| RuntimeError::native(format!("socket connect failed: {error}")))
+}
+
+fn io_socket_bind(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::String(host), port] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_bind expects a String host and Number port",
+        ));
+    };
+    let port = integer_argument(port, "listener port")?;
+    let port = u16::try_from(port)
+        .map_err(|_| RuntimeError::native("listener port must be between 0 and 65535"))?;
+    io::socket_bind(host.as_str(), port)
+        .map(Value::Socket)
+        .map_err(|error| RuntimeError::native(format!("socket bind failed: {error}")))
+}
+
+fn io_socket_accept(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::Socket(listener)] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_accept expects a TcpListener",
+        ));
+    };
+    io::managed_socket_accept(listener)
+        .map(Value::Socket)
+        .map_err(|error| RuntimeError::native(format!("socket accept failed: {error}")))
 }
 
 fn io_socket_read(arguments: &[Value]) -> Result<Value, RuntimeError> {
