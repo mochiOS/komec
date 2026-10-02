@@ -1021,9 +1021,21 @@ pub fn native_symbol(function: &FunctionDeclaration) -> CodegenResult<Option<&st
     Ok(Some(symbol.as_str()))
 }
 
-/// The mangled symbol for a user function.
+/// Returns the deterministic native symbol for a Kome function name.
 pub fn mangled_name(name: &str) -> String {
-    format!("kome_{name}")
+    if name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return format!("kome_{name}");
+    }
+
+    let encoded = name
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("kome_q{encoded}")
 }
 
 /// Compiles every user function in the module.
@@ -6909,4 +6921,26 @@ fn unsupported_statement(kind: &str, statement: &Statement) -> CodegenError {
         format!("statement `{kind}` is not supported yet"),
         statement.span(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mangled_name;
+
+    #[test]
+    fn mangles_qualified_names_without_native_punctuation() {
+        let symbol = mangled_name("std::io::println");
+
+        assert_eq!(symbol, "kome_q7374643a3a696f3a3a7072696e746c6e");
+        assert!(
+            symbol
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        );
+    }
+
+    #[test]
+    fn preserves_simple_function_symbols() {
+        assert_eq!(mangled_name("main"), "kome_main");
+    }
 }
