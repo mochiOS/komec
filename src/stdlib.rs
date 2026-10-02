@@ -19,9 +19,6 @@ const KOMEUP_HOME_ENV: &str = "KOMEUP_HOME";
 
 pub struct StandardLibrary {
     root: PathBuf,
-    prelude_path: PathBuf,
-    prelude_source: String,
-    prelude: Module,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,32 +117,13 @@ impl StandardLibrary {
             ));
         }
 
-        let prelude_path = root.join("prelude.kome");
-
-        let prelude_source = read_source(&prelude_path)?;
-
-        let prelude = kome_parser::parse(&prelude_source)
-            .map_err(|error| format!("{}: {error}", prelude_path.display(),))?;
-
-        Ok(Self {
-            root,
-            prelude_path,
-            prelude_source,
-            prelude,
-        })
+        Ok(Self { root })
     }
 
-    /// Resolves and loads the prelude and standard-library modules imported by `application`.
+    /// Resolves and loads the standard-library modules imported by `application`.
     pub fn modules_for(&self, application: &Module) -> Result<Vec<LoadedModule>, String> {
-        let mut modules = vec![LoadedModule {
-            path: self.prelude_path.clone(),
-            source: self.prelude_source.clone(),
-            module: self.prelude.clone(),
-        }];
-
+        let mut modules = Vec::new();
         let mut pending = VecDeque::new();
-
-        pending.extend(standard_library_imports(&self.prelude));
 
         pending.extend(standard_library_imports(application));
 
@@ -173,30 +151,7 @@ impl StandardLibrary {
         &self.root
     }
 
-    /// Returns the source path of the loaded prelude.
-    pub fn prelude_path(&self) -> &Path {
-        &self.prelude_path
-    }
-
-    /// Returns the parsed prelude module.
-    pub fn prelude(&self) -> &Module {
-        &self.prelude
-    }
-
-    /// 従来どおりpreludeだけを結合します。
-    pub fn merge_with(&self, mut application: Module) -> Module {
-        let mut declarations =
-            Vec::with_capacity(self.prelude.declarations.len() + application.declarations.len());
-
-        declarations.extend(self.prelude.declarations.iter().cloned());
-
-        declarations.append(&mut application.declarations);
-
-        Module::new(declarations, application.span)
-    }
-
-    /// preludeと、アプリが`use std.*`で
-    /// importしたモジュールを結合します。
+    /// Combines the application with modules imported through `use std::...`.
     pub fn merge_with_imports(&self, mut application: Module) -> Result<Module, String> {
         let modules = self.modules_for(&application)?;
 
@@ -339,7 +294,7 @@ fn read_source(path: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::installed_prefix_from;
+    use super::{StandardLibrary, installed_prefix_from};
     use std::path::PathBuf;
 
     #[test]
@@ -352,5 +307,23 @@ mod tests {
             installed_prefix_from(std::path::Path::new("/workspace/target/debug/komec")),
             None,
         );
+    }
+
+    #[test]
+    fn loads_only_explicitly_imported_modules() {
+        let standard_library = StandardLibrary::load(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/stdlib"),
+        )
+        .unwrap();
+
+        let empty = kome_parser::parse("fn main() {}").unwrap();
+        assert!(standard_library.modules_for(&empty).unwrap().is_empty());
+
+        let imported = kome_parser::parse("use std::core\nuse std::net\nfn main() {}").unwrap();
+        let modules = standard_library.modules_for(&imported).unwrap();
+
+        assert_eq!(modules.len(), 2);
+        assert!(modules.iter().any(|module| module.path.ends_with("core/mod.kome")));
+        assert!(modules.iter().any(|module| module.path.ends_with("net/mod.kome")));
     }
 }

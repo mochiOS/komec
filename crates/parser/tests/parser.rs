@@ -82,6 +82,31 @@ fn parses_double_colon_use_declaration() {
 }
 
 #[test]
+fn parses_task_keyword_in_use_path() {
+    let source = "use std::task";
+    let module = parse(source).unwrap();
+
+    let Declaration::Use(declaration) = &module.declarations[0] else {
+        panic!("expected use declaration");
+    };
+
+    let UseImport::Module(path) = &declaration.imports[0] else {
+        panic!("expected module import");
+    };
+
+    assert_eq!(
+        path.segments
+            .iter()
+            .map(|segment| &segment.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            &PathSegmentKind::Ident("std".into()),
+            &PathSegmentKind::Ident("task".into()),
+        ],
+    );
+}
+
+#[test]
 fn parses_wildcard_use_declaration() {
     let module = parse("use *").unwrap();
 

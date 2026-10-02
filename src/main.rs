@@ -1,6 +1,6 @@
 mod stdlib;
 
-use kome_ast::declarations::{Declaration, Module};
+use kome_ast::declarations::Module;
 use kome_semantics::{
     error::ResolutionError, initialization::InitializationChecker, resolver::ScopeBuilder,
     typecheck::TypeChecker,
@@ -158,7 +158,6 @@ fn load_checked_module(path: &Path, dependency_sources: &[PathBuf]) -> Result<Mo
     let application =
         kome_parser::parse(&source).map_err(|error| format!("{}: {error}", path.display()))?;
 
-    let mut module = standard_library.merge_with_imports(application)?;
     let mut dependency_declarations = Vec::new();
 
     for dependency_path in dependency_sources {
@@ -170,16 +169,12 @@ fn load_checked_module(path: &Path, dependency_sources: &[PathBuf]) -> Result<Mo
         })?;
         let dependency = kome_parser::parse(&dependency_source)
             .map_err(|error| format!("{}: {error}", dependency_path.display()))?;
-        dependency_declarations.extend(
-            dependency
-                .declarations
-                .into_iter()
-                .filter(|declaration| !matches!(declaration, Declaration::Use(_))),
-        );
+        dependency_declarations.extend(dependency.declarations);
     }
 
-    dependency_declarations.append(&mut module.declarations);
-    module = Module::new(dependency_declarations, module.span);
+    dependency_declarations.extend(application.declarations);
+    let combined = Module::new(dependency_declarations, application.span);
+    let module = standard_library.merge_with_imports(combined)?;
 
     let resolution = ScopeBuilder::resolve(&module);
 

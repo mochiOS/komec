@@ -144,9 +144,7 @@ fn find_imported_module<'a>(
     let module_segments = segments.get(1..)?;
 
     if module_segments.is_empty() {
-        return modules
-            .iter()
-            .find(|loaded| loaded.path == standard_library_root.join("prelude.kome"));
+        return None;
     }
 
     let mut module_base = standard_library_root.to_path_buf();

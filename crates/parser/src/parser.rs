@@ -2238,11 +2238,12 @@ impl Parser {
         match token.kind {
             TokenKind::Star => Ok(UseImport::Wildcard { span: token_span }),
 
-            TokenKind::Ident(_) | TokenKind::Self_ | TokenKind::Super => {
+            TokenKind::Ident(_) | TokenKind::Self_ | TokenKind::Super | TokenKind::Task => {
                 let kind = match &token.kind {
                     TokenKind::Ident(name) => PathSegmentKind::Ident(name.clone()),
                     TokenKind::Self_ => PathSegmentKind::Self_,
                     TokenKind::Super => PathSegmentKind::Super,
+                    TokenKind::Task => PathSegmentKind::Ident("task".to_owned()),
                     _ => unreachable!(),
                 };
 
@@ -2267,6 +2268,7 @@ impl Parser {
                             TokenKind::Ident(name) => PathSegmentKind::Ident(name.clone()),
                             TokenKind::Self_ => PathSegmentKind::Self_,
                             TokenKind::Super => PathSegmentKind::Super,
+                            TokenKind::Task => PathSegmentKind::Ident("task".to_owned()),
                             found => {
                                 return Err(ParseError::new(
                                     ParseErrorKind::Expected {
