@@ -4,6 +4,7 @@ use kome_ast::statements::Statement;
 use kome_parser::parse;
 use kome_semantics::modules::{SourceModule, link_modules};
 use kome_semantics::resolver::ScopeBuilder;
+use kome_semantics::typecheck::TypeChecker;
 
 fn source(package: &str, path: &[&str], text: &str, application: bool) -> SourceModule {
     SourceModule::new(
@@ -104,4 +105,100 @@ fn allows_package_visibility_only_inside_the_package() {
     ])
     .unwrap_err();
     assert!(errors[0].message.contains("not visible"));
+}
+
+#[test]
+fn enforces_struct_field_visibility() {
+    let linked = link_modules(vec![
+        source(
+            "library",
+            &[],
+            r#"
+pub struct Value { hidden: Number, pub visible: Number }
+for Value {
+    pub fn make(value: Number) -> Value {
+        return Value { hidden: value, visible: value }
+    }
+}
+"#,
+            false,
+        ),
+        source(
+            "app",
+            &[],
+            r#"
+use library::Value
+fn main() {
+    let value = Value.make(1)
+    let hidden = value.hidden
+}
+"#,
+            true,
+        ),
+    ])
+    .unwrap();
+    let checked = TypeChecker::check(&linked);
+    assert!(
+        checked
+            .errors
+            .iter()
+            .any(|error| error.message.contains("member `hidden`")
+                && error.message.contains("not visible"))
+    );
+}
+
+#[test]
+fn enforces_inherent_method_visibility() {
+    let linked = link_modules(vec![
+        source(
+            "library",
+            &[],
+            r#"
+pub struct Value {}
+for Value {
+    pub fn make() -> Value { return Value {} }
+    fn hidden(self) -> Number { return 1 }
+}
+"#,
+            false,
+        ),
+        source(
+            "app",
+            &[],
+            r#"
+use library::Value
+fn main() {
+    let value = Value.make()
+    let hidden = value.hidden()
+}
+"#,
+            true,
+        ),
+    ])
+    .unwrap();
+    let checked = TypeChecker::check(&linked);
+    assert!(
+        checked
+            .errors
+            .iter()
+            .any(|error| error.message.contains("member `hidden`")
+                && error.message.contains("not visible"))
+    );
+}
+
+#[test]
+fn rejects_private_types_in_public_signatures() {
+    let errors = link_modules(vec![source(
+        "library",
+        &[],
+        "struct Hidden {}\npub fn expose() -> Hidden { return Hidden {} }",
+        false,
+    )])
+    .unwrap_err();
+
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("public API exposes less-visible type")
+    }));
 }

@@ -250,6 +250,7 @@ pub struct TypeCheckResult {
 #[derive(Debug, Clone)]
 pub struct StructTypeInfo {
     pub fields: Option<HashMap<String, SemanticType>>,
+    pub field_visibility: HashMap<String, kome_ast::declarations::Visibility>,
     pub type_parameters: Vec<String>,
     pub runtime: Option<String>,
 }
@@ -268,7 +269,9 @@ pub struct TypeImplementationInfo {
     pub target: SemanticType,
     pub trait_: Option<SemanticType>,
     methods: HashMap<String, FunctionSignature>,
+    method_visibility: HashMap<String, kome_ast::declarations::Visibility>,
     constants: HashMap<String, SemanticType>,
+    constant_visibility: HashMap<String, kome_ast::declarations::Visibility>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +314,7 @@ pub struct TypeChecker {
     structs: HashMap<String, StructTypeInfo>,
     traits: HashMap<String, TraitTypeInfo>,
     implementations: Vec<TypeImplementationInfo>,
+    current_module: String,
     return_type: SemanticType,
     loop_depth: usize,
     in_drop_body: bool,
@@ -328,6 +332,7 @@ impl TypeChecker {
             structs: HashMap::new(),
             traits: HashMap::new(),
             implementations: Vec::new(),
+            current_module: "__app".into(),
             return_type: SemanticType::Void,
             loop_depth: 0,
             in_drop_body: false,
@@ -416,10 +421,20 @@ impl TypeChecker {
             .collect::<Vec<_>>();
         let target = Self::type_from_annotation_with(&declaration.target, &generic_parameters);
         let mut methods = HashMap::new();
+        let mut method_visibility = HashMap::new();
         let mut constants = HashMap::new();
+        let mut constant_visibility = HashMap::new();
         for member in &declaration.members {
             match member {
                 TypeMember::Function(function) => {
+                    method_visibility.insert(
+                        function.name.clone(),
+                        if declaration.trait_.is_some() {
+                            kome_ast::declarations::Visibility::Public
+                        } else {
+                            function.visibility
+                        },
+                    );
                     methods.insert(
                         function.name.clone(),
                         Self::signature_with(function, Some(&target), &generic_parameters),
@@ -427,6 +442,7 @@ impl TypeChecker {
                 }
                 TypeMember::Constant(binding) => {
                     if let Pattern::Ident(identifier) = &binding.pattern {
+                        constant_visibility.insert(identifier.name.clone(), binding.visibility);
                         constants.insert(
                             identifier.name.clone(),
                             binding
@@ -448,7 +464,9 @@ impl TypeChecker {
                 .as_ref()
                 .map(|value| Self::type_from_annotation_with(value, &generic_parameters)),
             methods,
+            method_visibility,
             constants,
+            constant_visibility,
         });
     }
 
@@ -510,6 +528,13 @@ impl TypeChecker {
                 })
                 .collect()
         });
+        let field_visibility = struct_decl
+            .fields
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|field| (field.name.clone(), field.visibility))
+            .collect();
         let runtime = struct_decl.attributes.iter().find_map(|attribute| {
             if attribute.name != "runtime" || attribute.args.len() != 1 {
                 return None;
@@ -530,6 +555,7 @@ impl TypeChecker {
                 struct_decl.name.clone(),
                 StructTypeInfo {
                     fields,
+                    field_visibility,
                     type_parameters,
                     runtime,
                 },
@@ -730,18 +756,24 @@ impl TypeChecker {
         for declaration in &module.declarations {
             match declaration {
                 Declaration::Function(function) => {
+                    self.current_module = module_name_for_declaration(&function.name);
                     self.visit_function(function);
                 }
 
                 Declaration::Component(component) => {
+                    self.current_module = module_name_for_declaration(&component.name);
                     self.visit_component(component);
                 }
 
                 Declaration::Constant(binding) => {
+                    if let Pattern::Ident(identifier) = &binding.pattern {
+                        self.current_module = module_name_for_declaration(&identifier.name);
+                    }
                     self.register_binding(binding);
                 }
 
                 Declaration::For(declaration) => {
+                    self.current_module = module_name_for_type(&declaration.target);
                     self.visit_implementation(declaration);
                 }
 
@@ -770,6 +802,7 @@ impl TypeChecker {
                                 }
                             }
                             kome_ast::declarations::ExternItem::Function(function) => {
+                                self.current_module = module_name_for_declaration(&function.name);
                                 self.visit_function(function);
                             }
                         }
@@ -1240,13 +1273,30 @@ impl TypeChecker {
                     && self.structs.contains_key(&identifier.name)
                 {
                     let target = SemanticType::Named(identifier.name.clone());
-                    return self
+                    let found = self
                         .implementations
                         .iter()
                         .find(|implementation| implementation.target == target)
-                        .and_then(|implementation| implementation.constants.get(&member.property))
-                        .cloned()
-                        .unwrap_or(SemanticType::Unknown);
+                        .and_then(|implementation| {
+                            Some((
+                                implementation.constants.get(&member.property)?.clone(),
+                                implementation
+                                    .constant_visibility
+                                    .get(&member.property)
+                                    .copied()
+                                    .unwrap_or(kome_ast::declarations::Visibility::Private),
+                            ))
+                        });
+                    if let Some((type_, visibility)) = found {
+                        self.check_visibility(
+                            &identifier.name,
+                            &member.property,
+                            visibility,
+                            member.span,
+                        );
+                        return type_;
+                    }
+                    return SemanticType::Unknown;
                 }
                 let previous_access = self.allow_drop_self_access;
                 if self.in_drop_body
@@ -1258,13 +1308,24 @@ impl TypeChecker {
                 self.allow_drop_self_access = previous_access;
 
                 match object {
-                    SemanticType::Named(name) => self
-                        .structs
-                        .get(&name)
-                        .and_then(|struct_| struct_.fields.as_ref())
-                        .and_then(|fields| fields.get(&member.property))
-                        .cloned()
-                        .unwrap_or(SemanticType::Unknown),
+                    SemanticType::Named(name) => {
+                        let found = self.structs.get(&name).and_then(|struct_| {
+                            Some((
+                                struct_.fields.as_ref()?.get(&member.property)?.clone(),
+                                struct_
+                                    .field_visibility
+                                    .get(&member.property)
+                                    .copied()
+                                    .unwrap_or(kome_ast::declarations::Visibility::Private),
+                            ))
+                        });
+                        if let Some((type_, visibility)) = found {
+                            self.check_visibility(&name, &member.property, visibility, member.span);
+                            type_
+                        } else {
+                            SemanticType::Unknown
+                        }
+                    }
                     SemanticType::Applied(name, arguments) => self
                         .structs
                         .get(&name)
@@ -1278,6 +1339,15 @@ impl TypeChecker {
                                 .zip(arguments)
                                 .collect::<HashMap<_, _>>();
                             Some(substitute_semantic(field, &substitutions))
+                        })
+                        .map(|type_| {
+                            let visibility = self.structs[&name]
+                                .field_visibility
+                                .get(&member.property)
+                                .copied()
+                                .unwrap_or(kome_ast::declarations::Visibility::Private);
+                            self.check_visibility(&name, &member.property, visibility, member.span);
+                            type_
                         })
                         .unwrap_or(SemanticType::Unknown),
                     _ => SemanticType::Unknown,
@@ -1426,6 +1496,16 @@ impl TypeChecker {
 
             if let Some(expected) = expected {
                 self.check_compatible(expected, &actual, field.value.span());
+            }
+            if let Some(name) = name
+                && let Some(info) = self.structs.get(&struct_.name)
+            {
+                let visibility = info
+                    .field_visibility
+                    .get(name)
+                    .copied()
+                    .unwrap_or(kome_ast::declarations::Visibility::Private);
+                self.check_visibility(&struct_.name, name, visibility, field.span);
             }
         }
 
@@ -1630,10 +1710,15 @@ impl TypeChecker {
                                 implementation.trait_.as_ref(),
                                 Some(SemanticType::Named(name)) if name == "Drop"
                             ),
+                            implementation
+                                .method_visibility
+                                .get(&member.property)
+                                .copied()
+                                .unwrap_or(kome_ast::declarations::Visibility::Private),
                         )
                     })
             });
-            let Some((signature, is_destructor)) = resolved else {
+            let Some((signature, is_destructor, visibility)) = resolved else {
                 for argument in &call.args {
                     self.infer_expression(
                         match argument {
@@ -1645,6 +1730,7 @@ impl TypeChecker {
                 }
                 return SemanticType::Unknown;
             };
+            self.check_visibility(&target.name(), &member.property, visibility, member.span);
             if is_destructor {
                 self.errors.push(TypeCheckError {
                     message: "destructor `drop` cannot be called directly".to_owned(),
@@ -2080,6 +2166,30 @@ impl TypeChecker {
         });
     }
 
+    fn check_visibility(
+        &mut self,
+        owner: &str,
+        member: &str,
+        visibility: kome_ast::declarations::Visibility,
+        span: Span,
+    ) {
+        let owner = owner.split('<').next().unwrap_or(owner);
+        let owner_module = module_name_for_declaration(owner);
+        let visible = match visibility {
+            kome_ast::declarations::Visibility::Public => true,
+            kome_ast::declarations::Visibility::Package => {
+                package_name(&owner_module) == package_name(&self.current_module)
+            }
+            kome_ast::declarations::Visibility::Private => owner_module == self.current_module,
+        };
+        if !visible {
+            self.errors.push(TypeCheckError {
+                message: format!("member `{member}` of `{owner}` is not visible here"),
+                span,
+            });
+        }
+    }
+
     // -- scope management --
 
     fn enter_scope(&mut self) {
@@ -2112,4 +2222,20 @@ impl TypeChecker {
             .find_map(|scope| scope.get(name))
             .cloned()
     }
+}
+
+fn module_name_for_declaration(name: &str) -> String {
+    name.rsplit_once("::")
+        .map_or_else(|| "__app".to_owned(), |(module, _)| module.to_owned())
+}
+
+fn module_name_for_type(type_: &Type) -> String {
+    match type_ {
+        Type::Named(named) => module_name_for_declaration(&named.name),
+        _ => "__app".to_owned(),
+    }
+}
+
+fn package_name(module: &str) -> &str {
+    module.split("::").next().unwrap_or(module)
 }

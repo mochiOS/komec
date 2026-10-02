@@ -143,6 +143,10 @@ pub fn link_modules(mut sources: Vec<SourceModule>) -> Result<Module, Vec<Module
         for declaration in &mut source_declarations {
             rewriter.rewrite_declaration(declaration, true);
         }
+        drop(rewriter);
+        for declaration in &source_declarations {
+            validate_public_api(declaration, &index, &mut errors);
+        }
         declarations.extend(
             source_declarations
                 .into_iter()
@@ -154,6 +158,167 @@ pub fn link_modules(mut sources: Vec<SourceModule>) -> Result<Module, Vec<Module
         Ok(Module::new(declarations, span))
     } else {
         Err(errors)
+    }
+}
+
+fn validate_public_api(
+    declaration: &Declaration,
+    index: &ModuleIndex,
+    errors: &mut Vec<ModuleError>,
+) {
+    match declaration {
+        Declaration::Function(value) => {
+            validate_function_api(value, value.visibility, index, errors)
+        }
+        Declaration::Struct(value) => {
+            if let Some(fields) = &value.fields {
+                for field in fields {
+                    if visibility_rank(field.visibility) > visibility_rank(value.visibility) {
+                        errors.push(ModuleError {
+                            message: format!(
+                                "field `{}` is more visible than struct `{}`",
+                                field.name, value.name
+                            ),
+                            span: field.span,
+                        });
+                    }
+                    validate_exposed_type(&field.type_, field.visibility, index, errors);
+                }
+            }
+        }
+        Declaration::Trait(value) => {
+            for function in &value.functions {
+                validate_function_api(function, value.visibility, index, errors);
+            }
+        }
+        Declaration::For(value) => {
+            for member in &value.members {
+                match member {
+                    TypeMember::Function(function) => {
+                        validate_function_api(function, function.visibility, index, errors)
+                    }
+                    TypeMember::Constant(binding) => {
+                        if let Some(type_) = &binding.type_annotation {
+                            validate_exposed_type(type_, binding.visibility, index, errors);
+                        }
+                    }
+                }
+            }
+        }
+        Declaration::Constant(value) => {
+            if let Some(type_) = &value.type_annotation {
+                validate_exposed_type(type_, value.visibility, index, errors);
+            }
+        }
+        Declaration::Component(value) => {
+            for parameter in &value.params {
+                validate_exposed_type(&parameter.type_, value.visibility, index, errors);
+            }
+        }
+        Declaration::Extern(value) => {
+            for item in &value.items {
+                match item {
+                    ExternItem::Struct(value) => {
+                        if let Some(fields) = &value.fields {
+                            for field in fields {
+                                validate_exposed_type(
+                                    &field.type_,
+                                    field.visibility,
+                                    index,
+                                    errors,
+                                );
+                            }
+                        }
+                    }
+                    ExternItem::Function(value) => {
+                        validate_function_api(value, value.visibility, index, errors)
+                    }
+                }
+            }
+        }
+        Declaration::Enum(_) | Declaration::Let(_) | Declaration::Use(_) => {}
+    }
+}
+
+fn validate_function_api(
+    function: &kome_ast::declarations::FunctionDeclaration,
+    visibility: Visibility,
+    index: &ModuleIndex,
+    errors: &mut Vec<ModuleError>,
+) {
+    if visibility == Visibility::Private {
+        return;
+    }
+    for parameter in &function.params {
+        if let Pattern::Ident(parameter) = parameter
+            && let Some(type_) = &parameter.type_annotation
+        {
+            validate_exposed_type(type_, visibility, index, errors);
+        }
+    }
+    if let Some(type_) = &function.return_type {
+        validate_exposed_type(type_, visibility, index, errors);
+    }
+}
+
+fn validate_exposed_type(
+    type_: &Type,
+    visibility: Visibility,
+    index: &ModuleIndex,
+    errors: &mut Vec<ModuleError>,
+) {
+    if visibility == Visibility::Private {
+        return;
+    }
+    match type_ {
+        Type::Named(value) => {
+            if let Some(export) = index.declarations.get(&value.name)
+                && visibility_rank(export.visibility) < visibility_rank(visibility)
+            {
+                errors.push(ModuleError {
+                    message: format!(
+                        "{} API exposes less-visible type `{}`",
+                        visibility_name(visibility),
+                        value.name
+                    ),
+                    span: value.span,
+                });
+            }
+            for argument in &value.type_arguments {
+                validate_exposed_type(argument, visibility, index, errors);
+            }
+        }
+        Type::Function(value) => {
+            for parameter in &value.params {
+                validate_exposed_type(&parameter.type_, visibility, index, errors);
+            }
+            validate_exposed_type(&value.return_type, visibility, index, errors);
+        }
+        Type::List(value) => validate_exposed_type(&value.element, visibility, index, errors),
+        Type::Object(value) => {
+            for member in &value.members {
+                validate_exposed_type(&member.type_, visibility, index, errors);
+            }
+        }
+        Type::Optional(value) => validate_exposed_type(&value.inner, visibility, index, errors),
+        Type::Pointer(value) => validate_exposed_type(&value.pointee, visibility, index, errors),
+        Type::Primitive(_) => {}
+    }
+}
+
+fn visibility_rank(visibility: Visibility) -> u8 {
+    match visibility {
+        Visibility::Private => 0,
+        Visibility::Package => 1,
+        Visibility::Public => 2,
+    }
+}
+
+fn visibility_name(visibility: Visibility) -> &'static str {
+    match visibility {
+        Visibility::Private => "private",
+        Visibility::Package => "package-visible",
+        Visibility::Public => "public",
     }
 }
 
