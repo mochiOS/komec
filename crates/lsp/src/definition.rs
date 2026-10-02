@@ -25,13 +25,12 @@ pub fn definition_at(
     if let Some(reference) = reference_at_offset(&application_resolution.references, byte_offset) {
         if let Some(symbol_id) = reference.resolved_to {
             let symbol = application_resolution.symbols.get(symbol_id)?;
-
-            let definition_span = symbol.definition_span()?;
-
-            return Some(Location {
-                uri: document_uri.clone(),
-                range: span_to_range(document_source, definition_span),
-            });
+            if let Some(definition_span) = symbol.definition_span() {
+                return Some(Location {
+                    uri: document_uri.clone(),
+                    range: span_to_range(document_source, definition_span),
+                });
+            }
         }
     }
 
@@ -58,7 +57,11 @@ pub fn definition_at(
      * ASTs. This avoids losing source-file identity while modules are
      * combined for semantic analysis.
      */
-    standard_symbol_definition(&target_reference.name, &application, &standard_modules)
+    let source_name = document_source
+        .get(target_reference.span.start..target_reference.span.end)
+        .filter(|name| name.contains("::"))
+        .unwrap_or(&target_reference.name);
+    standard_symbol_definition(source_name, &application, &standard_modules)
 }
 
 fn standard_symbol_definition(

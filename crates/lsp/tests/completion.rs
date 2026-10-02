@@ -27,3 +27,15 @@ fn completes_imported_module_names() {
 
     assert!(items.iter().any(|item| item.label == "io"));
 }
+
+#[test]
+fn completes_public_reexports() {
+    let source = "use std::net\nfn main() { net::Io }";
+    let offset = source.find("Io }").unwrap() + 2;
+    let items = completion_at(
+        source,
+        Position::new(1, (offset - "use std::net\n".len()) as u32),
+    );
+
+    assert!(items.iter().any(|item| item.label == "IoError"));
+}
