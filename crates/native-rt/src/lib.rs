@@ -131,6 +131,8 @@ pub fn builtin_registry() -> NativeRegistry {
     let mut registry = NativeRegistry::new();
     registry.register("core.write", write);
     registry.register("core.write_line", write_line);
+    registry.register("core.write_error", write_error);
+    registry.register("core.write_error_line", write_error_line);
     registry.register("io.sleep", io_sleep);
     registry.register("io.socket_connect", io_socket_connect);
     registry.register("io.socket_read", io_socket_read);
@@ -419,6 +421,34 @@ fn write_line(arguments: &[Value]) -> Result<Value, RuntimeError> {
     };
 
     println!("{value}");
+
+    Ok(Value::Null)
+}
+
+fn write_error(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [value] = arguments else {
+        return Err(RuntimeError::native(
+            "core.write_error expects exactly one argument",
+        ));
+    };
+
+    eprint!("{value}");
+
+    std::io::stderr()
+        .flush()
+        .map_err(|error| RuntimeError::native(format!("failed to flush stderr: {error}")))?;
+
+    Ok(Value::Null)
+}
+
+fn write_error_line(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [value] = arguments else {
+        return Err(RuntimeError::native(
+            "core.write_error_line expects exactly one argument",
+        ));
+    };
+
+    eprintln!("{value}");
 
     Ok(Value::Null)
 }
