@@ -40,6 +40,40 @@ fn main() {
     clear_thread_registry();
 }
 
+#[test]
+fn receives_optional_values_from_native_functions() {
+    let values = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&values);
+    let mut registry = NativeRegistry::new();
+    registry.register("test.optional", |_| {
+        Ok(Value::String(KomeString::new("native")))
+    });
+    registry.register("test.capture", move |arguments| {
+        recorded.lock().unwrap().extend_from_slice(arguments);
+        Ok(Value::Null)
+    });
+    set_thread_registry(registry);
+
+    run(r#"
+@native("test.optional")
+fn load() -> String?
+
+@native("test.capture")
+fn report(value: String)
+
+fn main() {
+    let value = load()
+    report(value!)
+}
+"#);
+
+    assert_eq!(
+        values.lock().unwrap().as_slice(),
+        &[Value::String(KomeString::new("native"))]
+    );
+    clear_thread_registry();
+}
+
 impl Capture {
     /// Installs `symbol` on the current thread's registry.
     fn install(symbol: &'static str) -> Self {

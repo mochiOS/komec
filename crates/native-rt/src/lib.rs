@@ -25,7 +25,7 @@ use crate::socket::KomeSocket;
 use crate::string::KomeString;
 use kome_abi::{
     Slot, TAG_BOOLEAN, TAG_F32, TAG_F64, TAG_NULL, TAG_NUMBER, TAG_SIGNED_INTEGER, TAG_SOCKET,
-    TAG_STRING, TAG_UNSIGNED_INTEGER, TAG_VOID,
+    TAG_STRING, TAG_UNSIGNED_INTEGER, TAG_VOID, optional_inner_tag,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -131,16 +131,28 @@ impl NativeRegistry {
 pub fn builtin_registry() -> NativeRegistry {
     let mut registry = NativeRegistry::new();
     registry.register("core.write", write);
+    registry.register("core.try_write", try_write);
     registry.register("core.write_line", write_line);
+    registry.register("core.try_write_line", try_write_line);
     registry.register("core.write_error", write_error);
+    registry.register("core.try_write_error", try_write_error);
     registry.register("core.write_error_line", write_error_line);
+    registry.register("core.try_write_error_line", try_write_error_line);
     registry.register("io.sleep", io_sleep);
+    registry.register("io.try_sleep", io_try_sleep);
+    registry.register("io.last_error", io_last_error);
     registry.register("io.socket_connect", io_socket_connect);
+    registry.register("io.socket_try_connect", io_socket_try_connect);
     registry.register("io.socket_bind", io_socket_bind);
+    registry.register("io.socket_try_bind", io_socket_try_bind);
     registry.register("io.socket_accept", io_socket_accept);
+    registry.register("io.socket_try_accept", io_socket_try_accept);
     registry.register("io.socket_read", io_socket_read);
+    registry.register("io.socket_try_read", io_socket_try_read);
     registry.register("io.socket_write", io_socket_write);
+    registry.register("io.socket_try_write", io_socket_try_write);
     registry.register("io.socket_close", io_socket_close);
+    registry.register("io.socket_try_close", io_socket_try_close);
     registry.register("time.monotonic_milliseconds", monotonic_milliseconds);
     registry
 }
@@ -178,6 +190,160 @@ fn io_sleep(arguments: &[Value]) -> Result<Value, RuntimeError> {
     }
     io::sleep(milliseconds as u64);
     Ok(Value::Null)
+}
+
+thread_local! {
+    static LAST_IO_ERROR: RefCell<Option<KomeString>> = const { RefCell::new(None) };
+}
+
+fn store_io_error(message: impl Into<String>) -> Value {
+    LAST_IO_ERROR.with(|slot| {
+        *slot.borrow_mut() = Some(KomeString::new(message.into()));
+    });
+    Value::Null
+}
+
+fn io_last_error(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    if !arguments.is_empty() {
+        return Err(RuntimeError::native("io.last_error expects no arguments"));
+    }
+    let error = LAST_IO_ERROR.with(|slot| slot.borrow_mut().take());
+    Ok(Value::String(error.unwrap_or_else(|| {
+        KomeString::new("I/O operation failed")
+    })))
+}
+
+fn io_try_sleep(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [milliseconds] = arguments else {
+        return Err(RuntimeError::native("io.try_sleep expects one argument"));
+    };
+    let milliseconds = match integer_argument(milliseconds, "milliseconds") {
+        Ok(value) if value >= 0 => value as u64,
+        Ok(_) => {
+            store_io_error("milliseconds must not be negative");
+            return Ok(Value::Boolean(false));
+        }
+        Err(error) => {
+            store_io_error(error.to_string());
+            return Ok(Value::Boolean(false));
+        }
+    };
+    io::sleep(milliseconds);
+    Ok(Value::Boolean(true))
+}
+
+fn optional_io_result<T>(
+    result: std::io::Result<T>,
+    context: &str,
+    map: impl FnOnce(T) -> Value,
+) -> Result<Value, RuntimeError> {
+    Ok(match result {
+        Ok(value) => map(value),
+        Err(error) => store_io_error(format!("{context}: {error}")),
+    })
+}
+
+fn io_socket_try_connect(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::String(host), port] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_try_connect expects a String host and Number port",
+        ));
+    };
+    let port = match integer_argument(port, "socket port")
+        .ok()
+        .and_then(|port| u16::try_from(port).ok())
+    {
+        Some(port) => port,
+        None => {
+            return Ok(store_io_error("socket port must be between 0 and 65535"));
+        }
+    };
+    optional_io_result(
+        io::socket_connect(host.as_str(), port),
+        "socket connect failed",
+        Value::Socket,
+    )
+}
+
+fn io_socket_try_bind(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::String(host), port] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_try_bind expects a String host and Number port",
+        ));
+    };
+    let port = match integer_argument(port, "listener port")
+        .ok()
+        .and_then(|port| u16::try_from(port).ok())
+    {
+        Some(port) => port,
+        None => {
+            return Ok(store_io_error("listener port must be between 0 and 65535"));
+        }
+    };
+    optional_io_result(
+        io::socket_bind(host.as_str(), port),
+        "socket bind failed",
+        Value::Socket,
+    )
+}
+
+fn io_socket_try_accept(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::Socket(listener)] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_try_accept expects a TcpListener",
+        ));
+    };
+    optional_io_result(
+        io::managed_socket_accept(listener),
+        "socket accept failed",
+        Value::Socket,
+    )
+}
+
+fn io_socket_try_read(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::Socket(socket), maximum] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_try_read expects a Socket and Number",
+        ));
+    };
+    let maximum = match integer_argument(maximum, "maximum read size")
+        .ok()
+        .and_then(|maximum| usize::try_from(maximum).ok())
+    {
+        Some(maximum) => maximum,
+        None => return Ok(store_io_error("maximum read size must not be negative")),
+    };
+    optional_io_result(
+        io::managed_socket_read(socket, maximum),
+        "socket read failed",
+        Value::String,
+    )
+}
+
+fn io_socket_try_write(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::Socket(socket), Value::String(value)] = arguments else {
+        return Err(RuntimeError::native(
+            "io.socket_try_write expects a Socket and String",
+        ));
+    };
+    optional_io_result(
+        io::managed_socket_write(socket, value),
+        "socket write failed",
+        |written| Value::Number(Number::from_i64(written as i64)),
+    )
+}
+
+fn io_socket_try_close(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    let [Value::Socket(socket)] = arguments else {
+        return Err(RuntimeError::native("io.socket_try_close expects a Socket"));
+    };
+    Ok(match socket.close() {
+        Ok(()) => Value::Boolean(true),
+        Err(error) => {
+            store_io_error(format!("socket close failed: {error}"));
+            Value::Boolean(false)
+        }
+    })
 }
 
 fn io_socket_connect(arguments: &[Value]) -> Result<Value, RuntimeError> {
@@ -376,6 +542,22 @@ fn payload_for_return(value: &Value, ret_tag: i64) -> Result<i64, String> {
         return Ok(0);
     }
 
+    if let Some(inner_tag) = optional_inner_tag(ret_tag) {
+        if matches!(value, Value::Null) {
+            return Ok(0);
+        }
+        if value_tag(value) != inner_tag {
+            return Err(format!(
+                "native function returned {}, but the caller expected optional tag {inner_tag}",
+                value_type_name(value),
+            ));
+        }
+        let optional = crate::struct_value::__kome_struct_alloc(8);
+        let payload = scalar_payload(value);
+        unsafe { (optional as *mut i64).write(payload) };
+        return Ok(optional as i64);
+    }
+
     let fixed_payload = match (ret_tag, value) {
         (TAG_SIGNED_INTEGER, Value::SignedInteger(value)) => Some(*value),
         (TAG_UNSIGNED_INTEGER, Value::UnsignedInteger(value)) => Some(*value as i64),
@@ -454,6 +636,32 @@ fn write(arguments: &[Value]) -> Result<Value, RuntimeError> {
         .map_err(|error| RuntimeError::native(format!("failed to flush stdout: {error}")))?;
 
     Ok(Value::Null)
+}
+
+fn recover_write_result(result: Result<Value, RuntimeError>) -> Result<Value, RuntimeError> {
+    Ok(match result {
+        Ok(_) => Value::Boolean(true),
+        Err(error) => {
+            store_io_error(error.to_string());
+            Value::Boolean(false)
+        }
+    })
+}
+
+fn try_write(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    recover_write_result(write(arguments))
+}
+
+fn try_write_line(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    recover_write_result(write_line(arguments))
+}
+
+fn try_write_error(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    recover_write_result(write_error(arguments))
+}
+
+fn try_write_error_line(arguments: &[Value]) -> Result<Value, RuntimeError> {
+    recover_write_result(write_error_line(arguments))
 }
 
 fn write_line(arguments: &[Value]) -> Result<Value, RuntimeError> {

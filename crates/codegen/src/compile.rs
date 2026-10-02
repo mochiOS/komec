@@ -6466,7 +6466,9 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .store(MachMemFlags::new(), tag, tag_address, 0);
 
             let payload = match param_type {
-                KomeType::Number | KomeType::String | KomeType::Socket => *value,
+                KomeType::Number | KomeType::String | KomeType::Socket | KomeType::Listener => {
+                    *value
+                }
 
                 KomeType::Boolean | KomeType::Null => {
                     self.builder.ins().uextend(types::I64, *value)
@@ -6522,7 +6524,11 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             .ins()
             .iconst(types::I64, arguments.len() as i64);
 
-        let ret_tag = self.builder.ins().iconst(types::I64, signature.ret.tag()?);
+        let return_tag = match signature.ret {
+            KomeType::Optional(id) => kome_abi::optional_tag(self.info.optional_inner(id).tag()?),
+            other => other.tag()?,
+        };
+        let ret_tag = self.builder.ins().iconst(types::I64, return_tag);
 
         let func_ref =
             Module::declare_func_in_func(self.module, self.foreign.native_call, self.builder.func);
@@ -6539,7 +6545,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 return Ok(TypedValue::void());
             }
 
-            KomeType::Number | KomeType::String | KomeType::Socket => payload,
+            KomeType::Number | KomeType::String | KomeType::Socket | KomeType::Listener => payload,
 
             KomeType::Boolean | KomeType::Null => self.builder.ins().ireduce(types::I8, payload),
 
@@ -6558,12 +6564,13 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 .ins()
                 .bitcast(types::F64, MachMemFlags::new(), payload),
 
+            KomeType::Optional(_) => payload,
+
             KomeType::Pointer
             | KomeType::Struct(_)
             | KomeType::Task(_)
             | KomeType::List(_)
-            | KomeType::Enum(_)
-            | KomeType::Optional(_) => {
+            | KomeType::Enum(_) => {
                 return Err(CodegenError::new(
                     "managed aggregate values cannot cross the native ABI",
                     None,
@@ -6588,8 +6595,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     kind: LiteralKind::String(String::new()),
                 })?
                 .expect_value(Span::new(0, 0)),
-            KomeType::Socket => Err(CodegenError::new(
-                "Socket cannot be used without an initializer",
+            KomeType::Socket | KomeType::Listener => Err(CodegenError::new(
+                "socket values cannot be used without an initializer",
                 None,
             )),
             KomeType::F64 => Ok(self.builder.ins().f64const(0.0)),
@@ -6709,7 +6716,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let function = match kome_type {
             KomeType::Number => self.foreign.number_retain,
             KomeType::String => self.foreign.string_retain,
-            KomeType::Socket => self.foreign.socket_retain,
+            KomeType::Socket | KomeType::Listener => self.foreign.socket_retain,
             KomeType::Struct(_) => self.foreign.struct_retain,
             KomeType::Task(_) => self.foreign.task_retain,
             KomeType::List(_) => self.foreign.list_retain,
@@ -6728,7 +6735,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         let function = match kome_type {
             KomeType::Number => self.foreign.number_release,
             KomeType::String => self.foreign.string_release,
-            KomeType::Socket => self.foreign.socket_release,
+            KomeType::Socket | KomeType::Listener => self.foreign.socket_release,
             KomeType::Struct(id) => {
                 self.release_struct(value, id);
                 return;

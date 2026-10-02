@@ -34,6 +34,23 @@ pub const TAG_F32: i64 = 8;
 /// Payload holds the IEEE-754 bits of an `f64`.
 pub const TAG_F64: i64 = 9;
 
+/// Bit marking a return tag as an optional value of the encoded inner tag.
+pub const TAG_OPTIONAL: i64 = 1 << 32;
+
+/// Encodes an optional scalar return type for the registered native ABI.
+pub const fn optional_tag(inner: i64) -> i64 {
+    TAG_OPTIONAL | inner
+}
+
+/// Returns the inner scalar tag when `tag` encodes an optional return type.
+pub const fn optional_inner_tag(tag: i64) -> Option<i64> {
+    if tag & TAG_OPTIONAL != 0 {
+        Some(tag & !TAG_OPTIONAL)
+    } else {
+        None
+    }
+}
+
 /// One marshalled argument or return value exchanged with the native runtime.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -12,6 +12,7 @@ pub enum KomeType {
     Number,
     String,
     Socket,
+    Listener,
     Boolean,
     I8,
     I16,
@@ -59,6 +60,7 @@ impl KomeType {
             "string" => Ok(Self::String),
             "number" => Ok(Self::Number),
             "socket" => Ok(Self::Socket),
+            "listener" => Ok(Self::Listener),
             _ => Err(CodegenError::at(
                 format!("unsupported runtime type `{name}`"),
                 span,
@@ -93,6 +95,7 @@ impl KomeType {
             Self::Number
             | Self::String
             | Self::Socket
+            | Self::Listener
             | Self::Struct(_)
             | Self::Task(_)
             | Self::List(_)
@@ -114,6 +117,7 @@ impl KomeType {
             Self::Number => Ok(abi::TAG_NUMBER),
             Self::String => Ok(abi::TAG_STRING),
             Self::Socket => Ok(abi::TAG_SOCKET),
+            Self::Listener => Ok(abi::TAG_SOCKET),
             Self::Boolean => Ok(abi::TAG_BOOLEAN),
             Self::Null => Ok(abi::TAG_NULL),
             Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Isize => {
@@ -149,6 +153,7 @@ impl KomeType {
             Self::Number => "Number".into(),
             Self::String => "String".into(),
             Self::Socket => "Socket".into(),
+            Self::Listener => "TcpListener".into(),
             Self::Boolean => "bool".into(),
             Self::I8 => "i8".into(),
             Self::I16 => "i16".into(),
@@ -180,6 +185,7 @@ impl KomeType {
             Self::Number
                 | Self::String
                 | Self::Socket
+                | Self::Listener
                 | Self::Struct(_)
                 | Self::Task(_)
                 | Self::List(_)
