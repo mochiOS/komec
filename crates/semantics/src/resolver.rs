@@ -114,14 +114,23 @@ impl ScopeBuilder {
         }
 
         /*
-         * Standard-library modules must be placed before the application
-         * module so application references can resolve to their exports.
+         * Declare every top-level symbol before resolving declaration bodies.
+         * This makes source ordering irrelevant and permits mutually
+         * referential declarations spread across project source files.
          */
         for &(source, module) in sources {
             self.current_source = source;
 
             for declaration in &module.declarations {
-                self.visit_top_level_declaration(declaration);
+                self.register_top_level_declaration(declaration);
+            }
+        }
+
+        for &(source, module) in sources {
+            self.current_source = source;
+
+            for declaration in &module.declarations {
+                self.visit_predeclared_top_level_declaration(declaration);
             }
         }
 
@@ -167,6 +176,98 @@ impl ScopeBuilder {
 
     // -- declaration visitors --
 
+    fn register_top_level_declaration(&mut self, decl: &Declaration) {
+        match decl {
+            Declaration::Component(declaration) => self.declare(
+                declaration.span,
+                Symbol::Component {
+                    name: declaration.name.clone(),
+                    span: declaration.span,
+                },
+            ),
+            Declaration::Function(declaration) => self.declare(
+                declaration.span,
+                Symbol::Function {
+                    name: declaration.name.clone(),
+                    span: declaration.span,
+                },
+            ),
+            Declaration::Struct(declaration) => self.declare(
+                declaration.span,
+                Symbol::StructType {
+                    name: declaration.name.clone(),
+                    span: declaration.span,
+                },
+            ),
+            Declaration::Trait(declaration) => self.declare(
+                declaration.span,
+                Symbol::TraitType {
+                    name: declaration.name.clone(),
+                    span: declaration.span,
+                },
+            ),
+            Declaration::Constant(binding) => self.register_binding_name(binding),
+            Declaration::Enum(declaration) => self.declare(
+                declaration.span,
+                Symbol::EnumType {
+                    name: declaration.name.clone(),
+                    span: declaration.span,
+                },
+            ),
+            Declaration::Extern(declaration) => {
+                for item in &declaration.items {
+                    match item {
+                        kome_ast::declarations::ExternItem::Struct(declaration) => self.declare(
+                            declaration.span,
+                            Symbol::StructType {
+                                name: declaration.name.clone(),
+                                span: declaration.span,
+                            },
+                        ),
+                        kome_ast::declarations::ExternItem::Function(declaration) => self.declare(
+                            declaration.span,
+                            Symbol::Function {
+                                name: declaration.name.clone(),
+                                span: declaration.span,
+                            },
+                        ),
+                    }
+                }
+            }
+            Declaration::For(_) | Declaration::Let(_) | Declaration::Use(_) => {}
+        }
+    }
+
+    fn visit_predeclared_top_level_declaration(&mut self, decl: &Declaration) {
+        match decl {
+            Declaration::Component(declaration) => self.visit_component_body(declaration),
+            Declaration::Function(declaration) => self.visit_function_body(declaration),
+            Declaration::Struct(declaration) => self.visit_struct_body(declaration),
+            Declaration::Trait(declaration) => self.visit_trait_body(declaration),
+            Declaration::For(declaration) => self.visit_for_declaration(declaration),
+            Declaration::Let(binding) => {
+                self.errors
+                    .push(ResolutionError::InvalidLetLocation { span: binding.span });
+                self.visit_binding_contents(binding);
+            }
+            Declaration::Constant(binding) => self.visit_binding_contents(binding),
+            Declaration::Use(_) => {}
+            Declaration::Enum(declaration) => self.visit_enum_body(declaration),
+            Declaration::Extern(declaration) => {
+                for item in &declaration.items {
+                    match item {
+                        kome_ast::declarations::ExternItem::Struct(declaration) => {
+                            self.visit_struct_body(declaration);
+                        }
+                        kome_ast::declarations::ExternItem::Function(declaration) => {
+                            self.visit_function_body(declaration);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn visit_top_level_declaration(&mut self, decl: &Declaration) {
         match decl {
             Declaration::Component(comp) => self.visit_component_declaration(comp),
@@ -210,6 +311,10 @@ impl ScopeBuilder {
                 span: comp.span,
             },
         );
+        self.visit_component_body(comp);
+    }
+
+    fn visit_component_body(&mut self, comp: &ComponentDeclaration) {
         self.enter_scope(ScopeKind::Component);
 
         for param in &comp.params {
@@ -254,6 +359,10 @@ impl ScopeBuilder {
                 span: func.span,
             },
         );
+        self.visit_function_body(func);
+    }
+
+    fn visit_function_body(&mut self, func: &FunctionDeclaration) {
         self.enter_scope(ScopeKind::Function);
         for parameter in &func.type_parameters {
             self.declare(
@@ -304,6 +413,10 @@ impl ScopeBuilder {
                 span: enum_decl.span,
             },
         );
+        self.visit_enum_body(enum_decl);
+    }
+
+    fn visit_enum_body(&mut self, enum_decl: &EnumDeclaration) {
         self.enter_scope(ScopeKind::IsPattern);
         for case in &enum_decl.cases {
             self.register_enum_case(case);
@@ -320,6 +433,10 @@ impl ScopeBuilder {
             },
         );
 
+        self.visit_struct_body(struct_decl);
+    }
+
+    fn visit_struct_body(&mut self, struct_decl: &StructDeclaration) {
         self.enter_scope(ScopeKind::Type);
         for parameter in &struct_decl.type_parameters {
             self.declare(
@@ -371,6 +488,10 @@ impl ScopeBuilder {
             },
         );
 
+        self.visit_trait_body(declaration);
+    }
+
+    fn visit_trait_body(&mut self, declaration: &TraitDeclaration) {
         self.enter_scope(ScopeKind::Type);
         for parameter in &declaration.type_parameters {
             self.declare(
@@ -417,6 +538,11 @@ impl ScopeBuilder {
     // -- binding/pattern visitors --
 
     fn register_binding(&mut self, binding: &Binding) {
+        self.register_binding_name(binding);
+        self.visit_binding_contents(binding);
+    }
+
+    fn register_binding_name(&mut self, binding: &Binding) {
         if let Pattern::Ident(ident) = &binding.pattern {
             self.declare(
                 ident.span,
@@ -426,7 +552,11 @@ impl ScopeBuilder {
                     mutable: binding.mutable,
                 },
             );
+        }
+    }
 
+    fn visit_binding_contents(&mut self, binding: &Binding) {
+        if let Pattern::Ident(ident) = &binding.pattern {
             if let Some(ref type_ann) = ident.type_annotation {
                 self.visit_type(type_ann);
             }

@@ -51,6 +51,39 @@ fn resolves_reference_to_declared_name() {
 }
 
 #[test]
+fn resolves_forward_references_across_sources() {
+    let first = parse(
+        "struct ClipboardContent { contentType: ContentType }\nfn parse() -> ContentType { return ContentType { identifier: \"text/plain\" } }",
+    )
+    .unwrap();
+    let second = parse("struct ContentType { identifier: String }").unwrap();
+    let result = ScopeBuilder::resolve_sources(&[(0, &first), (1, &second)]);
+
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(
+        result
+            .references
+            .iter()
+            .filter(|reference| reference.name == "ContentType")
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn reports_duplicate_definitions_across_sources() {
+    let first = parse("struct ContentType {}").unwrap();
+    let second = parse("struct ContentType {}").unwrap();
+    let result = ScopeBuilder::resolve_sources(&[(0, &first), (1, &second)]);
+
+    assert!(matches!(
+        result.errors.as_slice(),
+        [kome_semantics::error::ResolutionError::DuplicateDefinition { name, .. }]
+            if name == "ContentType"
+    ));
+}
+
+#[test]
 fn reports_undefined_name() {
     let source = "fn foo() { bar }";
     let module = parse(source).unwrap();
