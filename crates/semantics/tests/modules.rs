@@ -225,3 +225,68 @@ fn rejects_cyclic_module_imports() {
         error.message == "cyclic module import: library::first -> library::second -> library::first"
     }));
 }
+
+#[test]
+fn resolves_public_reexports_to_the_original_declaration() {
+    let linked = link_modules(vec![
+        source(
+            "library",
+            &["internal"],
+            "pub struct Value { pub number: Number }",
+            false,
+        ),
+        source("library", &[], "pub use library::internal::Value", false),
+        source(
+            "app",
+            &[],
+            "use library::Value\nfn main() { let value = Value { number: 42 } }",
+            true,
+        ),
+    ])
+    .unwrap();
+
+    assert!(ScopeBuilder::resolve(&linked).errors.is_empty());
+    assert!(TypeChecker::check(&linked).errors.is_empty());
+}
+
+#[test]
+fn resolves_public_wildcard_reexports() {
+    let linked = link_modules(vec![
+        source(
+            "library",
+            &["internal"],
+            "pub fn answer() -> Number { return 42 }",
+            false,
+        ),
+        source("library", &[], "pub use library::internal::*", false),
+        source(
+            "app",
+            &[],
+            "use library::answer\nfn main() { let value = answer() }",
+            true,
+        ),
+    ])
+    .unwrap();
+
+    assert!(ScopeBuilder::resolve(&linked).errors.is_empty());
+}
+
+#[test]
+fn rejects_reexports_that_widen_visibility() {
+    let errors = link_modules(vec![
+        source(
+            "library",
+            &["internal"],
+            "pub(package) fn helper() {}",
+            false,
+        ),
+        source("library", &[], "pub use library::internal::helper", false),
+    ])
+    .unwrap_err();
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("wider visibility"))
+    );
+}

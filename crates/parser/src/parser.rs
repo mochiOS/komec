@@ -154,8 +154,10 @@ impl Parser {
         }
 
         if self.at(|kind| matches!(kind, TokenKind::Use)) {
-            if attributes.is_empty() && visibility == Visibility::Private {
-                return self.parse_use_declaration().map(Declaration::Use);
+            if attributes.is_empty() {
+                let mut declaration = self.parse_use_declaration()?;
+                declaration.visibility = visibility;
+                return Ok(Declaration::Use(declaration));
             }
 
             return Err(self.expected(
@@ -2283,6 +2285,7 @@ impl Parser {
 
         Ok(UseDeclaration {
             span: Span::new(start, end),
+            visibility: Visibility::Private,
             imports,
         })
     }

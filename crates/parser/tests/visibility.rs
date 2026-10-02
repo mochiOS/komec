@@ -74,3 +74,18 @@ fn trait_functions_are_public_by_definition() {
     assert_eq!(display.visibility, Visibility::Public);
     assert_eq!(display.functions[0].visibility, Visibility::Public);
 }
+
+#[test]
+fn parses_public_reexports() {
+    let module =
+        parse("pub use library::Value\npub(package) use library::helper as shared").unwrap();
+
+    let Declaration::Use(public) = &module.declarations[0] else {
+        panic!("expected a use declaration");
+    };
+    let Declaration::Use(package) = &module.declarations[1] else {
+        panic!("expected a use declaration");
+    };
+    assert_eq!(public.visibility, Visibility::Public);
+    assert_eq!(package.visibility, Visibility::Package);
+}

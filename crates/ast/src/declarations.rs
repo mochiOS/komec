@@ -268,6 +268,8 @@ pub struct Binding {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseDeclaration {
     pub span: Span,
+    /// Visibility used when imported declarations are re-exported.
+    pub visibility: Visibility,
     pub imports: Vec<UseImport>,
 }
 

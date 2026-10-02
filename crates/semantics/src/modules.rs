@@ -77,6 +77,7 @@ struct Export {
     module: String,
     package: String,
     visibility: Visibility,
+    target: String,
 }
 
 #[derive(Default)]
@@ -91,8 +92,7 @@ struct ModuleIndex {
 /// Declaration and reference names are canonicalized before the modules are combined,
 /// so identical local names from different packages cannot collide.
 pub fn link_modules(mut sources: Vec<SourceModule>) -> Result<Module, Vec<ModuleError>> {
-    let index = build_index(&sources);
-    let mut errors = Vec::new();
+    let (index, mut errors) = build_index(&sources);
     validate_import_cycles(&sources, &index, &mut errors);
     let mut declarations = Vec::new();
     let span = sources
@@ -429,8 +429,9 @@ fn symbol_kind(symbol: &Symbol) -> ReferenceKind {
     }
 }
 
-fn build_index(sources: &[SourceModule]) -> ModuleIndex {
+fn build_index(sources: &[SourceModule]) -> (ModuleIndex, Vec<ModuleError>) {
     let mut index = ModuleIndex::default();
+    let mut errors = Vec::new();
     for source in sources {
         let module = source.canonical_path();
         index.modules.insert(module.clone());
@@ -440,6 +441,7 @@ fn build_index(sources: &[SourceModule]) -> ModuleIndex {
                 module: module.clone(),
                 package: source.package.clone(),
                 visibility,
+                target: canonical.clone(),
             };
             index.declarations.insert(canonical, export.clone());
             index
@@ -449,7 +451,151 @@ fn build_index(sources: &[SourceModule]) -> ModuleIndex {
                 .push((name, export));
         }
     }
+
+    for _ in 0..sources.len().max(1) {
+        let mut changed = false;
+        for source in sources {
+            changed |= collect_reexports(source, &mut index, &mut errors);
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    (index, errors)
+}
+
+fn collect_reexports(
+    source: &SourceModule,
+    index: &mut ModuleIndex,
+    errors: &mut Vec<ModuleError>,
+) -> bool {
+    let mut changed = false;
+    for declaration in &source.module.declarations {
+        let Declaration::Use(declaration) = declaration else {
+            continue;
+        };
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        for import in &declaration.imports {
+            match import {
+                UseImport::Module(path) | UseImport::AliasedModule { path, .. } => {
+                    let canonical = normalize_path(source, path);
+                    let Some(target) = index.declarations.get(&canonical).cloned() else {
+                        continue;
+                    };
+                    if !accessible(source, &target) {
+                        continue;
+                    }
+                    if visibility_rank(target.visibility) < visibility_rank(declaration.visibility)
+                    {
+                        push_unique_error(
+                            errors,
+                            ModuleError {
+                                message: format!(
+                                    "cannot re-export `{canonical}` with a wider visibility"
+                                ),
+                                span: path.span,
+                            },
+                        );
+                        continue;
+                    }
+                    let local = match import {
+                        UseImport::AliasedModule { alias, .. } => match &alias.kind {
+                            PathSegmentKind::Ident(name) => name.clone(),
+                            _ => continue,
+                        },
+                        _ => canonical
+                            .rsplit("::")
+                            .next()
+                            .unwrap_or(&canonical)
+                            .to_owned(),
+                    };
+                    changed |= insert_reexport(
+                        source,
+                        &local,
+                        target.target,
+                        declaration.visibility,
+                        path.span,
+                        index,
+                        errors,
+                    );
+                }
+                UseImport::WildcardFrom { path, span } => {
+                    let canonical = normalize_path(source, path);
+                    let Some(exports) = index.module_declarations.get(&canonical).cloned() else {
+                        continue;
+                    };
+                    for (name, target) in exports {
+                        if !accessible(source, &target) {
+                            continue;
+                        }
+                        if visibility_rank(target.visibility)
+                            < visibility_rank(declaration.visibility)
+                        {
+                            continue;
+                        }
+                        changed |= insert_reexport(
+                            source,
+                            &name,
+                            target.target,
+                            declaration.visibility,
+                            *span,
+                            index,
+                            errors,
+                        );
+                    }
+                }
+                UseImport::Wildcard { .. } => {}
+            }
+        }
+    }
+    changed
+}
+
+fn insert_reexport(
+    source: &SourceModule,
+    local: &str,
+    target: String,
+    visibility: Visibility,
+    span: Span,
+    index: &mut ModuleIndex,
+    errors: &mut Vec<ModuleError>,
+) -> bool {
+    let module = source.canonical_path();
+    let canonical = format!("{module}::{local}");
+    if let Some(previous) = index.declarations.get(&canonical) {
+        if previous.target != target {
+            push_unique_error(
+                errors,
+                ModuleError {
+                    message: format!("re-export `{canonical}` conflicts with another declaration"),
+                    span,
+                },
+            );
+        }
+        return false;
+    }
+    let export = Export {
+        module: module.clone(),
+        package: source.package.clone(),
+        visibility,
+        target,
+    };
+    index.declarations.insert(canonical, export.clone());
     index
+        .module_declarations
+        .entry(module)
+        .or_default()
+        .push((local.to_owned(), export));
+    true
+}
+
+fn push_unique_error(errors: &mut Vec<ModuleError>, error: ModuleError) {
+    if !errors.contains(&error) {
+        errors.push(error);
+    }
 }
 
 fn declaration_names(module: &Module) -> Vec<(String, Visibility)> {
@@ -532,13 +678,7 @@ fn collect_imports(
                     };
                     for (name, export) in declarations {
                         if accessible(source, export) {
-                            insert_import(
-                                &mut items,
-                                name,
-                                format!("{canonical}::{name}"),
-                                *span,
-                                errors,
-                            );
+                            insert_import(&mut items, name, export.target.clone(), *span, errors);
                         }
                     }
                 }
@@ -594,7 +734,7 @@ fn import_path(
             .unwrap_or(&canonical)
             .to_owned()
     });
-    insert_import(items, &local, canonical, path.span, errors);
+    insert_import(items, &local, export.target.clone(), path.span, errors);
 }
 
 fn insert_import(
@@ -1006,7 +1146,10 @@ impl Rewriter<'_> {
                 span,
             });
         }
-        canonical
+        self.index
+            .declarations
+            .get(&canonical)
+            .map_or(canonical, |export| export.target.clone())
     }
 
     fn rename_declaration(&self, name: &mut String) {
