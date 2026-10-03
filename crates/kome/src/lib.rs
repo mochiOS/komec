@@ -214,11 +214,8 @@ impl Project {
     ) -> Result<ResolvedDependency, String> {
         let root = match dependency {
             Dependency::Detailed { path } | Dependency::Path(path) => self.root.join(path),
-            Dependency::System { system: true } => system_roots
-                .iter()
-                .flat_map(|root| [root.join(name), root.join(name).join("lib")])
-                .find(|candidate| candidate.join(MANIFEST_FILE).is_file())
-                .ok_or_else(|| {
+            Dependency::System { system: true } => {
+                find_system_package(name, system_roots).ok_or_else(|| {
                     format!(
                         "system dependency `{name}` was not found in {}",
                         system_roots
@@ -227,7 +224,8 @@ impl Project {
                             .collect::<Vec<_>>()
                             .join(", ")
                     )
-                })?,
+                })?
+            }
             Dependency::System { system: false } => {
                 return Err(format!(
                     "dependency `{name}` must set `system = true` or specify `path`"
@@ -269,6 +267,33 @@ impl Project {
             sources,
         })
     }
+}
+
+fn find_system_package(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    for root in roots {
+        for candidate in [root.join(name), root.join(name).join("lib")] {
+            if candidate.join(MANIFEST_FILE).is_file() {
+                return Some(candidate);
+            }
+        }
+
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            for candidate in [entry.path(), entry.path().join("lib")] {
+                let Ok(project) = Project::load(&candidate.join(MANIFEST_FILE)) else {
+                    continue;
+                };
+                if project.manifest.package.name == name {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn system_package_roots() -> Vec<PathBuf> {
@@ -681,6 +706,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["viewkit", "appcore"]
         );
+    }
+
+    #[test]
+    fn resolves_a_system_package_by_its_manifest_name() {
+        let root = fixture("manifest-name");
+        let project_root = root.join("project");
+        let packages = root.join("packages");
+        write(
+            &project_root.join(MANIFEST_FILE),
+            "[package]\nname = \"app\"\n[dependencies]\nviewKit = { system = true }\n",
+        );
+        write(
+            &packages.join("viewkit/lib/Kome.toml"),
+            "[package]\nname = \"viewKit\"\n[lib]\nsource = \"src/lib.kome\"\n",
+        );
+        write(
+            &packages.join("viewkit/lib/src/lib.kome"),
+            "struct View {}\n",
+        );
+
+        let dependencies = Project::load(&project_root.join(MANIFEST_FILE))
+            .unwrap()
+            .dependencies_with_system_roots(std::slice::from_ref(&packages))
+            .unwrap();
+
+        assert_eq!(dependencies[0].name, "viewKit");
+        assert_eq!(dependencies[0].root, packages.join("viewkit/lib"));
     }
 
     #[test]

@@ -1,0 +1,9 @@
+[package]
+name = "testapp"
+version = "0.1.0"
+
+[application]
+source = "src/main.kome"
+
+[dependencies]
+viewKit = { system = true }

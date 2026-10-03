@@ -43,13 +43,13 @@ my $binary_directory = defined $target
 my @archives;
 push @archives, package_binary(
     product => 'kome',
-    version => $versions->{'kome'},
+    version => $versions->{'kome-sdk'},
     arch => $arch,
     binary => File::Spec->catfile($binary_directory, executable_name('kome')),
 );
 push @archives, package_binary(
     product => 'komec',
-    version => $versions->{'komec'},
+    version => $versions->{'kome-sdk'},
     arch => $arch,
     binary => File::Spec->catfile($binary_directory, executable_name('komec')),
     support_files => [
@@ -58,7 +58,7 @@ push @archives, package_binary(
     ],
 );
 push @archives, package_stdlib(
-    version => $versions->{'kome-std'},
+    version => $versions->{'kome-sdk'},
     arch => $arch,
     source => File::Spec->catdir($root, 'vendor', 'stdlib'),
 );
@@ -80,7 +80,7 @@ sub read_versions {
         $line =~ s/\r\z//;
         next if $line =~ /^\s*(?:#|\z)/;
 
-        $line =~ /\A(kome|komec|kome-std)=([^\s=]+)\z/
+        $line =~ /\A(kome-sdk|kome|komec|kome-std)=([^\s=]+)\z/
             or die "invalid version entry at $path:$line_number\n";
         exists $versions{$1}
             and die "duplicate version entry for $1 at $path:$line_number\n";
@@ -89,7 +89,7 @@ sub read_versions {
     }
     close $file or die "failed to close $path: $!\n";
 
-    for my $product (qw(kome komec kome-std)) {
+    for my $product (qw(kome-sdk kome komec kome-std)) {
         exists $versions{$product}
             or die "missing $product version in $path\n";
     }
