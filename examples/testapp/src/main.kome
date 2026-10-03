@@ -1,0 +1,61 @@
+use viewKit::*
+
+fn main() {
+	Window("ViewKit Test App", width: 960, height: 720) {
+		Scroll(axis: .vertical, scrollbar: .automatic) {
+			Padding(24) {
+				VStack(gap: .large, alignment: .stretch) {
+					Text("ViewKit コンポーネント", role: .displayMedium)
+					Text("Komeだけで構成した表示確認用アプリです。", tone: .secondary)
+
+					Divider()
+
+					Group {
+						Text("入力", role: .titleMedium)
+						TextField("", placeholder: "名前", size: .medium)
+						TextField("入力できません", enabled: false)
+						TextField("不正な入力", invalid: true)
+					}
+
+					Divider()
+
+					Text("横方向の配置", role: .titleMedium)
+					HStack(gap: .small, distribution: .spaceBetween) {
+						Button("標準") {}
+						Spacer()
+						Button("破壊的", color: .destructive, radius: 12) {}
+					}
+
+					Divider()
+
+					Text("重なり", role: .titleMedium)
+					ZStack(alignment: .center) {
+						Text("背面", tone: .tertiary)
+						Text("前面", role: .titleLarge, tone: .accent)
+					}
+
+					Overlay(alignment: .bottomTrailing) {
+						Padding(20) {
+							Text("Overlayの内容")
+						}
+						Text("前面", role: .caption, tone: .accent)
+					}
+
+					Divider()
+
+					Text("コンテキストメニュー", role: .titleMedium)
+					ContextMenu {
+						Padding(16) {
+							Text("この領域を右クリックしてください。")
+						}
+						VStack(gap: .none, alignment: .stretch) {
+							MenuItem("コピー", shortcut: "Ctrl+C") {}
+							MenuItem("無効な項目", enabled: false) {}
+							MenuItem("削除", danger: true) {}
+						}
+					}
+				}
+			}
+		}
+	}
+}
