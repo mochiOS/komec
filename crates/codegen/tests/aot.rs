@@ -434,6 +434,35 @@ fn main() {
 }
 
 #[test]
+fn builds_and_runs_returned_trailing_closures() {
+    let stdout = build_and_run(
+        r#"
+@native("core.write_line")
+fn println(value: String)
+
+struct Handler { action: (value: String) -> String }
+
+fn invoke(action: () -> String) -> String {
+    return action()
+}
+
+fn make(prefix: String) -> (value: String) -> String {
+    return |value: String| prefix + value
+}
+
+fn main() {
+    let prefix = "Ko"
+    println(invoke() { prefix + "me" })
+    let handler = Handler { action: make("Ko") }
+    println(handler.action("me"))
+}
+"#,
+    );
+
+    assert_eq!(stdout, "Kome\nKome\n");
+}
+
+#[test]
 fn builds_and_runs_component_expressions() {
     let stdout = build_and_run(
         r#"
