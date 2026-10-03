@@ -2080,6 +2080,7 @@ impl Parser {
             span,
             params,
             body: Box::new(body),
+            lowering: None,
         }))
     }
 
@@ -2092,6 +2093,7 @@ impl Parser {
             span,
             params: Vec::new(),
             body: Box::new(body),
+            lowering: None,
         }))
     }
 

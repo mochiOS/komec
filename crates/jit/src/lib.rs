@@ -8,6 +8,10 @@ use kome_ast::declarations::Module as KomeModule;
 use kome_codegen::compile::{analyze_module, compile_module, mangled_name};
 use kome_codegen::{CodegenError, CodegenResult};
 use kome_native_rt::__kome_native_call;
+use kome_native_rt::closure::{
+    __kome_closure_alloc, __kome_closure_code, __kome_closure_environment, __kome_closure_release,
+    __kome_closure_retain,
+};
 use kome_native_rt::list::{
     __kome_list_alloc, __kome_list_dealloc, __kome_list_len, __kome_list_release,
     __kome_list_require_index, __kome_list_retain,
@@ -215,7 +219,7 @@ fn native_isa() -> CodegenResult<OwnedTargetIsa> {
 /// Registers the native runtime symbols so the JIT can resolve them without
 /// relying on dynamic symbol lookup.
 fn register_runtime_symbols(builder: &mut JITBuilder) {
-    let symbols: [(&str, *const u8); 52] = [
+    let symbols: [(&str, *const u8); 57] = [
         (
             "__kome_native_call",
             __kome_native_call as *const () as *const u8,
@@ -331,6 +335,26 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         (
             "__kome_struct_dealloc",
             __kome_struct_dealloc as *const () as *const u8,
+        ),
+        (
+            "__kome_closure_alloc",
+            __kome_closure_alloc as *const () as *const u8,
+        ),
+        (
+            "__kome_closure_retain",
+            __kome_closure_retain as *const () as *const u8,
+        ),
+        (
+            "__kome_closure_release",
+            __kome_closure_release as *const () as *const u8,
+        ),
+        (
+            "__kome_closure_code",
+            __kome_closure_code as *const () as *const u8,
+        ),
+        (
+            "__kome_closure_environment",
+            __kome_closure_environment as *const () as *const u8,
         ),
         (
             "__kome_optional_require",

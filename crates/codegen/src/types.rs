@@ -39,6 +39,8 @@ pub enum KomeType {
     Enum(usize),
     /// An optional value. The id indexes `ModuleInfo::optional_types`.
     Optional(usize),
+    /// A callable closure. The id indexes `ModuleInfo::closure_types`.
+    Closure(usize),
     Void,
 }
 
@@ -100,6 +102,7 @@ impl KomeType {
             | Self::Task(_)
             | Self::List(_)
             | Self::Optional(_)
+            | Self::Closure(_)
             | Self::Enum(_) => Some(types::I64),
             Self::F64 => Some(types::F64),
             Self::F32 => Some(types::F32),
@@ -144,6 +147,10 @@ impl KomeType {
                 "optional values cannot cross the native ABI",
                 None,
             )),
+            Self::Closure(_) => Err(CodegenError::new(
+                "Kome closures cannot cross the native ABI directly",
+                None,
+            )),
         }
     }
 
@@ -174,6 +181,7 @@ impl KomeType {
             Self::List(id) => format!("List#{id}"),
             Self::Enum(id) => format!("enum#{id}"),
             Self::Optional(id) => format!("optional#{id}"),
+            Self::Closure(id) => format!("closure#{id}"),
             Self::Void => "Void".into(),
         }
     }
@@ -190,6 +198,7 @@ impl KomeType {
                 | Self::Task(_)
                 | Self::List(_)
                 | Self::Optional(_)
+                | Self::Closure(_)
         )
     }
 }

@@ -409,6 +409,17 @@ pub struct ClosureExpression {
     pub span: Span,
     pub params: Vec<crate::patterns::Pattern>,
     pub body: Box<Expression>,
+    /// Concrete function and environment generated during monomorphization.
+    pub lowering: Option<ClosureLowering>,
+}
+
+/// Internal closure metadata consumed by native code generation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosureLowering {
+    pub function: String,
+    pub environment: String,
+    pub captures: Vec<String>,
+    pub function_type: crate::types::FunctionType,
 }
 
 // ---- Is ----

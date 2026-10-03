@@ -1575,3 +1575,58 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn passes_capturing_closures_to_functions() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn apply(value: Number, transform: (item: Number) -> Number) -> Number {
+    return transform(value)
+}
+
+fn main() {
+    let offset = 1
+    let transform: (item: Number) -> Number = |item| item + offset
+    report(apply(41, transform))
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
+    clear_thread_registry();
+}
+
+#[test]
+fn returns_and_stores_closures_with_managed_captures() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: String)
+
+struct Handler {
+    action: (value: String) -> String,
+}
+
+fn make(prefix: String) -> (value: String) -> String {
+    return |value: String| prefix + value
+}
+
+fn main() {
+    let handler = Handler { action: make("K") }
+    report(handler.action("ome"))
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::String(KomeString::new("Kome"))]
+    );
+    clear_thread_registry();
+}

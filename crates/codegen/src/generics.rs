@@ -4,15 +4,16 @@ use crate::{CodegenError, CodegenResult};
 use kome_ast::AstNode;
 use kome_ast::declarations::{
     Declaration, ForDeclaration, FunctionDeclaration, GenericParameter, Module, StructDeclaration,
-    TraitDeclaration, TypeMember,
+    StructField, TraitDeclaration, TypeMember, Visibility,
 };
 use kome_ast::expressions::{
-    CallArg, CallExpression, Expression, IdentifierExpression, LiteralKind, PropertyKey,
+    CallArg, CallExpression, ClosureLowering, Expression, IdentifierExpression, LiteralKind,
+    MemberExpression, PropertyKey,
 };
 use kome_ast::generics::TypeSubstitution;
 use kome_ast::patterns::{IdentifierPattern, Pattern};
 use kome_ast::statements::{BlockStatement, ExpressionStatement, ReturnStatement, Statement};
-use kome_ast::types::{NamedType, Type};
+use kome_ast::types::{FunctionType, NamedType, Parameter, Type};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn monomorphize(module: &Module) -> CodegenResult<Module> {
@@ -34,6 +35,7 @@ struct Expander<'a> {
     emitted_impls: HashSet<(usize, String)>,
     layout_stack: Vec<String>,
     next_task_body: usize,
+    next_closure: usize,
 }
 
 impl<'a> Expander<'a> {
@@ -76,6 +78,7 @@ impl<'a> Expander<'a> {
             emitted_impls: HashSet::new(),
             layout_stack: Vec::new(),
             next_task_body: 0,
+            next_closure: 0,
         }
     }
 
@@ -732,6 +735,178 @@ impl<'a> Expander<'a> {
                 self.rewrite_expression(&mut value.argument, environment, substitution, None)?;
                 Ok(unknown_type(value.span))
             }
+            Expression::Closure(closure) => {
+                let expected_function = expected.and_then(|expected| match expected {
+                    Type::Function(function) => Some(function.clone()),
+                    _ => None,
+                });
+                if let Some(expected) = &expected_function
+                    && expected.params.len() != closure.params.len()
+                {
+                    return Err(CodegenError::at(
+                        format!(
+                            "closure expects {} parameter(s), but the target type requires {}",
+                            closure.params.len(),
+                            expected.params.len()
+                        ),
+                        closure.span,
+                    ));
+                }
+
+                let mut closure_environment = environment.clone();
+                let mut parameters = Vec::with_capacity(closure.params.len());
+                for (index, pattern) in closure.params.iter_mut().enumerate() {
+                    let Pattern::Ident(identifier) = pattern else {
+                        return Err(CodegenError::at(
+                            "closure parameters require identifier patterns",
+                            pattern.span(),
+                        ));
+                    };
+                    let type_ = match (&identifier.type_annotation, &expected_function) {
+                        (Some(annotation), _) => {
+                            self.concrete_type(annotation, substitution, identifier.span)?
+                        }
+                        (None, Some(function)) => function
+                            .params
+                            .get(index)
+                            .map(|parameter| parameter.type_.clone())
+                            .ok_or_else(|| {
+                                CodegenError::at(
+                                    "closure parameter type could not be inferred",
+                                    identifier.span,
+                                )
+                            })?,
+                        (None, None) => {
+                            return Err(CodegenError::at(
+                                "closure parameters require a type annotation when no function type is expected",
+                                identifier.span,
+                            ));
+                        }
+                    };
+                    identifier.type_annotation = Some(type_.clone());
+                    closure_environment.insert(identifier.name.clone(), type_.clone());
+                    parameters.push(Parameter {
+                        span: identifier.span,
+                        name: identifier.name.clone(),
+                        type_,
+                        default: None,
+                    });
+                }
+
+                let expected_return = expected_function
+                    .as_ref()
+                    .map(|function| function.return_type.as_ref());
+                let return_type = self.rewrite_expression(
+                    &mut closure.body,
+                    &mut closure_environment,
+                    substitution,
+                    expected_return,
+                )?;
+                let return_type = expected_return.cloned().unwrap_or(return_type);
+                let function_type = FunctionType {
+                    span: closure.span,
+                    params: parameters.clone(),
+                    return_type: Box::new(return_type.clone()),
+                };
+
+                let parameter_names = parameters
+                    .iter()
+                    .map(|parameter| parameter.name.as_str())
+                    .collect::<HashSet<_>>();
+                let mut captures = HashSet::new();
+                collect_captures(&closure.body, environment, &mut captures);
+                captures.retain(|capture| !parameter_names.contains(capture.as_str()));
+                let mut captures = captures.into_iter().collect::<Vec<_>>();
+                captures.sort();
+
+                let closure_id = self.next_closure;
+                self.next_closure += 1;
+                let environment_name = format!(
+                    "__kome_closure_environment_{}_{}",
+                    closure.span.start, closure_id
+                );
+                let function_name =
+                    format!("__kome_closure_body_{}_{}", closure.span.start, closure_id);
+                let fields = captures
+                    .iter()
+                    .map(|capture| {
+                        let type_ = environment.get(capture).cloned().ok_or_else(|| {
+                            CodegenError::at(
+                                format!("closure capture `{capture}` has no concrete type"),
+                                closure.span,
+                            )
+                        })?;
+                        Ok(StructField {
+                            span: closure.span,
+                            visibility: Visibility::Private,
+                            name: capture.clone(),
+                            type_,
+                        })
+                    })
+                    .collect::<CodegenResult<Vec<_>>>()?;
+                self.output.push(Declaration::Struct(StructDeclaration {
+                    span: closure.span,
+                    visibility: Visibility::Private,
+                    attributes: Vec::new(),
+                    name: environment_name.clone(),
+                    type_parameters: Vec::new(),
+                    fields: Some(fields),
+                }));
+
+                replace_closure_captures(
+                    &mut closure.body,
+                    &captures.iter().cloned().collect(),
+                    "__kome_closure_environment",
+                );
+                let environment_type = Type::Named(NamedType {
+                    span: closure.span,
+                    name: environment_name.clone(),
+                    type_arguments: Vec::new(),
+                });
+                let mut lifted_parameters = vec![Pattern::Ident(IdentifierPattern {
+                    span: closure.span,
+                    name: "__kome_closure_environment".into(),
+                    type_annotation: Some(environment_type),
+                    default: None,
+                })];
+                lifted_parameters.extend(closure.params.clone());
+                let body_expression = closure.body.as_ref().clone();
+                let statement = if matches!(
+                    &return_type,
+                    Type::Named(named)
+                        if named.name == "Void" && named.type_arguments.is_empty()
+                ) {
+                    Statement::Expression(ExpressionStatement {
+                        span: closure.span,
+                        expression: body_expression,
+                    })
+                } else {
+                    Statement::Return(ReturnStatement {
+                        span: closure.span,
+                        argument: Some(body_expression),
+                    })
+                };
+                self.output.push(Declaration::Function(FunctionDeclaration {
+                    span: closure.span,
+                    visibility: Visibility::Private,
+                    attributes: Vec::new(),
+                    name: function_name.clone(),
+                    type_parameters: Vec::new(),
+                    params: lifted_parameters,
+                    body: Some(BlockStatement {
+                        span: closure.span,
+                        statements: vec![statement],
+                    }),
+                    return_type: Some(return_type),
+                }));
+                closure.lowering = Some(ClosureLowering {
+                    function: function_name,
+                    environment: environment_name,
+                    captures,
+                    function_type: function_type.clone(),
+                });
+                Ok(Type::Function(function_type))
+            }
             Expression::Struct(value) => {
                 let arguments = value
                     .type_arguments
@@ -826,16 +1001,30 @@ impl<'a> Expander<'a> {
                     && let Some(template) = self.functions.get(&identifier.name).copied().cloned()
                 {
                     let mut argument_types = Vec::new();
-                    for argument in &mut call.args {
+                    for (index, argument) in call.args.iter_mut().enumerate() {
                         let value = match argument {
                             CallArg::Positional(value) => value,
                             CallArg::Named { value, .. } => value,
+                        };
+                        let expected_argument = if template.type_parameters.is_empty() {
+                            template.params.get(index).and_then(|parameter| {
+                                if let Pattern::Ident(parameter) = parameter {
+                                    parameter
+                                        .type_annotation
+                                        .as_ref()
+                                        .map(|type_| substitution.apply(type_))
+                                } else {
+                                    None
+                                }
+                            })
+                        } else {
+                            None
                         };
                         argument_types.push(self.rewrite_expression(
                             value,
                             environment,
                             substitution,
-                            None,
+                            expected_argument.as_ref(),
                         )?);
                     }
                     let mut type_arguments = call
@@ -1010,6 +1199,180 @@ impl<'a> Expander<'a> {
             return Some(substitution.apply(return_type));
         }
         None
+    }
+}
+
+fn replace_closure_captures(
+    expression: &mut Expression,
+    captures: &HashSet<String>,
+    environment: &str,
+) {
+    if let Expression::Ident(identifier) = expression
+        && captures.contains(&identifier.name)
+    {
+        *expression = Expression::Member(MemberExpression {
+            span: identifier.span,
+            object: Box::new(Expression::Ident(IdentifierExpression {
+                span: identifier.span,
+                name: environment.to_owned(),
+            })),
+            property: identifier.name.clone(),
+        });
+        return;
+    }
+    match expression {
+        Expression::Unary(value) => {
+            replace_closure_captures(&mut value.argument, captures, environment)
+        }
+        Expression::Unwrap(value) => {
+            replace_closure_captures(&mut value.argument, captures, environment)
+        }
+        Expression::Task(value) => {
+            replace_closure_captures(&mut value.argument, captures, environment)
+        }
+        Expression::Wait(value) => {
+            replace_closure_captures(&mut value.argument, captures, environment)
+        }
+        Expression::Cancel(value) => {
+            replace_closure_captures(&mut value.argument, captures, environment)
+        }
+        Expression::Binary(value) => {
+            replace_closure_captures(&mut value.left, captures, environment);
+            replace_closure_captures(&mut value.right, captures, environment);
+        }
+        Expression::Call(value) => {
+            replace_closure_captures(&mut value.callee, captures, environment);
+            for argument in &mut value.args {
+                let expression = match argument {
+                    CallArg::Positional(expression) => expression,
+                    CallArg::Named { value, .. } => value,
+                };
+                replace_closure_captures(expression, captures, environment);
+            }
+        }
+        Expression::Member(value) => {
+            replace_closure_captures(&mut value.object, captures, environment)
+        }
+        Expression::Index(value) => {
+            replace_closure_captures(&mut value.object, captures, environment);
+            replace_closure_captures(&mut value.index, captures, environment);
+        }
+        Expression::Assign(value) => {
+            replace_closure_captures(&mut value.target, captures, environment);
+            replace_closure_captures(&mut value.value, captures, environment);
+        }
+        Expression::Group(value) => {
+            replace_closure_captures(&mut value.expression, captures, environment)
+        }
+        Expression::Block(value) => {
+            for statement in &mut value.statements {
+                replace_statement_captures(statement, captures, environment);
+            }
+            if let Some(tail) = &mut value.tail {
+                replace_closure_captures(tail, captures, environment);
+            }
+        }
+        Expression::List(value) => {
+            for element in value.elems.iter_mut().flatten() {
+                replace_closure_captures(element, captures, environment);
+            }
+        }
+        Expression::Object(value) => {
+            for property in &mut value.props {
+                let kome_ast::expressions::ObjectProperty::KeyValue(property) = property;
+                replace_closure_captures(&mut property.value, captures, environment);
+            }
+        }
+        Expression::Struct(value) => {
+            for field in &mut value.fields {
+                replace_closure_captures(&mut field.value, captures, environment);
+            }
+        }
+        Expression::Template(value) => {
+            for part in &mut value.parts {
+                if let kome_ast::expressions::TemplatePart::Expression { expression, .. } = part {
+                    replace_closure_captures(expression, captures, environment);
+                }
+            }
+        }
+        Expression::Is(value) => {
+            replace_closure_captures(&mut value.value, captures, environment);
+            replace_closure_captures(&mut value.body, captures, environment);
+        }
+        Expression::Component(value) => {
+            for argument in &mut value.args {
+                let expression = match argument {
+                    CallArg::Positional(expression) => expression,
+                    CallArg::Named { value, .. } => value,
+                };
+                replace_closure_captures(expression, captures, environment);
+            }
+            for child in &mut value.children {
+                replace_closure_captures(child, captures, environment);
+            }
+        }
+        Expression::Closure(_)
+        | Expression::Literal(_)
+        | Expression::Ident(_)
+        | Expression::DotIdent(_) => {}
+    }
+}
+
+fn replace_statement_captures(
+    statement: &mut Statement,
+    captures: &HashSet<String>,
+    environment: &str,
+) {
+    match statement {
+        Statement::Let(binding) => {
+            if let Some(initializer) = &mut binding.init {
+                replace_closure_captures(initializer, captures, environment);
+            }
+        }
+        Statement::Expression(value) => {
+            replace_closure_captures(&mut value.expression, captures, environment)
+        }
+        Statement::Return(value) => {
+            if let Some(argument) = &mut value.argument {
+                replace_closure_captures(argument, captures, environment);
+            }
+        }
+        Statement::Block(value) => {
+            for statement in &mut value.statements {
+                replace_statement_captures(statement, captures, environment);
+            }
+        }
+        Statement::If(value) => {
+            replace_closure_captures(&mut value.test, captures, environment);
+            replace_statement_captures(&mut value.consequent, captures, environment);
+            if let Some(alternative) = &mut value.alternative {
+                replace_statement_captures(alternative, captures, environment);
+            }
+        }
+        Statement::While(value) => {
+            replace_closure_captures(&mut value.test, captures, environment);
+            replace_statement_captures(&mut value.body, captures, environment);
+        }
+        Statement::ForIn(value) => {
+            replace_closure_captures(&mut value.right, captures, environment);
+            replace_statement_captures(&mut value.body, captures, environment);
+        }
+        Statement::Is(value) => {
+            if let Some(expression) = &mut value.value {
+                replace_closure_captures(expression, captures, environment);
+            }
+            replace_statement_captures(&mut value.body, captures, environment);
+        }
+        Statement::Declaration(Declaration::Let(binding))
+        | Statement::Declaration(Declaration::Constant(binding)) => {
+            if let Some(initializer) = &mut binding.init {
+                replace_closure_captures(initializer, captures, environment);
+            }
+        }
+        Statement::Declaration(_)
+        | Statement::Break(_)
+        | Statement::Continue(_)
+        | Statement::Empty(_) => {}
     }
 }
 

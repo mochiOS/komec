@@ -1473,9 +1473,7 @@ impl TypeChecker {
                         if let (Some(annotated), Some(contextual)) = (&annotated, &contextual) {
                             self.check_compatible(contextual, annotated, identifier.span);
                         }
-                        let type_ = annotated
-                            .or(contextual)
-                            .unwrap_or(SemanticType::Unknown);
+                        let type_ = annotated.or(contextual).unwrap_or(SemanticType::Unknown);
 
                         self.declare(&identifier.name, type_.clone());
                         parameter_types.push(type_);
@@ -2242,9 +2240,7 @@ impl TypeChecker {
                 function
                     .params
                     .iter()
-                    .map(|parameter| {
-                        Self::type_from_annotation_with(&parameter.type_, parameters)
-                    })
+                    .map(|parameter| Self::type_from_annotation_with(&parameter.type_, parameters))
                     .collect(),
                 Box::new(Self::type_from_annotation_with(
                     &function.return_type,

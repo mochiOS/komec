@@ -18,13 +18,15 @@ use kome_ast::declarations::{
 };
 use kome_ast::expressions::{
     AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, BlockExpression, CallArg,
-    CallExpression, CancelExpression, Expression, GroupExpression, IdentifierExpression,
-    ListExpression, LiteralExpression, LiteralKind, MemberExpression, NumberLiteral,
-    ObjectExpression, ObjectProperty, PropertyKey, StructExpression, TaskExpression,
-    TemplateExpression, TemplatePart, UnaryExpression, UnaryOp, UnwrapExpression, WaitExpression,
+    CallExpression, CancelExpression, ClosureExpression, Expression, GroupExpression,
+    IdentifierExpression, KeyValueProperty, ListExpression, LiteralExpression, LiteralKind,
+    MemberExpression, NumberLiteral, ObjectExpression, ObjectProperty, PropertyKey,
+    StructExpression, TaskExpression, TemplateExpression, TemplatePart, UnaryExpression, UnaryOp,
+    UnwrapExpression, WaitExpression,
 };
 use kome_ast::patterns::IsPattern;
 use kome_ast::statements::{BlockStatement, Statement};
+use kome_ast::types::Type;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -86,6 +88,7 @@ pub struct ModuleInfo {
     task_types: RefCell<Vec<KomeType>>,
     list_types: RefCell<Vec<KomeType>>,
     optional_types: RefCell<Vec<KomeType>>,
+    closure_types: RefCell<Vec<FunctionSignature>>,
     enums: Vec<EnumInfo>,
     globals: HashMap<String, GlobalInfo>,
     components: HashMap<String, ComponentInfo>,
@@ -175,6 +178,19 @@ impl ModuleInfo {
             KomeType::Task(id) => format!("Task<{}>", self.type_name(self.task_result(id))),
             KomeType::List(id) => format!("{}[]", self.type_name(self.list_element(id))),
             KomeType::Optional(id) => format!("{}?", self.type_name(self.optional_inner(id))),
+            KomeType::Closure(id) => {
+                let signature = self.closure_signature(id);
+                format!(
+                    "({}) -> {}",
+                    signature
+                        .params
+                        .iter()
+                        .map(|type_| self.type_name(*type_))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    self.type_name(signature.ret)
+                )
+            }
             KomeType::Enum(id) => self.enums[id].name.clone(),
             _ => ty.name(),
         }
@@ -214,6 +230,10 @@ impl ModuleInfo {
 
     fn optional_inner(&self, id: usize) -> KomeType {
         self.optional_types.borrow()[id]
+    }
+
+    fn closure_signature(&self, id: usize) -> FunctionSignature {
+        self.closure_types.borrow()[id].clone()
     }
 
     fn implementation_member(
@@ -346,6 +366,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
     let task_types = RefCell::new(Vec::new());
     let list_types = RefCell::new(Vec::new());
     let optional_types = RefCell::new(Vec::new());
+    let closure_types = RefCell::new(Vec::new());
     let mut enums = Vec::new();
     let mut globals = HashMap::new();
 
@@ -443,6 +464,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &task_types,
                 &list_types,
                 &optional_types,
+                &closure_types,
             )?;
             if kome_type == KomeType::Void {
                 return Err(CodegenError::at(
@@ -490,6 +512,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &task_types,
                 &list_types,
                 &optional_types,
+                &closure_types,
             )?);
             defaults.push(parameter.default.clone());
         }
@@ -524,6 +547,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             &task_types,
             &list_types,
             &optional_types,
+            &closure_types,
             None,
         )?;
 
@@ -582,6 +606,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &task_types,
                 &list_types,
                 &optional_types,
+                &closure_types,
                 None,
             )?;
             let kind = FunctionKind::External {
@@ -690,6 +715,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             &task_types,
             &list_types,
             &optional_types,
+            &closure_types,
         )?;
         let trait_name = implementation
             .trait_
@@ -714,6 +740,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                         &task_types,
                         &list_types,
                         &optional_types,
+                        &closure_types,
                         Some(target),
                     )?;
                     let has_self = matches!(function.params.first(), Some(kome_ast::patterns::Pattern::Ident(parameter)) if parameter.name == "self");
@@ -774,6 +801,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                         &task_types,
                         &list_types,
                         &optional_types,
+                        &closure_types,
                     )?;
                     constants.insert(
                         identifier.name.clone(),
@@ -802,6 +830,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
                 &task_types,
                 &list_types,
                 &optional_types,
+                &closure_types,
             )?;
             if trait_name == "Drop" {
                 if !matches!(target, KomeType::Struct(_)) {
@@ -859,6 +888,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             &task_types,
             &list_types,
             &optional_types,
+            &closure_types,
             &mut global_type_cache,
             &mut Vec::new(),
         )?;
@@ -874,6 +904,7 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
         task_types,
         list_types,
         optional_types,
+        closure_types,
         enums,
         globals,
         components,
@@ -910,6 +941,7 @@ fn validate_trait_implementation(
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
     optional_types: &RefCell<Vec<KomeType>>,
+    closure_types: &RefCell<Vec<FunctionSignature>>,
 ) -> CodegenResult<()> {
     for required in &trait_decl.functions {
         let expected = analyze_signature(
@@ -919,6 +951,7 @@ fn validate_trait_implementation(
             task_types,
             list_types,
             optional_types,
+            closure_types,
             Some(target),
         )?;
         let actual = methods.get(&required.name).ok_or_else(|| {
@@ -1048,6 +1081,7 @@ pub fn compile_module<M: Module>(
 ) -> CodegenResult<HashMap<String, FuncId>> {
     let mut func_ids = HashMap::new();
     let mut task_entry_ids = HashMap::new();
+    let mut closure_drop_ids = HashMap::new();
     let mut global_storage = HashMap::new();
 
     for (name, global) in &info.globals {
@@ -1120,6 +1154,26 @@ pub fn compile_module<M: Module>(
         }
     }
 
+    for (id, layout) in info.structs.borrow().iter().enumerate() {
+        if !layout.name.starts_with("__kome_closure_environment_") {
+            continue;
+        }
+        let mut signature = module.make_signature();
+        signature.params.push(AbiParam::new(types::I64));
+        let func_id = module
+            .declare_function(
+                &format!(
+                    "kome_closure_drop_{}_{}",
+                    encode_symbol_part(&layout.name),
+                    id
+                ),
+                Linkage::Local,
+                &signature,
+            )
+            .map_err(|error| CodegenError::new(error.to_string(), None))?;
+        closure_drop_ids.insert(id, func_id);
+    }
+
     let foreign = ForeignFunctions::declare(module)?;
     let mut native_symbols = NativeSymbolPool::default();
 
@@ -1141,6 +1195,7 @@ pub fn compile_module<M: Module>(
                 info,
                 func_ids: &func_ids,
                 task_entry_ids: &task_entry_ids,
+                closure_drop_ids: &closure_drop_ids,
                 global_storage: &global_storage,
                 foreign: &foreign,
                 native_symbols: &mut native_symbols,
@@ -1169,6 +1224,57 @@ pub fn compile_module<M: Module>(
                     declaration.span,
                 )
             })?;
+    }
+
+    for (&environment_id, &drop_id) in &closure_drop_ids {
+        let mut context = module.make_context();
+        context
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
+        context.func.name = UserFuncName::user(0, drop_id.as_u32());
+        let mut function_builder_context = FunctionBuilderContext::new();
+        {
+            let mut builder =
+                FunctionBuilder::new(&mut context.func, &mut function_builder_context);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let environment = builder.block_params(entry)[0];
+            let mut translator = FunctionTranslator {
+                builder,
+                module,
+                info,
+                func_ids: &func_ids,
+                task_entry_ids: &task_entry_ids,
+                closure_drop_ids: &closure_drop_ids,
+                global_storage: &global_storage,
+                foreign: &foreign,
+                native_symbols: &mut native_symbols,
+                scopes: vec![HashMap::new()],
+                remaining_reads: HashMap::new(),
+                next_binding_id: 0,
+                return_type: KomeType::Void,
+                terminated: false,
+                loops: Vec::new(),
+                allow_managed_moves: true,
+                evaluating_globals: Vec::new(),
+                closures: Vec::new(),
+                local_functions: Vec::new(),
+                local_call_stack: Vec::new(),
+                inline_returns: Vec::new(),
+            };
+            translator.release_struct(environment, environment_id);
+            translator.builder.ins().return_(&[]);
+            translator
+                .builder
+                .finalize(translator.module.target_config());
+        }
+        module
+            .define_function(drop_id, &mut context)
+            .map_err(|error| CodegenError::new(error.to_string(), None))?;
     }
 
     for (name, entry_id) in &task_entry_ids {
@@ -1203,6 +1309,7 @@ pub fn compile_module<M: Module>(
                 info,
                 func_ids: &func_ids,
                 task_entry_ids: &task_entry_ids,
+                closure_drop_ids: &closure_drop_ids,
                 global_storage: &global_storage,
                 foreign: &foreign,
                 native_symbols: &mut native_symbols,
@@ -1258,6 +1365,11 @@ struct ForeignFunctions {
     struct_retain: FuncId,
     struct_release: FuncId,
     struct_dealloc: FuncId,
+    closure_alloc: FuncId,
+    closure_retain: FuncId,
+    closure_release: FuncId,
+    closure_code: FuncId,
+    closure_environment: FuncId,
     optional_require: FuncId,
     task_spawn: FuncId,
     task_cancel: FuncId,
@@ -1425,6 +1537,27 @@ impl ForeignFunctions {
             &[types::I64, types::I64],
             None,
         )?;
+        let closure_alloc = declare_foreign(
+            module,
+            "__kome_closure_alloc",
+            &[types::I64, types::I64, types::I64],
+            Some(types::I64),
+        )?;
+        let closure_retain = declare_foreign(module, "__kome_closure_retain", &[types::I64], None)?;
+        let closure_release =
+            declare_foreign(module, "__kome_closure_release", &[types::I64], None)?;
+        let closure_code = declare_foreign(
+            module,
+            "__kome_closure_code",
+            &[types::I64],
+            Some(types::I64),
+        )?;
+        let closure_environment = declare_foreign(
+            module,
+            "__kome_closure_environment",
+            &[types::I64],
+            Some(types::I64),
+        )?;
         let task_spawn = declare_foreign(
             module,
             "__kome_task_spawn",
@@ -1535,6 +1668,11 @@ impl ForeignFunctions {
             struct_retain,
             struct_release,
             struct_dealloc,
+            closure_alloc,
+            closure_retain,
+            closure_release,
+            closure_code,
+            closure_environment,
             task_spawn,
             task_cancel,
             task_is_cancelled,
@@ -1640,6 +1778,7 @@ fn analyze_signature(
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
     optional_types: &RefCell<Vec<KomeType>>,
+    closure_types: &RefCell<Vec<FunctionSignature>>,
     self_type: Option<KomeType>,
 ) -> CodegenResult<FunctionSignature> {
     let mut params = Vec::with_capacity(function.params.len());
@@ -1681,6 +1820,7 @@ fn analyze_signature(
                 task_types,
                 list_types,
                 optional_types,
+                closure_types,
             )?
         };
 
@@ -1704,6 +1844,7 @@ fn analyze_signature(
             task_types,
             list_types,
             optional_types,
+            closure_types,
         )?,
         None => KomeType::Void,
     };
@@ -1723,6 +1864,7 @@ fn type_from_annotation(
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
     optional_types: &RefCell<Vec<KomeType>>,
+    closure_types: &RefCell<Vec<FunctionSignature>>,
 ) -> CodegenResult<KomeType> {
     if let kome_ast::types::Type::Pointer(_) = annotation {
         return Ok(KomeType::Pointer);
@@ -1735,6 +1877,7 @@ fn type_from_annotation(
             task_types,
             list_types,
             optional_types,
+            closure_types,
         )?;
         if matches!(inner, KomeType::Void | KomeType::Null) {
             return Err(CodegenError::at(
@@ -1760,6 +1903,7 @@ fn type_from_annotation(
             task_types,
             list_types,
             optional_types,
+            closure_types,
         )?;
         let mut list_types = list_types.borrow_mut();
         let id = list_types
@@ -1792,6 +1936,7 @@ fn type_from_annotation(
                 task_types,
                 list_types,
                 optional_types,
+                closure_types,
             )?;
             let mut task_types = task_types.borrow_mut();
             let id = task_types
@@ -1815,6 +1960,51 @@ fn type_from_annotation(
             });
     }
 
+    if let kome_ast::types::Type::Function(function) = annotation {
+        let mut params = Vec::with_capacity(function.params.len());
+        let mut param_names = Vec::with_capacity(function.params.len());
+        let mut defaults = Vec::with_capacity(function.params.len());
+        for parameter in &function.params {
+            params.push(type_from_annotation(
+                &parameter.type_,
+                runtime_types,
+                struct_ids,
+                task_types,
+                list_types,
+                optional_types,
+                closure_types,
+            )?);
+            param_names.push(parameter.name.clone());
+            defaults.push(parameter.default.clone());
+        }
+        let ret = type_from_annotation(
+            &function.return_type,
+            runtime_types,
+            struct_ids,
+            task_types,
+            list_types,
+            optional_types,
+            closure_types,
+        )?;
+        let signature = FunctionSignature {
+            param_names,
+            params,
+            defaults,
+            ret,
+        };
+        let mut closure_types = closure_types.borrow_mut();
+        let id = closure_types
+            .iter()
+            .position(|existing| {
+                existing.params == signature.params && existing.ret == signature.ret
+            })
+            .unwrap_or_else(|| {
+                closure_types.push(signature);
+                closure_types.len() - 1
+            });
+        return Ok(KomeType::Closure(id));
+    }
+
     KomeType::from_annotation(annotation)
 }
 
@@ -1830,6 +2020,7 @@ fn infer_global_type(
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
     optional_types: &RefCell<Vec<KomeType>>,
+    closure_types: &RefCell<Vec<FunctionSignature>>,
     cache: &mut HashMap<String, KomeType>,
     visiting: &mut Vec<String>,
 ) -> CodegenResult<KomeType> {
@@ -1853,6 +2044,7 @@ fn infer_global_type(
             task_types,
             list_types,
             optional_types,
+            closure_types,
         )?;
         cache.insert(name.to_owned(), type_);
         return Ok(type_);
@@ -1875,6 +2067,7 @@ fn infer_global_type(
         task_types,
         list_types,
         optional_types,
+        closure_types,
         cache,
         visiting,
     );
@@ -1903,6 +2096,7 @@ fn infer_codegen_expression_type(
     task_types: &RefCell<Vec<KomeType>>,
     list_types: &RefCell<Vec<KomeType>>,
     optional_types: &RefCell<Vec<KomeType>>,
+    closure_types: &RefCell<Vec<FunctionSignature>>,
     cache: &mut HashMap<String, KomeType>,
     visiting: &mut Vec<String>,
 ) -> CodegenResult<KomeType> {
@@ -1920,6 +2114,7 @@ fn infer_codegen_expression_type(
             task_types,
             list_types,
             optional_types,
+            closure_types,
             cache,
             visiting,
         )
@@ -1942,6 +2137,7 @@ fn infer_codegen_expression_type(
             task_types,
             list_types,
             optional_types,
+            closure_types,
             cache,
             visiting,
         ),
@@ -2231,6 +2427,7 @@ struct FunctionTranslator<'b, 'c, M: Module> {
     info: &'b ModuleInfo,
     func_ids: &'b HashMap<String, FuncId>,
     task_entry_ids: &'b HashMap<String, FuncId>,
+    closure_drop_ids: &'b HashMap<usize, FuncId>,
     global_storage: &'b HashMap<String, GlobalStorage>,
     foreign: &'b ForeignFunctions,
     native_symbols: &'b mut NativeSymbolPool,
@@ -2946,20 +3143,6 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                         binding.pattern.span(),
                     ));
                 };
-                let closure = match binding.init.as_ref() {
-                    Some(Expression::Closure(closure)) => Some(closure.clone()),
-                    Some(Expression::Group(group)) => match group.expression.as_ref() {
-                        Expression::Closure(closure) => Some(closure.clone()),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if let Some(closure) = closure {
-                    self.next_binding_id += 1;
-                    self.closures
-                        .push((pattern.name.clone(), self.scopes.len(), closure));
-                    return Ok(());
-                }
 
                 let annotated_type = binding
                     .type_annotation
@@ -2972,6 +3155,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                             &self.info.task_types,
                             &self.info.list_types,
                             &self.info.optional_types,
+                            &self.info.closure_types,
                         )
                     })
                     .transpose()?;
@@ -3457,7 +3641,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
 
             Expression::Is(is) => self.evaluate_is_expression(is, None),
 
-            Expression::Closure(_) => Ok(TypedValue::void()),
+            Expression::Closure(closure) => self.evaluate_closure_value(closure),
 
             Expression::DotIdent(dot) => Err(CodegenError::at(
                 "a dot-prefixed case requires an enum context",
@@ -5429,21 +5613,129 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         Ok(TypedValue::some(value, result_type))
     }
 
+    fn evaluate_closure_value(&mut self, closure: &ClosureExpression) -> CodegenResult<TypedValue> {
+        let lowering = closure.lowering.as_ref().ok_or_else(|| {
+            CodegenError::at(
+                "closure did not receive a concrete code generation environment",
+                closure.span,
+            )
+        })?;
+        let environment_id = *self
+            .info
+            .struct_ids
+            .get(&lowering.environment)
+            .ok_or_else(|| {
+                CodegenError::at("closure environment layout was not generated", closure.span)
+            })?;
+        let environment_expression = StructExpression {
+            span: closure.span,
+            name: lowering.environment.clone(),
+            type_arguments: Vec::new(),
+            fields: lowering
+                .captures
+                .iter()
+                .map(|capture| KeyValueProperty {
+                    span: closure.span,
+                    key: PropertyKey::Ident {
+                        name: capture.clone(),
+                        span: closure.span,
+                    },
+                    value: Box::new(Expression::Ident(IdentifierExpression {
+                        span: closure.span,
+                        name: capture.clone(),
+                    })),
+                })
+                .collect(),
+        };
+        let environment = self.evaluate_struct(&environment_expression)?;
+        let environment_pointer = environment.expect_value(closure.span)?;
+        let closure_type = type_from_annotation(
+            &Type::Function(lowering.function_type.clone()),
+            &self.info.runtime_types,
+            &self.info.struct_ids,
+            &self.info.task_types,
+            &self.info.list_types,
+            &self.info.optional_types,
+            &self.info.closure_types,
+        )?;
+        let function_id = self
+            .func_ids
+            .get(&lowering.function)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::at("closure body function was not generated", closure.span)
+            })?;
+        let function = Module::declare_func_in_func(self.module, function_id, self.builder.func);
+        let code = self
+            .builder
+            .ins()
+            .func_addr(self.module.target_config().pointer_type(), function);
+        let drop_id = self
+            .closure_drop_ids
+            .get(&environment_id)
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::at(
+                    "closure environment destructor was not generated",
+                    closure.span,
+                )
+            })?;
+        let destructor = Module::declare_func_in_func(self.module, drop_id, self.builder.func);
+        let destructor = self
+            .builder
+            .ins()
+            .func_addr(self.module.target_config().pointer_type(), destructor);
+        let alloc = Module::declare_func_in_func(
+            self.module,
+            self.foreign.closure_alloc,
+            self.builder.func,
+        );
+        let call = self
+            .builder
+            .ins()
+            .call(alloc, &[code, environment_pointer, destructor]);
+        let closure_pointer = self.builder.inst_results(call)[0];
+        Ok(TypedValue::some(closure_pointer, closure_type))
+    }
+
     fn evaluate_call(&mut self, call: &CallExpression) -> CodegenResult<TypedValue> {
         if let Expression::Closure(closure) = call.callee.as_ref() {
+            if closure.lowering.is_some() {
+                let callee = self.evaluate(&call.callee)?;
+                return self.evaluate_closure_indirect(callee, call);
+            }
             return self.evaluate_closure_call(closure, call);
         }
         if let Expression::Group(group) = call.callee.as_ref()
             && let Expression::Closure(closure) = group.expression.as_ref()
         {
+            if closure.lowering.is_some() {
+                let callee = self.evaluate(&group.expression)?;
+                return self.evaluate_closure_indirect(callee, call);
+            }
             return self.evaluate_closure_call(closure, call);
         }
         if let Expression::Group(group) = call.callee.as_ref() {
+            if let Expression::Member(member) = group.expression.as_ref()
+                && self.member_is_closure_field(member)
+            {
+                let callee = self.evaluate(&group.expression)?;
+                return self.evaluate_closure_indirect(callee, call);
+            }
             let mut ungrouped = call.clone();
             ungrouped.callee = group.expression.clone();
             return self.evaluate_call(&ungrouped);
         }
         if let Expression::Ident(identifier) = call.callee.as_ref() {
+            let local_type = self.scopes.iter().rev().find_map(|scope| {
+                scope
+                    .get(&identifier.name)
+                    .map(|variable| variable.kome_type)
+            });
+            if matches!(local_type, Some(KomeType::Closure(_))) {
+                let callee = self.evaluate(&call.callee)?;
+                return self.evaluate_closure_indirect(callee, call);
+            }
             let local = self
                 .closures
                 .iter()
@@ -5491,14 +5783,16 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
         }
         if let Expression::Member(member) = call.callee.as_ref() {
+            if self.member_is_closure_field(member) {
+                let callee = self.evaluate(&call.callee)?;
+                return self.evaluate_closure_indirect(callee, call);
+            }
             return self.evaluate_method_call(member, call);
         }
 
         let Expression::Ident(callee) = call.callee.as_ref() else {
-            return Err(CodegenError::at(
-                "calling non-identifier expressions is not supported yet",
-                call.callee.span(),
-            ));
+            let callee = self.evaluate(&call.callee)?;
+            return self.evaluate_closure_indirect(callee, call);
         };
 
         let plan = match self.info.get(&callee.name) {
@@ -5570,6 +5864,105 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
         }
 
         Ok(result)
+    }
+
+    fn member_is_closure_field(&self, member: &MemberExpression) -> bool {
+        let Expression::Ident(identifier) = member.object.as_ref() else {
+            return false;
+        };
+        let Some(KomeType::Struct(id)) = self.scopes.iter().rev().find_map(|scope| {
+            scope
+                .get(&identifier.name)
+                .map(|variable| variable.kome_type)
+        }) else {
+            return false;
+        };
+        self.info.struct_info(id).fields.iter().any(|field| {
+            field.name == member.property && matches!(field.kome_type, KomeType::Closure(_))
+        })
+    }
+
+    fn evaluate_closure_indirect(
+        &mut self,
+        closure: TypedValue,
+        call: &CallExpression,
+    ) -> CodegenResult<TypedValue> {
+        let KomeType::Closure(id) = closure.kome_type else {
+            return Err(CodegenError::at(
+                "expression is not callable",
+                call.callee.span(),
+            ));
+        };
+        let signature = self.info.closure_signature(id);
+        let ordered = self.order_call_arguments(
+            &call.args,
+            &signature.param_names,
+            &signature.defaults,
+            0,
+            call.span,
+        )?;
+        let mut arguments = Vec::with_capacity(ordered.len() + 1);
+        let mut typed_arguments = Vec::with_capacity(ordered.len());
+        let closure_pointer = closure.expect_value(call.callee.span())?;
+        let code_function =
+            Module::declare_func_in_func(self.module, self.foreign.closure_code, self.builder.func);
+        let code_call = self.builder.ins().call(code_function, &[closure_pointer]);
+        let code = self.builder.inst_results(code_call)[0];
+        let environment_function = Module::declare_func_in_func(
+            self.module,
+            self.foreign.closure_environment,
+            self.builder.func,
+        );
+        let environment_call = self
+            .builder
+            .ins()
+            .call(environment_function, &[closure_pointer]);
+        let environment = self.builder.inst_results(environment_call)[0];
+        arguments.push(environment);
+        for (expression, expected) in ordered.into_iter().zip(&signature.params) {
+            let value = self.evaluate_with_expected(&expression, Some(*expected))?;
+            if value.kome_type != *expected {
+                return Err(CodegenError::at(
+                    format!(
+                        "closure argument expects {}, but found {}",
+                        self.info.type_name(*expected),
+                        self.info.type_name(value.kome_type)
+                    ),
+                    expression.span(),
+                ));
+            }
+            arguments.push(value.expect_value(expression.span())?);
+            typed_arguments.push(value);
+        }
+        let mut native_signature = self.module.make_signature();
+        native_signature.params.push(AbiParam::new(types::I64));
+        for parameter in &signature.params {
+            native_signature.params.push(AbiParam::new(
+                parameter
+                    .cranelift()
+                    .expect("closure parameters cannot have type Void"),
+            ));
+        }
+        if let Some(result) = signature.ret.cranelift() {
+            native_signature.returns.push(AbiParam::new(result));
+        }
+        let signature_ref = self.builder.import_signature(native_signature);
+        let invocation = self
+            .builder
+            .ins()
+            .call_indirect(signature_ref, code, &arguments);
+        for argument in typed_arguments {
+            self.release_owned_temporary(argument, call.span)?;
+        }
+        self.release_owned_temporary(closure, call.callee.span())?;
+        if signature.ret == KomeType::Void {
+            Ok(TypedValue::void())
+        } else {
+            Ok(TypedValue::some(
+                self.builder.inst_results(invocation)[0],
+                signature.ret,
+            ))
+        }
     }
 
     fn evaluate_component(
@@ -5698,6 +6091,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                         &self.info.task_types,
                         &self.info.list_types,
                         &self.info.optional_types,
+                        &self.info.closure_types,
                     )
                 })
                 .transpose()?;
@@ -5772,6 +6166,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 &self.info.task_types,
                 &self.info.list_types,
                 &self.info.optional_types,
+                &self.info.closure_types,
                 None,
             )?;
             let body = declaration.body.as_ref().ok_or_else(|| {
@@ -6502,7 +6897,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 | KomeType::Task(_)
                 | KomeType::List(_)
                 | KomeType::Enum(_)
-                | KomeType::Optional(_) => {
+                | KomeType::Optional(_)
+                | KomeType::Closure(_) => {
                     return Err(CodegenError::new(
                         "managed aggregate values cannot cross the native ABI",
                         None,
@@ -6570,7 +6966,8 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             | KomeType::Struct(_)
             | KomeType::Task(_)
             | KomeType::List(_)
-            | KomeType::Enum(_) => {
+            | KomeType::Enum(_)
+            | KomeType::Closure(_) => {
                 return Err(CodegenError::new(
                     "managed aggregate values cannot cross the native ABI",
                     None,
@@ -6652,6 +7049,10 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             }
             KomeType::Enum(_) => Ok(self.builder.ins().iconst(types::I64, 0)),
             KomeType::Optional(_) => Ok(self.builder.ins().iconst(types::I64, 0)),
+            KomeType::Closure(_) => Err(CodegenError::new(
+                "closure values cannot be used without an initializer",
+                None,
+            )),
         }
     }
 
@@ -6718,6 +7119,7 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             KomeType::String => self.foreign.string_retain,
             KomeType::Socket | KomeType::Listener => self.foreign.socket_retain,
             KomeType::Struct(_) => self.foreign.struct_retain,
+            KomeType::Closure(_) => self.foreign.closure_retain,
             KomeType::Task(_) => self.foreign.task_retain,
             KomeType::List(_) => self.foreign.list_retain,
             KomeType::Optional(_) => {
@@ -6738,6 +7140,15 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             KomeType::Socket | KomeType::Listener => self.foreign.socket_release,
             KomeType::Struct(id) => {
                 self.release_struct(value, id);
+                return;
+            }
+            KomeType::Closure(_) => {
+                let function = Module::declare_func_in_func(
+                    self.module,
+                    self.foreign.closure_release,
+                    self.builder.func,
+                );
+                self.builder.ins().call(function, &[value]);
                 return;
             }
             KomeType::Task(id) => {
