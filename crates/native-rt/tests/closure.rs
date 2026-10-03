@@ -21,11 +21,7 @@ struct ClosurePrefix {
 #[test]
 fn exposes_a_stable_owned_c_callback_prefix() {
     DESTROYED.store(0, Ordering::SeqCst);
-    let closure = __kome_closure_alloc(
-        11,
-        17,
-        destroy_environment as *const () as usize as u64,
-    );
+    let closure = __kome_closure_alloc(11, 17, destroy_environment as *const () as usize as u64);
     let prefix = unsafe { &*(closure as *const ClosurePrefix) };
 
     assert_eq!(prefix.code, 11);

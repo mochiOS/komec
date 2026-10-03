@@ -6021,6 +6021,20 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                 }
             }
         }
+        if let Some(body) = &component.body {
+            for member in body {
+                let ComponentMember::Recipe(recipe) = member else {
+                    continue;
+                };
+                if recipe
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.name == "beforeChildren")
+                {
+                    self.translate_block(&recipe.body)?;
+                }
+            }
+        }
         for child in children {
             let value = self.evaluate(child)?;
             self.release_owned_temporary(value, child.span())?;
@@ -6034,7 +6048,24 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
                     .attributes
                     .iter()
                     .any(|attribute| attribute.name == "startup");
-                if recipe.name == "view" || startup {
+                let child_hook = recipe.attributes.iter().any(|attribute| {
+                    attribute.name == "beforeChildren" || attribute.name == "afterChildren"
+                });
+                if !child_hook && (recipe.name == "view" || startup) {
+                    self.translate_block(&recipe.body)?;
+                }
+            }
+        }
+        if let Some(body) = &component.body {
+            for member in body {
+                let ComponentMember::Recipe(recipe) = member else {
+                    continue;
+                };
+                if recipe
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.name == "afterChildren")
+                {
                     self.translate_block(&recipe.body)?;
                 }
             }

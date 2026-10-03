@@ -704,8 +704,37 @@ fn main() {
     .padding(24)
     .foreground(.secondary)
 }
-
 "#);
+}
+
+#[test]
+fn executes_component_child_lifecycle_hooks_in_tree_order() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+component Stack() {
+    @beforeChildren
+    recipe open { report(1) }
+
+    @afterChildren
+    recipe close { report(3) }
+}
+
+component Leaf() {
+    recipe view { report(2) }
+}
+
+fn main() {
+    Stack { Leaf() }
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        ["1", "2", "3"].map(|value| Value::Number(Number::parse(value).unwrap()))
+    );
+    clear_thread_registry();
 }
 
 #[test]
