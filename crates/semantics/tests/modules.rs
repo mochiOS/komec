@@ -272,6 +272,38 @@ fn resolves_public_wildcard_reexports() {
 }
 
 #[test]
+fn preserves_generic_parameters_across_modules() {
+    let linked = link_modules(vec![
+        source(
+            "library",
+            &[],
+            r#"
+pub struct State<T> { pub value: T }
+pub fn makeState<T>(value: T) -> State<T> { return State<T> { value: value } }
+pub fn setState<T>(storage: State<T>, value: T) { storage.value = value }
+"#,
+            false,
+        ),
+        source(
+            "app",
+            &[],
+            r#"
+use library::*
+fn main() {
+    let storage = makeState(0)
+    setState(storage, storage.value + 1)
+}
+"#,
+            true,
+        ),
+    ])
+    .unwrap();
+
+    let checked = TypeChecker::check(&linked);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+}
+
+#[test]
 fn rejects_reexports_that_widen_visibility() {
     let errors = link_modules(vec![
         source(

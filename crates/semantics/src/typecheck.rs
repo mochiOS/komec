@@ -359,6 +359,7 @@ pub struct TypeChecker {
     traits: HashMap<String, TraitTypeInfo>,
     implementations: Vec<TypeImplementationInfo>,
     current_module: String,
+    current_type_parameters: Vec<String>,
     return_type: SemanticType,
     loop_depth: usize,
     in_drop_body: bool,
@@ -377,6 +378,7 @@ impl TypeChecker {
             traits: HashMap::new(),
             implementations: Vec::new(),
             current_module: "__app".into(),
+            current_type_parameters: Vec::new(),
             return_type: SemanticType::Void,
             loop_depth: 0,
             in_drop_body: false,
@@ -914,6 +916,10 @@ impl TypeChecker {
         if let Some(self_type) = self_type {
             collect_semantic_parameters(self_type, &mut generic_parameters);
         }
+        let previous_type_parameters = std::mem::replace(
+            &mut self.current_type_parameters,
+            generic_parameters.clone(),
+        );
 
         for pattern in &function.params {
             let Pattern::Ident(identifier) = pattern else {
@@ -952,6 +958,7 @@ impl TypeChecker {
         }
 
         self.return_type = previous_return_type;
+        self.current_type_parameters = previous_type_parameters;
 
         self.exit_scope();
     }
@@ -1538,7 +1545,7 @@ impl TypeChecker {
         let arguments = struct_
             .type_arguments
             .iter()
-            .map(Self::type_from_annotation)
+            .map(|type_| Self::type_from_annotation_with(type_, &self.current_type_parameters))
             .collect::<Vec<_>>();
         if let Some(info) = &info
             && info.type_parameters.len() != arguments.len()

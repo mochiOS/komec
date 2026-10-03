@@ -63,6 +63,21 @@ fn represents_type_parameters_distinctly() {
 }
 
 #[test]
+fn checks_generic_struct_construction_inside_a_generic_function() {
+    let module = kome_parser::parse(
+        r#"
+struct State<T> { value: T }
+fn makeState<T>(value: T) -> State<T> {
+    return State<T> { value: value }
+}
+"#,
+    )
+    .unwrap();
+    let result = TypeChecker::check(&module);
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+}
+
+#[test]
 fn validates_generic_trait_implementations() {
     let module = kome_parser::parse(
         r#"
