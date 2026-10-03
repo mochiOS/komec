@@ -3,11 +3,15 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type EnvironmentDestructor = unsafe extern "C" fn(u64);
+type ClosureOwnership = unsafe extern "C" fn(u64);
 
+#[repr(C)]
 struct ClosureValue {
-    references: AtomicUsize,
     code: u64,
     environment: u64,
+    retain: ClosureOwnership,
+    release: ClosureOwnership,
+    references: AtomicUsize,
     destroy_environment: u64,
 }
 
@@ -19,9 +23,11 @@ pub extern "C" fn __kome_closure_alloc(
     destroy_environment: u64,
 ) -> u64 {
     Box::into_raw(Box::new(ClosureValue {
-        references: AtomicUsize::new(1),
         code,
         environment,
+        retain: __kome_closure_retain,
+        release: __kome_closure_release,
+        references: AtomicUsize::new(1),
         destroy_environment,
     })) as u64
 }
