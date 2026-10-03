@@ -332,6 +332,14 @@ fn resolves_closure_params() {
 }
 
 #[test]
+fn resolves_void_in_closure_types() {
+    let source = "fn invoke(action: () -> Void) { action() }";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+    assert!(result.errors.is_empty());
+}
+
+#[test]
 fn for_in_introduces_binding() {
     let source = "fn foo(items) { for item in items {} }";
     let module = parse(source).unwrap();

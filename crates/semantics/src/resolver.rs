@@ -876,7 +876,7 @@ impl ScopeBuilder {
             self.record_reference(&named.name, named.span);
         } else {
             let root = named.name.split("::").next().unwrap_or(&named.name);
-            if root != "Task" {
+            if root != "Task" && root != "Void" {
                 self.record_reference(root, named.span);
             }
         }

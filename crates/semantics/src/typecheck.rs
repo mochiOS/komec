@@ -2215,6 +2215,9 @@ impl TypeChecker {
             {
                 SemanticType::TypeParameter(named.name.clone())
             }
+            Type::Named(named) if named.name == "Void" && named.type_arguments.is_empty() => {
+                SemanticType::Void
+            }
             Type::Named(named) if !named.type_arguments.is_empty() => SemanticType::Applied(
                 named.name.clone(),
                 named
