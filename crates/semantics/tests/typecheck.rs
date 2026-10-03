@@ -666,6 +666,22 @@ fn main() {
 }
 
 #[test]
+fn checks_trailing_closure_after_a_named_argument() {
+    let module = parse(
+        r#"
+enum Tone { normal, danger }
+fn button(title: String, action: () -> Void, tone: Tone = .normal) {}
+fn main() {
+    button("削除", tone: .danger) {}
+}
+"#,
+    )
+    .unwrap();
+    let checked = TypeChecker::check(&module);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+}
+
+#[test]
 fn checks_component_tree_as_a_null_closure_result() {
     let module = parse(
         r#"

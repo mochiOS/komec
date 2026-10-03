@@ -704,9 +704,7 @@ impl ScopeBuilder {
             Expression::Struct(struct_) => self.visit_struct_expression(struct_),
             Expression::Template(tmpl) => self.visit_template_expression(tmpl),
             Expression::Closure(closure) => self.visit_closure_expression(closure),
-            Expression::DotIdent(dot) => {
-                self.record_reference(&dot.name, dot.span);
-            }
+            Expression::DotIdent(_) => {}
             Expression::Is(is_expr) => self.visit_is_expression(is_expr),
             Expression::Component(comp) => self.visit_component_expression(comp),
         }
@@ -836,9 +834,7 @@ impl ScopeBuilder {
                     },
                 );
             }
-            IsPattern::DotIdent(dot) => {
-                self.record_reference(&dot.name, dot.span);
-            }
+            IsPattern::DotIdent(_) => {}
         }
     }
 

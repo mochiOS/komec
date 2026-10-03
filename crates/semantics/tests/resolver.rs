@@ -261,19 +261,12 @@ fn resolves_is_pattern_binding() {
 }
 
 #[test]
-fn resolves_dot_ident_as_reference() {
+fn defers_dot_ident_resolution_to_type_checking() {
     let source = "fn foo() { .bar }";
     let module = parse(source).unwrap();
     let result = ScopeBuilder::resolve(&module);
 
-    assert_eq!(result.errors.len(), 1);
-    let err = &result.errors[0];
-    match err {
-        kome_semantics::error::ResolutionError::UndefinedName { name, .. } => {
-            assert_eq!(name, "bar");
-        }
-        other => panic!("expected UndefinedName, got {other:?}"),
-    }
+    assert!(result.errors.is_empty());
 }
 
 #[test]
@@ -454,4 +447,21 @@ fn rejects_compound_assignment_to_immutable_variable() {
             ..
         } if name == "x"
     ));
+}
+
+#[test]
+fn defers_contextual_enum_cases_to_type_checking() {
+    let source = "fn consume(value: ExternalStyle) {} fn main() { consume(.accent) }";
+    let module = parse(source).unwrap();
+    let result = ScopeBuilder::resolve(&module);
+
+    assert!(
+        !result.errors.iter().any(|error| matches!(
+            error,
+            kome_semantics::error::ResolutionError::UndefinedName { name, .. }
+                if name == "accent"
+        )),
+        "{:?}",
+        result.errors
+    );
 }

@@ -1964,14 +1964,36 @@ impl TypeChecker {
             return substitute_semantic(&signature.return_type, &substitutions);
         }
 
-        for (index, argument) in call.args.iter().enumerate() {
+        let mut assigned = vec![false; signature.params.len()];
+        let mut next_positional = 0;
+        for argument in &call.args {
             let parameter = match argument {
-                CallArg::Positional(_) => signature.params.get(index),
+                CallArg::Positional(_) => {
+                    while assigned.get(next_positional).copied() == Some(true) {
+                        next_positional += 1;
+                    }
+                    let parameter = signature.params.get(next_positional);
+                    if parameter.is_some() {
+                        assigned[next_positional] = true;
+                        next_positional += 1;
+                    }
+                    parameter
+                }
 
-                CallArg::Named { name, .. } => signature
-                    .params
-                    .iter()
-                    .find(|parameter| parameter.name == *name),
+                CallArg::Named { name, .. } => {
+                    signature
+                        .params
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, parameter)| {
+                            if parameter.name == *name {
+                                assigned[index] = true;
+                                Some(parameter)
+                            } else {
+                                None
+                            }
+                        })
+                }
             };
 
             let expression = match argument {
