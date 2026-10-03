@@ -419,6 +419,7 @@ pub struct ClosureLowering {
     pub function: String,
     pub environment: String,
     pub captures: Vec<String>,
+    pub capture_values: Vec<Expression>,
     pub function_type: crate::types::FunctionType,
 }
 

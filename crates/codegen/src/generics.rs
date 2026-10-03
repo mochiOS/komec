@@ -925,6 +925,15 @@ impl<'a> Expander<'a> {
                 closure.lowering = Some(ClosureLowering {
                     function: function_name,
                     environment: environment_name,
+                    capture_values: captures
+                        .iter()
+                        .map(|name| {
+                            Expression::Ident(IdentifierExpression {
+                                span: closure.span,
+                                name: name.clone(),
+                            })
+                        })
+                        .collect(),
                     captures,
                     function_type: function_type.clone(),
                 });
@@ -1351,10 +1360,14 @@ fn replace_closure_captures(
                 replace_closure_captures(child, captures, environment);
             }
         }
-        Expression::Closure(_)
-        | Expression::Literal(_)
-        | Expression::Ident(_)
-        | Expression::DotIdent(_) => {}
+        Expression::Closure(value) => {
+            if let Some(lowering) = &mut value.lowering {
+                for capture in &mut lowering.capture_values {
+                    replace_closure_captures(capture, captures, environment);
+                }
+            }
+        }
+        Expression::Literal(_) | Expression::Ident(_) | Expression::DotIdent(_) => {}
     }
 }
 
@@ -1523,7 +1536,15 @@ fn collect_captures(
                 }
             }
         }
-        Expression::Closure(value) => collect_captures(&value.body, environment, captures),
+        Expression::Closure(value) => {
+            if let Some(lowering) = &value.lowering {
+                for capture in &lowering.capture_values {
+                    collect_captures(capture, environment, captures);
+                }
+            } else {
+                collect_captures(&value.body, environment, captures);
+            }
+        }
         Expression::Is(value) => {
             collect_captures(&value.value, environment, captures);
             collect_captures(&value.body, environment, captures);

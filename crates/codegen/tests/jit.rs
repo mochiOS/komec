@@ -1711,3 +1711,26 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn captures_an_outer_value_in_a_nested_closure() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn invoke(action: () -> Void) { action() }
+
+fn main() {
+    let value = 42
+    invoke() {
+        invoke() { report(value) }
+    }
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
+    clear_thread_registry();
+}

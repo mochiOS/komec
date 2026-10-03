@@ -5639,16 +5639,14 @@ impl<'b, 'c, M: Module> FunctionTranslator<'b, 'c, M> {
             fields: lowering
                 .captures
                 .iter()
-                .map(|capture| KeyValueProperty {
+                .zip(&lowering.capture_values)
+                .map(|(capture, value)| KeyValueProperty {
                     span: closure.span,
                     key: PropertyKey::Ident {
                         name: capture.clone(),
                         span: closure.span,
                     },
-                    value: Box::new(Expression::Ident(IdentifierExpression {
-                        span: closure.span,
-                        name: capture.clone(),
-                    })),
+                    value: Box::new(value.clone()),
                 })
                 .collect(),
         };
