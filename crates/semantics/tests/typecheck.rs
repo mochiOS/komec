@@ -664,3 +664,19 @@ fn main() {
     .unwrap();
     assert!(TypeChecker::check(&module).errors.is_empty());
 }
+
+#[test]
+fn checks_component_tree_as_a_null_closure_result() {
+    let module = parse(
+        r#"
+component Text(content: String)
+fn render(content: () -> Null) {}
+fn main() {
+    render() { Text("Kome") }
+}
+"#,
+    )
+    .unwrap();
+    let checked = TypeChecker::check(&module);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+}

@@ -1727,6 +1727,16 @@ impl TypeChecker {
         {
             return self.infer_task_builtin(&identifier.name, call);
         }
+        if let Expression::Ident(identifier) = call.callee.as_ref()
+            && self.components.contains_key(&identifier.name)
+        {
+            return self.infer_component_expression(&ComponentExpression {
+                span: call.span,
+                name: identifier.name.clone(),
+                args: call.args.clone(),
+                children: Vec::new(),
+            });
+        }
         if let Expression::Member(member) = call.callee.as_ref() {
             let static_target = if let Expression::Ident(identifier) = member.object.as_ref()
                 && self.resolve(&identifier.name).is_none()
@@ -2133,7 +2143,7 @@ impl TypeChecker {
             self.infer_expression(child, None);
         }
 
-        SemanticType::Unknown
+        SemanticType::Null
     }
 
     // -- type conversion --

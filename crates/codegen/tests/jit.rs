@@ -1685,3 +1685,29 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn lowers_a_trailing_closure_nested_in_component_children() {
+    let capture = Capture::install("test.capture");
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn invoke(action: () -> Number) {
+    report(action())
+}
+
+component Stack()
+
+fn main() {
+    Stack {
+        invoke() { 42 }
+    }
+}
+"#);
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
+    clear_thread_registry();
+}

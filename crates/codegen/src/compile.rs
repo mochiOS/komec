@@ -611,7 +611,12 @@ pub fn analyze_module(module: &KomeModule) -> CodegenResult<ModuleInfo> {
             )?;
             let kind = FunctionKind::External {
                 signature,
-                symbol: function.name.clone(),
+                symbol: function
+                    .name
+                    .rsplit("::")
+                    .next()
+                    .expect("external function names are not empty")
+                    .to_owned(),
                 library: external.library.clone(),
             };
             if functions.insert(function.name.clone(), kind).is_some() {

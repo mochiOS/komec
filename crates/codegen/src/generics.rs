@@ -613,7 +613,6 @@ impl<'a> Expander<'a> {
     ) -> CodegenResult<Type> {
         if let Expression::Component(component) = expression
             && !self.components.contains(&component.name)
-            && self.functions.contains_key(&component.name)
         {
             *expression = trailing_closure_call(component.clone());
         }
@@ -631,6 +630,17 @@ impl<'a> Expander<'a> {
                 .unwrap_or_else(|| unknown_type(value.span))),
             Expression::Group(value) => {
                 self.rewrite_expression(&mut value.expression, environment, substitution, expected)
+            }
+            Expression::Block(value) => {
+                let mut block_environment = environment.clone();
+                for statement in &mut value.statements {
+                    self.rewrite_statement(statement, &mut block_environment, substitution)?;
+                }
+                if let Some(tail) = &mut value.tail {
+                    self.rewrite_expression(tail, &mut block_environment, substitution, expected)
+                } else {
+                    Ok(void_type(value.span))
+                }
             }
             Expression::Task(value) => {
                 let expected_result = expected.and_then(|expected| match expected {
@@ -1148,6 +1158,23 @@ impl<'a> Expander<'a> {
             }
             Expression::Assign(value) => {
                 self.rewrite_expression(&mut value.value, environment, substitution, expected)
+            }
+            Expression::Component(value) => {
+                for argument in &mut value.args {
+                    self.rewrite_expression(
+                        match argument {
+                            CallArg::Positional(value) => value,
+                            CallArg::Named { value, .. } => value,
+                        },
+                        environment,
+                        substitution,
+                        None,
+                    )?;
+                }
+                for child in &mut value.children {
+                    self.rewrite_expression(child, environment, substitution, None)?;
+                }
+                Ok(primitive("Null", value.span))
             }
             _ => Ok(expected
                 .cloned()
