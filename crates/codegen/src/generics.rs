@@ -7,8 +7,8 @@ use kome_ast::declarations::{
     StructField, TraitDeclaration, TypeMember, Visibility,
 };
 use kome_ast::expressions::{
-    CallArg, CallExpression, ClosureLowering, Expression, IdentifierExpression, LiteralKind,
-    MemberExpression, PropertyKey,
+    BlockExpression, CallArg, CallExpression, ClosureExpression, ClosureLowering, Expression,
+    IdentifierExpression, LiteralKind, MemberExpression, PropertyKey,
 };
 use kome_ast::generics::TypeSubstitution;
 use kome_ast::patterns::{IdentifierPattern, Pattern};
@@ -25,6 +25,7 @@ struct Expander<'a> {
     structs: HashMap<String, &'a StructDeclaration>,
     functions: HashMap<String, &'a FunctionDeclaration>,
     traits: HashMap<String, &'a TraitDeclaration>,
+    components: HashSet<String>,
     enums: HashSet<String>,
     implementations: Vec<&'a ForDeclaration>,
     output: Vec<Declaration>,
@@ -45,6 +46,7 @@ impl<'a> Expander<'a> {
         let mut traits = HashMap::new();
         let mut implementations = Vec::new();
         let mut enums = HashSet::new();
+        let mut components = HashSet::new();
         for declaration in &module.declarations {
             match declaration {
                 Declaration::Struct(value) => {
@@ -60,6 +62,9 @@ impl<'a> Expander<'a> {
                 Declaration::Enum(value) => {
                     enums.insert(value.name.clone());
                 }
+                Declaration::Component(value) => {
+                    components.insert(value.name.clone());
+                }
                 _ => {}
             }
         }
@@ -68,6 +73,7 @@ impl<'a> Expander<'a> {
             structs,
             functions,
             traits,
+            components,
             enums,
             implementations,
             output: Vec::new(),
@@ -605,6 +611,13 @@ impl<'a> Expander<'a> {
         substitution: &TypeSubstitution,
         expected: Option<&Type>,
     ) -> CodegenResult<Type> {
+        if let Expression::Component(component) = expression
+            && !self.components.contains(&component.name)
+            && self.functions.contains_key(&component.name)
+        {
+            *expression = trailing_closure_call(component.clone());
+        }
+
         match expression {
             Expression::Literal(value) => Ok(match &value.kind {
                 LiteralKind::String(_) => primitive("String", value.span),
@@ -1316,6 +1329,39 @@ fn replace_closure_captures(
         | Expression::Ident(_)
         | Expression::DotIdent(_) => {}
     }
+}
+
+fn trailing_closure_call(component: kome_ast::expressions::ComponentExpression) -> Expression {
+    let mut children = component.children;
+    let tail = children.pop().map(Box::new);
+    let statements = children
+        .into_iter()
+        .map(|expression| {
+            let span = expression.span();
+            Statement::Expression(ExpressionStatement { span, expression })
+        })
+        .collect();
+    let closure = Expression::Closure(ClosureExpression {
+        span: component.span,
+        params: Vec::new(),
+        body: Box::new(Expression::Block(BlockExpression {
+            span: component.span,
+            statements,
+            tail,
+        })),
+        lowering: None,
+    });
+    let mut args = component.args;
+    args.push(CallArg::Positional(closure));
+    Expression::Call(CallExpression {
+        span: component.span,
+        callee: Box::new(Expression::Ident(IdentifierExpression {
+            span: component.span,
+            name: component.name,
+        })),
+        type_arguments: Vec::new(),
+        args,
+    })
 }
 
 fn replace_statement_captures(

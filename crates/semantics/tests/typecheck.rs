@@ -632,3 +632,19 @@ fn main() {
     .unwrap();
     assert!(TypeChecker::check(&module).errors.is_empty());
 }
+
+#[test]
+fn checks_trailing_closure_arguments() {
+    let module = parse(
+        r#"
+fn invoke(action: () -> Number) -> Number {
+    return action()
+}
+fn main() {
+    let value = invoke() { 42 }
+}
+"#,
+    )
+    .unwrap();
+    assert!(TypeChecker::check(&module).errors.is_empty());
+}

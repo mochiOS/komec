@@ -6,13 +6,14 @@ use kome_ast::declarations::{
     FunctionDeclaration, Module, StructDeclaration, TraitDeclaration, TypeMember,
 };
 use kome_ast::expressions::{
-    AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, CallArg, CallExpression,
-    ComponentExpression, Expression, LiteralKind, ObjectExpression, ObjectProperty, PropertyKey,
-    StructExpression, UnaryOp,
+    AssignOp, AssignmentExpression, BinaryExpression, BinaryOp, BlockExpression, CallArg,
+    CallExpression, ClosureExpression, ComponentExpression, Expression, IdentifierExpression,
+    LiteralKind, ObjectExpression, ObjectProperty, PropertyKey, StructExpression, UnaryOp,
 };
 use kome_ast::patterns::Pattern;
 use kome_ast::statements::{
-    BlockStatement, ForInStatement, IfStatement, ReturnStatement, Statement, WhileStatement,
+    BlockStatement, ExpressionStatement, ForInStatement, IfStatement, ReturnStatement, Statement,
+    WhileStatement,
 };
 use kome_ast::types::{PrimitiveTypeKind, Type};
 use kome_ast::{AstNode, Span};
@@ -2080,6 +2081,10 @@ impl TypeChecker {
 
     fn infer_component_expression(&mut self, component: &ComponentExpression) -> SemanticType {
         let Some(signature) = self.components.get(&component.name).cloned() else {
+            if self.functions.contains_key(&component.name) {
+                let call = trailing_closure_call(component.clone());
+                return self.infer_call_expression(&call);
+            }
             for argument in &component.args {
                 match argument {
                     CallArg::Positional(expression) => {
@@ -2361,6 +2366,39 @@ impl TypeChecker {
             .rev()
             .find_map(|scope| scope.get(name))
             .cloned()
+    }
+}
+
+fn trailing_closure_call(component: ComponentExpression) -> CallExpression {
+    let mut children = component.children;
+    let tail = children.pop().map(Box::new);
+    let statements = children
+        .into_iter()
+        .map(|expression| {
+            let span = expression.span();
+            Statement::Expression(ExpressionStatement { span, expression })
+        })
+        .collect();
+    let closure = Expression::Closure(ClosureExpression {
+        span: component.span,
+        params: Vec::new(),
+        body: Box::new(Expression::Block(BlockExpression {
+            span: component.span,
+            statements,
+            tail,
+        })),
+        lowering: None,
+    });
+    let mut args = component.args;
+    args.push(CallArg::Positional(closure));
+    CallExpression {
+        span: component.span,
+        callee: Box::new(Expression::Ident(IdentifierExpression {
+            span: component.span,
+            name: component.name,
+        })),
+        type_arguments: Vec::new(),
+        args,
     }
 }
 

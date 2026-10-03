@@ -1630,3 +1630,29 @@ fn main() {
     );
     clear_thread_registry();
 }
+
+#[test]
+fn passes_a_trailing_closure_to_a_function() {
+    let capture = Capture::install("test.capture");
+
+    run(r#"
+@native("test.capture")
+fn report(value: Number)
+
+fn invoke(action: () -> Number) -> Number {
+    return action()
+}
+
+fn main() {
+    let offset = 40
+    let value = invoke() { offset + 2 }
+    report(value)
+}
+"#);
+
+    assert_eq!(
+        capture.recorded(),
+        vec![Value::Number(Number::parse("42").unwrap())]
+    );
+    clear_thread_registry();
+}
